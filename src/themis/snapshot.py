@@ -161,6 +161,29 @@ class ProjectSnapshot(BaseModel):
                 break
         return callers
 
+    def macros_in_file(self, file_path: str) -> tuple[str, ...]:
+        """Every macro defined in one file.
+
+        A macro file routinely defines several macros, so resolving a changed file by
+        its filename finds only the macro that happens to share the name — and edits
+        to every other macro in that file route to the wrong models, or to none.
+        """
+        suffix = file_path.replace("\\", "/").lstrip("./")
+        return tuple(
+            sorted(
+                macro.name
+                for macro in self.macros.values()
+                if macro.file_path and macro.file_path.replace("\\", "/").endswith(suffix)
+            )
+        )
+
+    def models_using_macro_file(self, file_path: str) -> tuple[str, ...]:
+        """Models reached by a change to any macro in a file."""
+        reached: set[str] = set()
+        for macro_name in self.macros_in_file(file_path):
+            reached.update(self.models_using_macro(macro_name))
+        return tuple(sorted(reached))
+
     def models_using_macro(self, macro_name: str) -> tuple[str, ...]:
         """Models a macro edit reaches, directly or through other macros.
 

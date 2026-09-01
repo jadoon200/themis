@@ -47,10 +47,12 @@ def build_contexts(
     directly_changed = set(result.changed_models)
 
     via_macro: dict[str, str] = {}
-    for macro in result.changed_macros:
-        for model in result.after.models_using_macro(macro):
+    for macro_file in result.changed_macro_files:
+        names = result.after.macros_in_file(macro_file) or (Path(macro_file).stem,)
+        label = ", ".join(names)
+        for model in result.after.models_using_macro_file(macro_file):
             if model not in directly_changed:
-                via_macro.setdefault(model, macro)
+                via_macro.setdefault(model, label)
 
     contexts: list[RuleContext] = []
     for name in sorted(directly_changed | set(via_macro)):

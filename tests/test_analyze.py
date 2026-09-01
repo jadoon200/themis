@@ -143,3 +143,27 @@ def test_downstream_walk_is_cycle_safe() -> None:
         child_map={"a": ("b",), "b": ("a",)},
     )
     assert set(snapshot.downstream_of("a")) == {"a", "b"}
+
+
+def test_macros_in_a_file_are_all_found() -> None:
+    """A macro file defines several macros.
+
+    Resolving a changed file by its filename finds only the macro that happens to
+    share the name, so edits to every other macro in that file route to the wrong
+    models — or to none at all.
+    """
+    snapshot = _snapshot_with_macros()
+    assert set(snapshot.macros_in_file("macros/money.sql")) == {
+        "minor_to_major",
+        "signed_amount",
+    }
+
+
+def test_changing_a_macro_file_reaches_models_using_any_macro_in_it() -> None:
+    snapshot = _snapshot_with_macros()
+    assert snapshot.models_using_macro_file("macros/money.sql") == ("stg_gl",)
+
+
+def test_an_unrelated_macro_file_reaches_nothing() -> None:
+    snapshot = _snapshot_with_macros()
+    assert snapshot.models_using_macro_file("macros/other.sql") == ()

@@ -36,7 +36,17 @@ class AcquireResult:
 
     @property
     def changed_macros(self) -> tuple[str, ...]:
+        """Stems of changed macro files. Kept for display; routing uses the paths."""
         return tuple(sorted({c.model_name for c in self.changed if c.is_macro}))
+
+    @property
+    def changed_macro_files(self) -> tuple[str, ...]:
+        """Paths of changed macro files.
+
+        Routing must go through the path: one file defines several macros, and the
+        filename identifies at most one of them.
+        """
+        return tuple(sorted({c.path for c in self.changed if c.is_macro}))
 
 
 def _compile_snapshot(
