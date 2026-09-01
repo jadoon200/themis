@@ -1,44 +1,189 @@
-# Roadmap
+# Evaluation
 
-## Built
+Numbers here come from running THEMIS, not from reasoning about it. Where it does
+worse than it looks like it should, that is recorded rather than dropped — a reviewer
+tool whose limits are undocumented is one whose clean results cannot be trusted.
 
-- **Stage 0 — Acquire.** Git worktree diffing against the merge base; dbt runner with a
-  fail-closed target allowlist; manifest loader; three grounding backends, with the
-  compiled manifest as the primary target.
-- **Stage 1 — Analyze.** Trino parsing, semantic AST diff (reformatting yields nothing),
-  the grain lattice, transitive macro impact, blast radius.
-- **Stage 2 — Rules.** F1 fan-out, join-type flips, grain changes; F3 money precision.
-  Skipped checks are reported rather than hidden.
-- **Stage 3 — Execute.** Builds base and head into side-by-side schemas against the
-  same source data, then diffs row counts, monetary totals, column sets and null rates.
-  Settles grain by counting. Fails closed on any non-development dbt target.
-- **Report.** Ranked Markdown, macro attribution, measured deltas where present.
-- **Demo project.** A financial dbt project on DuckDB — general ledger, FX conversion,
-  revenue recognition, regulatory mart. Macro-using and, deliberately, test-free.
+Full precision and recall arrive with the mutation harness (M3). What follows is what
+is measurable today.
 
-## Next
+## Grain derivation coverage
 
-**M2 — grounding depth.** Column-level lineage; dual-manifest backend; missing-test
-suggestions derived from the grain lattice; tuned dbt-bouncer ingest. Rule families F2
-(NULL semantics), F4 (periods and point-in-time), F5 (incremental), F6 (contracts),
-F8 (Trino cost).
+THEMIS is built for projects that declare no uniqueness tests, so grain is derived
+from the SQL rather than read. On the demo project (9 models, 4 seeds), which is
+deliberately test-free for this reason:
 
-**M3 (remaining) — the mutation harness.** Stage 3 itself is built; what is left is
-the harness on top of it. Programmatic bug injection, a refactor control set, and the
-test-less project variant, all labelled automatically by the execution oracle. That
-produces the first precision and recall figures.
+| Source | Models | |
+|---|---|---|
+| `structural` | 1 | proven from the AST — `GROUP BY` inside a CTE |
+| `heuristic` | 3 | column naming only; never treated as proof |
+| `unknown` | 5 | plus 4 seeds, whose grain cannot be derived from SQL at all |
 
-**M4 — review.** Context packer, specialists, supervisor, self-check. The deliverable
-is a number: what the language model adds over the deterministic baseline. A negative
-result is a real result.
+**This is the most important early result, and it is not a good one.** Structural
+derivation alone resolves 1 of 9 models. The reason is structural rather than
+incidental: most models in a dbt project are projections over an upstream — no
+`GROUP BY`, no `DISTINCT`, no dedup — so there is nothing in their own SQL from which
+uniqueness follows. Propagation helps only where the upstream is itself proven, and
+the chains here terminate at seeds.
 
-**M5 — follow-up.** Persisted run artifacts and grounded Q&A, including "why was this
-not flagged?". Answers come only from the artifact; an unanswerable question gets a
-refusal rather than an inference.
+Consequences, taken honestly:
 
-**M6 — cost.** Triage rubric, feature extraction, token accounting, SARIF output.
+- The fan-out family currently runs mostly at `possible` rather than `likely`
+  confidence. It still fires — weak grain never suppresses a finding — but it cannot
+  say much about how likely a given fan-out is.
+- `stg_fx_rates` is derived as unique on `(currency_code)`. **That is wrong**; the real
+  grain is `(currency_code, rate_date)`. This is precisely why `heuristic` is excluded
+  from `is_proven` and can never suppress a finding. Had it been trusted, the flagship
+  fan-out bug would have been silently dismissed as safe.
+- It is a direct argument for Stage 3 measurement. `count(*)` versus
+  `count(distinct k)` settles in one cheap query what inference cannot settle at all.
 
-## Deferred
+## What execution measures
 
-CI-platform wrappers, warehouse key profiling, and value-level data diffing are gated
-on a measurement from M3 or M4 rather than an assumption about what will help.
+Stage 3 builds both revisions into side-by-side schemas against the same source data
+and compares the results. On the fan-out fixture — a single dropped join predicate:
+
+| Model | Rows | `sum(amount_usd)` |
+|---|---|---|
+| `int_gl_entries_converted` | 18 → 54 | 12,836,412.45 → 38,477,683.30 |
+| `fct_revenue` | 15 → 45 | 13,112,347.70 → 39,318,036.05 |
+| `fct_regulatory_summary` | **9 → 9** | **13,112,347.70 → 39,318,036.05** |
+
+**The regulatory mart's row count does not move.** It is a `GROUP BY`, so its grain is
+fixed and an upstream fan-out leaves the row count untouched while tripling the money.
+A row-count check alone reports *no change* on precisely the table that reaches a
+regulator. Summing the monetary columns is what catches it, and that is why the differ
+does both.
+
+### Grain, settled by counting
+
+Measurement does what derivation could not:
+
+| Fixture | `fct_revenue` |
+|---|---|
+| fan-out | 45 rows, 15 distinct — **3.00 rows per key** |
+| control | 15 rows, 15 distinct — 1.00 rows per key |
+
+Derivation could only offer `heuristic (entry_id)`, unproven and — for `stg_fx_rates` —
+wrong. One `count(distinct)` replaces that with an exact multiplier. Where the two
+disagree, the disagreement is itself reported (`F1004`), because it is the only direct
+evidence of whether the lattice can be trusted on a given project.
+
+## Mutation corpus
+
+`themis eval` injects known changes, builds both revisions, and lets the results decide
+the truth. A change that moves no number is treated as behaviour-preserving whatever it
+was labelled — so the corpus labels itself, and the author's belief about what *should*
+be caught never enters the scoring.
+
+Current corpus: **9 defects, 6 controls**.
+
+| | |
+|---|---|
+| recall | **100%** (9/9) |
+| precision | **100%** |
+| false-positive rate | **0%** (0/6 controls flagged) |
+| caught by the family designed for it | 9/9 |
+
+### Read that number carefully
+
+**100% here means the corpus has become too easy, not that the reviewer is complete.**
+Three specific reasons to discount it:
+
+1. **The rules were fitted to this corpus.** F2, F4 and F3003 were written *because*
+   this corpus exposed them as false negatives. Measuring them against the same corpus
+   measures how well a patch fits the hole it was cut for. Honest recall requires defect
+   classes chosen without reference to the rules that exist.
+2. **Fifteen cases is a small sample**, hand-written by the same person who wrote the
+   rules.
+3. **The oracle only sees what the data exercises.** Two mutations initially scored as
+   false positives purely because the seed data never triggered them: every entity
+   booked in one currency, and every revenue entry had a contract. The rules were right
+   and the oracle could not tell. Execution measures whether a change moves the numbers
+   *on this data*, not whether the code is correct — a latent defect reads as
+   behaviour-preserving until the data grows into it.
+
+### What the corpus has actually been worth
+
+Its value so far has not been the score. It is the four defects it found in the reviewer
+itself, none of which the unit tests caught:
+
+- **`GroupByGrainChangedRule` had never fired.** It read the outermost `SELECT` for a
+  `GROUP BY`; dbt models put theirs in the final CTE.
+- **`F4001` matched only `DateTrunc`.** Trino parses `date_trunc` to `TimestampTrunc`,
+  so the rule was inert against the dialect it targets.
+- **`F3003` passed its unit test and missed the real case.** The test used a bare
+  `-1 * amt`; the compiled macro produces `-1 * CAST(...) / CAST(...)`, where the sign
+  sits inside a division.
+- **Macro edits routed by filename.** `macros/money.sql` defines three macros, so
+  editing `signed_amount` reached models using `money` and never reached the model that
+  actually changed.
+
+A regression during this work — a one-directional path comparison that silently routed
+macro changes to no models at all — was caught by the corpus on the very next run, with
+two previously-detected defects going quiet.
+
+## What is verified today
+
+End-to-end against the demo project, both scenarios reproducible from a clean `main`:
+
+| Scenario | Result |
+|---|---|
+| FX join loses its period predicate | Flagged `high`, names `stg_fx_rates`, blast radius includes the regulatory mart |
+| `money()` macro switched to `DOUBLE` | **2 critical findings across 2 models with zero model files changed** — the macro edit is expanded to its real reach and attributed back to the macro |
+| Pure reformatting | No findings — semantic AST diff, not text diff |
+
+The macro case is the one a text diff cannot do at all: the PR touches a single file,
+and the review correctly covers every model whose compiled SQL changed.
+
+## Local model characterisation
+
+Measured on this machine (Apple silicon, Ollama), warm, `temperature=0`, with Ollama's
+JSON-schema structured output. Both models return schema-valid JSON, so the specialist
+design is viable in principle.
+
+| Model | Warm latency | Throughput | Verdict on the fan-out case |
+|---|---|---|---|
+| `qwen3:8b` | 5.1 s | 24.7 tok/s | `uncertain` / medium — hedged |
+| `qwen3:30b` | 86.8 s | 2.0 tok/s | `confirm` / high — correct, accurate reasoning |
+
+Two things follow, and neither is comfortable.
+
+**The larger model is right and the smaller one is not**, on exactly the defect class
+this tool exists to catch. If that holds up, the planned tiering — a small model for
+high-volume specialist calls, a large one only for the supervisor — puts the quality
+where it is needed least.
+
+**2.0 tok/s makes `qwen3:30b` impractical at volume here.** At roughly 87 s per call, a
+supervisor pass over ten findings is a fifteen-minute wait. The throughput suggests the
+18 GB model does not sit comfortably in memory on this machine; office hardware may
+differ, but the local profile has to assume it does not.
+
+**This is a signal, not a verdict.** It is a single zero-shot prompt with no evidence
+pack, no rulebook and no few-shot examples — precisely the grounding the specialist
+design supplies. A small model given a tight context pack and one narrow question is a
+very different proposition from one asked to reason from scratch. Establishing which of
+those holds is the entire point of M4, and it needs the harness rather than one prompt.
+
+## Known limitations
+
+- **Backend C (raw files) is close to blind** against macro-heavy projects. Jinja is
+  unexpanded, so the parsed AST is not the SQL that runs. A compiled manifest is
+  required in practice, and `dbt parse` is not enough — only `dbt compile` populates
+  `compiled_code`.
+- **Execution rebuilds more than strictly changed.** Redirecting output into a fresh
+  schema means every `ref()` resolves there, so the full ancestor closure of each
+  measured model must be built. At scale the dbt-native answer is `--defer` against a
+  production manifest; that needs the dual-manifest backend and is not built yet.
+- **Measurement is DuckDB-only.** The warehouse client protocol is small and a Trino
+  implementation is a modest addition, but it does not exist today.
+- **DuckDB is not Trino.** The demo project stays inside the dialects' intersection.
+  Analysis always parses as Trino regardless of what executes, and nothing is executed
+  during analysis.
+- **The corpus is fitted and small.** See the caveats above. The next useful work is
+  defect classes chosen *without* reference to the rules that exist — the current score
+  cannot rise, so it can only be made meaningful by making the corpus harder.
+- **Families F5–F8 are unimplemented.** Incremental and materialization logic, contracts
+  and lineage, governance, and Trino-specific cost rules have no coverage, and the
+  corpus contains no cases for them — so their absence does not show up in the score at
+  all.

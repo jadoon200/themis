@@ -67,3 +67,37 @@ jobs:
 
       - name: Grain derivation runs and reports coverage
         run: themis grain --project demo_project --explain
+
+  corpus:
+    # The mutation corpus has caught four defects in the reviewer that the unit tests
+    # did not, including two rules that had never fired at all. It is slower than the
+    # other jobs because every mutation builds the project twice, and worth it.
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # The harness diffs against main and needs real history to do it.
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip uv
+          uv pip install --system -r requirements.txt
+          uv pip install --system -e . --no-deps
+
+      - name: Identify for the scratch commits the harness makes
+        run: |
+          git config user.email "ci@example.invalid"
+          git config user.name "themis-ci"
+
+      - name: Seed the demo project
+        working-directory: demo_project
+        run: dbt seed --profiles-dir . --project-dir . --target dev
+
+      - name: Run the mutation corpus
+        run: themis eval --project demo_project --mutations all --base origin/main
