@@ -258,7 +258,9 @@ def eval_cmd(
         raise typer.Exit(code=2) from exc
 
     typer.echo("")
-    header = f"{'mutation':34s} {'truth':10s} {'flagged':8s} {'families':12s} {'result':15s}"
+    header = (
+        f"{'mutation':34s} {'truth':10s} {'flagged':8s} {'families':12s} {'why':10s} {'result':15s}"
+    )
     typer.echo(header)
     typer.echo("-" * len(header))
     for outcome in report.outcomes:
@@ -270,9 +272,18 @@ def eval_cmd(
         truth = "defect" if outcome.changed_results else "no-change"
         families = ",".join(outcome.families_fired) or "—"
         flagged = "yes" if outcome.detected else "no"
+        # Distinguish a defect caught by the family designed for it from one caught
+        # incidentally by another. Both count as detected, but only the first means the
+        # rule that was supposed to see it actually did.
+        if not outcome.detected or not outcome.mutation.expects_family:
+            why = "—"
+        elif outcome.expected_family_fired:
+            why = "expected"
+        else:
+            why = "incidental"
         typer.echo(
             f"{outcome.mutation.id:34s} {truth:10s} {flagged:8s} "
-            f"{families:12s} {outcome.classification:15s}"
+            f"{families:12s} {why:10s} {outcome.classification:15s}"
         )
 
     counts = report.counts()
@@ -292,6 +303,20 @@ def eval_cmd(
         f"precision {_pct(report.precision)}   "
         f"false-positive rate {_pct(report.false_positive_rate)}"
     )
+
+    incidental = [
+        o
+        for o in report.scored
+        if o.detected and o.mutation.expects_family and not o.expected_family_fired
+    ]
+    if incidental:
+        typer.echo("")
+        typer.echo("Caught, but not by the family meant to catch them:")
+        for outcome in incidental:
+            typer.echo(
+                f"  {outcome.mutation.id}: expected {outcome.mutation.expects_family}, "
+                f"fired {','.join(outcome.families_fired)}"
+            )
 
     if report.mislabelled:
         typer.echo("")
