@@ -1,0 +1,21 @@
+# Local infrastructure. Postgres on 5436 — clear of the sibling projects
+# (sentinel 5432, argus 5433, pharos 5434, horus 5435).
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: themis
+      POSTGRES_PASSWORD: themis
+      POSTGRES_DB: themis
+    ports:
+      - "5436:5432"
+    volumes:
+      - themis-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U themis"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  themis-pgdata:

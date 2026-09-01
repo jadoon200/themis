@@ -19,6 +19,12 @@ dependencies = [
     "dbt-core>=1.8",
     "dbt-duckdb>=1.8",
     "duckdb>=1.0",
+    # Persistence and the service layer.
+    "sqlalchemy>=2.0",
+    "alembic>=1.13",
+    "psycopg[binary]>=3.2",
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
 ]
 
 [project.scripts]
@@ -48,10 +54,15 @@ src = ["src", "tests"]
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
 
-# Typer expresses CLI options as argument defaults; that is the framework idiom,
-# not the mutable-default bug B008 targets.
+# Typer and FastAPI both express options and dependencies as argument defaults; that
+# is the framework idiom, not the mutable-default bug B008 targets.
 [tool.ruff.lint.flake8-bugbear]
-extend-immutable-calls = ["typer.Option", "typer.Argument"]
+extend-immutable-calls = [
+    "typer.Option",
+    "typer.Argument",
+    "fastapi.Depends",
+    "fastapi.Query",
+]
 
 [tool.mypy]
 python_version = "3.12"

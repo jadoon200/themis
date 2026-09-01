@@ -1,4 +1,4 @@
-.PHONY: env install lint format typecheck test check demo-build review execute grain eval clean
+.PHONY: env install lint format typecheck test check demo-build review execute grain eval clean up down migrate api worker
 
 # One-time: create the conda env, then `conda activate themis`
 env:
@@ -46,6 +46,27 @@ grain:
 # Mutation eval: per-family precision/recall against the execution oracle.
 eval:
 	PYTHONPATH=src python -m themis.cli eval --mutations all --project demo_project
+
+# --- infrastructure ---
+
+# Postgres via Docker Compose (host port 5436 — coexists with the siblings), then migrate.
+up:
+	docker compose up -d db && sleep 3 && $(MAKE) migrate
+
+down:
+	docker compose down
+
+# Defaults to SQLite; point THEMIS_DATABASE_URL at Postgres for the service.
+migrate:
+	PYTHONPATH=src alembic upgrade head
+
+# The API queues reviews and serves results. It never runs one itself.
+api:
+	PYTHONPATH=src uvicorn themis.api.app:app --host 127.0.0.1 --port 8040 --reload
+
+# Workers claim queued runs and execute the same pipeline the CLI does.
+worker:
+	PYTHONPATH=src python -m themis.worker
 
 clean:
 	rm -rf demo_project/target demo_project/logs demo_project/*.duckdb .themis

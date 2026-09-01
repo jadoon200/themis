@@ -49,6 +49,17 @@ class Settings(BaseSettings):
     # --- artifacts -----------------------------------------------------------
     run_dir: str = ".themis/runs"
 
+    # --- persistence and service ---------------------------------------------
+    # SQLite by default so the CLI and the tests need no container. Production is
+    # Postgres; docker-compose brings it up on 5436, clear of the sibling projects.
+    database_url: str = "sqlite:///data/themis.db"
+    # How long a claimed run may go without a heartbeat before another worker may
+    # reclaim it. Stage 3 builds are slow, so this is generous.
+    worker_claim_timeout_s: float = 1800.0
+    worker_poll_interval_s: float = 5.0
+    api_host: str = "127.0.0.1"
+    api_port: int = 8040
+
 
 def load_settings() -> Settings:
     return Settings()

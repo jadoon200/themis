@@ -41,3 +41,6 @@ AGENTS.md
 
 # dbt generates this per-user
 .user.yml
+
+# Local database file (SQLite default) — regenerable from migrations
+data/themis.db
