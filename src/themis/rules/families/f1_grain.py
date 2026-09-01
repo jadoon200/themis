@@ -85,13 +85,18 @@ class JoinFanOutRule(Rule):
         except ParseError:
             return []
 
+        # Compare joins by the model they resolve to, never by the CTE alias. Renaming
+        # a CTE is a routine refactor, and comparing aliases makes every join in a
+        # tidied-up model look new -- which is how a control set of behaviour-preserving
+        # refactors turns into a wall of false positives and the rule gets switched off.
         before_joins: set[tuple[str, tuple[str, ...]]] = set()
         if ctx.before is not None and ctx.before.analysable_sql is not None:
             try:
                 before_tree = parse_sql(ctx.before.analysable_sql, dialect=ctx.dialect)
                 before_joins = {
-                    (_joined_relation_name(j) or "", _join_key_columns(j))
+                    (resolve_relation(before_tree, _joined_relation_name(j) or ""), keys)
                     for j in find_joins(before_tree)
+                    if (keys := _join_key_columns(j))
                 }
             except ParseError:
                 before_joins = set()
@@ -102,11 +107,11 @@ class JoinFanOutRule(Rule):
             keys = _join_key_columns(join)
             if alias is None or not keys:
                 continue
-            if (alias, keys) in before_joins:
-                continue  # unchanged join; not this PR's problem
-
             # The join names a CTE; the grain is recorded against the model it reads.
             relation = resolve_relation(after_tree, alias)
+            if (relation, keys) in before_joins:
+                continue  # unchanged join; not this PR's problem
+
             grain = ctx.grains.get(relation)
             if grain is not None and grain.is_proven and set(grain.columns) <= set(keys):
                 continue  # the join key covers a proven unique key: safe
@@ -197,13 +202,15 @@ class JoinTypeChangedRule(Rule):
         if before_sql is None or after_sql is None:
             return []
         try:
+            before_tree = parse_sql(before_sql, dialect=ctx.dialect)
+            after_tree = parse_sql(after_sql, dialect=ctx.dialect)
             before_joins = {
-                _joined_relation_name(j) or "": join_kind(j)
-                for j in find_joins(parse_sql(before_sql, dialect=ctx.dialect))
+                resolve_relation(before_tree, _joined_relation_name(j) or ""): join_kind(j)
+                for j in find_joins(before_tree)
             }
             after_joins = {
-                _joined_relation_name(j) or "": join_kind(j)
-                for j in find_joins(parse_sql(after_sql, dialect=ctx.dialect))
+                resolve_relation(after_tree, _joined_relation_name(j) or ""): join_kind(j)
+                for j in find_joins(after_tree)
             }
         except ParseError:
             return []

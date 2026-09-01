@@ -161,3 +161,46 @@ def test_governed_model_escalates_severity() -> None:
     )
     findings = JoinFanOutRule().check(ctx)
     assert findings[0].severity is Severity.CRITICAL
+
+
+# --- false-positive control ---------------------------------------------------
+#
+# These are the cases that decide whether the tool stays switched on. A rule that
+# fires on a behaviour-preserving refactor trains reviewers to ignore the family,
+# and then it catches nothing when a real fan-out arrives.
+
+RENAMED_CTES = """
+with fx as (select * from stg_entries),
+     rate_table as (select * from stg_rates)
+select f.id, r.rate
+from fx f
+inner join rate_table r on f.ccy = r.ccy and f.period = r.period
+"""
+
+
+def test_renaming_a_cte_is_not_a_new_join() -> None:
+    """Joins must be compared by the model they resolve to, never by CTE alias.
+
+    Renaming CTEs is a routine tidy-up. Comparing aliases makes every join in a
+    refactored model look new — the exact failure that turned a control set of
+    behaviour-preserving refactors into a wall of false positives.
+    """
+    assert JoinFanOutRule().check(_ctx(SAFE_JOIN, RENAMED_CTES, {})) == []
+
+
+def test_renaming_a_cte_is_not_a_join_type_change() -> None:
+    assert JoinTypeChangedRule().check(_ctx(SAFE_JOIN, RENAMED_CTES, {})) == []
+
+
+def test_a_real_fan_out_still_fires_after_a_rename() -> None:
+    """The rename fix must not suppress genuine changes hiding inside a refactor."""
+    renamed_and_broken = """
+    with fx as (select * from stg_entries),
+         rate_table as (select * from stg_rates)
+    select f.id, r.rate
+    from fx f
+    inner join rate_table r on f.ccy = r.ccy
+    """
+    findings = JoinFanOutRule().check(_ctx(SAFE_JOIN, renamed_and_broken, {}))
+    assert len(findings) == 1
+    assert "stg_rates" in findings[0].title
