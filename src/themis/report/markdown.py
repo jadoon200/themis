@@ -187,6 +187,13 @@ def render(
         for index, finding in enumerate(ranked, start=1):
             lines += [_render_finding(index, finding), "", "---", ""]
 
+    if ranked and not executed:
+        lines += [
+            "",
+            "_Findings above are inferred from the SQL. Re-run with `--execute` to "
+            "build both revisions and measure the actual row-count and total impact._",
+        ]
+
     if skipped:
         by_reason: dict[str, list[str]] = {}
         for skip in skipped:

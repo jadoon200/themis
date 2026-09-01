@@ -66,7 +66,16 @@ def review(
     settings = load_settings()
     log.info("review.start", project=str(project), base=base, head=head, llm=not no_llm)
 
-    result = run_review(project, base=base, head=head, settings=settings)
+    result = run_review(
+        project,
+        base=base,
+        head=head,
+        settings=settings,
+        run_execution=execute or settings.execute_enabled,
+    )
+
+    if result.execution is not None and not result.execution.ran:
+        log.warning("review.execution_skipped", reason=result.execution.skipped_reason)
 
     for macro, models in sorted(result.macro_affected.items()):
         log.info("review.macro_impact", macro=macro, models=len(models))
@@ -96,8 +105,53 @@ def execute(
     verbose: VerboseOpt = False,
 ) -> None:
     """Stage 3 only: build base and head, then diff the actual results."""
+    from themis.pipeline import review as run_review
+
     configure_logging(verbose=verbose)
-    log.info("execute.start", project=str(project), base=base, head=head, explain=explain)
+    settings = load_settings()
+    log.info("execute.start", project=str(project), base=base, head=head)
+
+    result = run_review(project, base=base, head=head, settings=settings, run_execution=True)
+    run = result.execution
+    if run is None or not run.ran:
+        reason = run.skipped_reason if run else "execution did not run"
+        typer.echo(f"Execution did not run: {reason}", err=True)
+        raise typer.Exit(code=2)
+
+    if not run.deltas:
+        typer.echo("No models built — nothing changed in this diff.")
+        raise typer.Exit(code=0)
+
+    for name in sorted(run.deltas):
+        delta = run.deltas[name]
+        marker = "CHANGED" if delta.is_material else "no change"
+        typer.echo(f"{name:32s} {marker}")
+        if not explain:
+            continue
+        if delta.build_error:
+            typer.echo(f"{'':34s}build failed: {delta.build_error.strip()[:200]}")
+            continue
+        if delta.row_delta is not None:
+            typer.echo(
+                f"{'':34s}rows {delta.rows_before:,} -> {delta.rows_after:,} ({delta.row_delta:+,})"
+            )
+        for column, (before_sum, after_sum) in sorted(delta.sum_deltas.items()):
+            flag = "  <-- moved" if before_sum != after_sum else ""
+            typer.echo(f"{'':34s}sum({column}) {before_sum:,.2f} -> {after_sum:,.2f}{flag}")
+        for column, (before_type, after_type) in sorted(delta.columns_retyped.items()):
+            typer.echo(f"{'':34s}{column} retyped {before_type} -> {after_type}")
+
+    measured = run.measured_grains
+    if measured:
+        typer.echo("\nGrain, measured rather than inferred:")
+        for name in sorted(measured):
+            typer.echo(f"  {name:30s} {measured[name].note}")
+
+    material = run.material_models
+    typer.echo(
+        f"\n{len(material)} of {len(run.deltas)} model(s) changed materially."
+        + (f" ({', '.join(material)})" if material else "")
+    )
     raise typer.Exit(code=0)
 
 

@@ -168,16 +168,15 @@ class JoinFanOutRule(Rule):
                 note=detail,
             ),
             consequence=(
-                f"If {relation} has more than one row per ({', '.join(keys)}), every "
-                "matched row is duplicated and any amount summed downstream is "
-                "overstated. Nothing errors and no row looks malformed — the total is "
-                "simply too large."
+                f"Any row matching more than once in {relation} on "
+                f"({', '.join(keys)}) is duplicated, and every amount summed "
+                "downstream is overstated by that multiple. Nothing errors and no "
+                "individual row looks malformed — the total is simply too large."
             ),
             suggestion=(
                 f"Confirm the grain of {relation}. If it is not unique on "
                 f"({', '.join(keys)}), either add the missing key columns to the ON "
-                "clause or pre-aggregate before joining. Re-run with --execute to "
-                "measure the row count directly."
+                "clause or pre-aggregate before joining."
             ),
             blast_radius=ctx.blast_radius,
         )
@@ -234,10 +233,7 @@ class JoinTypeChangedRule(Rule):
                         note=f"{before_kind} -> {after_kind} on {relation}",
                     ),
                     consequence=self._consequence(before_kind, after_kind, relation),
-                    suggestion=(
-                        "Confirm this was intended. Run with --execute to see the "
-                        "row-count and SUM impact rather than reasoning about it."
-                    ),
+                    suggestion="Confirm this was intended.",
                     blast_radius=ctx.blast_radius,
                 )
             )
