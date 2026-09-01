@@ -240,13 +240,26 @@ rates as (select * from fx),""",
     contract_id,""",
     ),
     Mutation(
-        id="control_widen_decimal",
+        id="control_extract_final_cte",
         kind=Kind.CONTROL,
         expects_family="",
-        description="Monetary precision widened — loses nothing",
-        relative_path=_INT_CONVERTED,
-        find="{{ money('entries.amount_txn_ccy * rates.rate') }}   as amount_usd",
-        replace="cast(entries.amount_txn_ccy * rates.rate as decimal(38, 9)) as amount_usd",
+        description="Final select wrapped in a `final` CTE — a routine dbt house-style refactor",
+        relative_path=_MART_SUMMARY,
+        find="select * from aggregated",
+        replace="""select * from (
+
+    select * from aggregated
+
+) as final""",
+    ),
+    Mutation(
+        id="control_trailing_comment",
+        kind=Kind.CONTROL,
+        expects_family="",
+        description="Trailing comment appended to a staging model",
+        relative_path=_STG_ENTRIES,
+        find="select * from typed",
+        replace="select * from typed  -- one row per ledger entry",
     ),
 )
 
