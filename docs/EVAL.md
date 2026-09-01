@@ -50,6 +50,35 @@ End-to-end against the demo project, both scenarios reproducible from a clean `m
 The macro case is the one a text diff cannot do at all: the PR touches a single file,
 and the review correctly covers every model whose compiled SQL changed.
 
+## Local model characterisation
+
+Measured on this machine (Apple silicon, Ollama), warm, `temperature=0`, with Ollama's
+JSON-schema structured output. Both models return schema-valid JSON, so the specialist
+design is viable in principle.
+
+| Model | Warm latency | Throughput | Verdict on the fan-out case |
+|---|---|---|---|
+| `qwen3:8b` | 5.1 s | 24.7 tok/s | `uncertain` / medium — hedged |
+| `qwen3:30b` | 86.8 s | 2.0 tok/s | `confirm` / high — correct, accurate reasoning |
+
+Two things follow, and neither is comfortable.
+
+**The larger model is right and the smaller one is not**, on exactly the defect class
+this tool exists to catch. If that holds up, the planned tiering — a small model for
+high-volume specialist calls, a large one only for the supervisor — puts the quality
+where it is needed least.
+
+**2.0 tok/s makes `qwen3:30b` impractical at volume here.** At roughly 87 s per call, a
+supervisor pass over ten findings is a fifteen-minute wait. The throughput suggests the
+18 GB model does not sit comfortably in memory on this machine; office hardware may
+differ, but the local profile has to assume it does not.
+
+**This is a signal, not a verdict.** It is a single zero-shot prompt with no evidence
+pack, no rulebook and no few-shot examples — precisely the grounding the specialist
+design supplies. A small model given a tight context pack and one narrow question is a
+very different proposition from one asked to reason from scratch. Establishing which of
+those holds is the entire point of M4, and it needs the harness rather than one prompt.
+
 ## Known limitations
 
 - **Backend C (raw files) is close to blind** against macro-heavy projects. Jinja is
