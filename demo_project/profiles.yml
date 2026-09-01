@@ -1,0 +1,11 @@
+# Local, zero-cost, credential-free. The target name must stay within the THEMIS
+# execution allowlist — the Stage 3 guard refuses anything that is not clearly a
+# dev/CI target.
+themis_demo:
+  target: dev
+  outputs:
+    dev:
+      type: duckdb
+      path: themis_demo.duckdb
+      schema: main
+      threads: 4

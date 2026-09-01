@@ -1,0 +1,65 @@
+version: 2
+
+# Note the absence of tests. This mirrors the target project: models are documented but
+# nothing asserts uniqueness, so THEMIS cannot read grain off this file and derives it
+# from structure instead. A tested variant lives in variants/tested/ for the eval, which
+# measures how much recall the derivation actually costs.
+
+models:
+  - name: stg_gl_entries
+    description: General ledger entries, typed and signed. One row per entry_id.
+    columns:
+      - name: entry_id
+        description: Ledger entry identifier.
+      - name: amount_txn_ccy
+        description: Signed amount in the transaction currency, major units.
+      - name: rate_period
+        description: Posting date truncated to month start, for the FX as-of join.
+
+  - name: stg_fx_rates
+    description: >
+      Monthly FX rates to USD. Grain is (currency_code, rate_date) — several rows per
+      currency. Any join to this model must carry the date predicate as well.
+    columns:
+      - name: currency_code
+        description: ISO currency code.
+      - name: rate_date
+        description: First day of the month the rate applies to.
+      - name: rate
+        description: Units of USD per one unit of currency_code.
+
+  - name: stg_accounts
+    description: Chart of accounts. One row per account_id.
+
+  - name: stg_contracts
+    description: Customer contracts and recognition treatment. One row per contract_id.
+
+  - name: int_gl_entries_converted
+    description: Ledger entries converted to USD at their period's rate. One row per entry_id.
+    columns:
+      - name: amount_usd
+        description: Signed amount converted to USD.
+      - name: fx_rate
+        description: The rate applied, retained for audit.
+
+  - name: int_revenue_recognized
+    description: External revenue entries with contract treatment attached.
+
+  - name: dim_accounts
+    description: Account dimension. One row per account_id.
+
+  - name: fct_revenue
+    description: Recognised external revenue. Grain is entry_id.
+    columns:
+      - name: entry_id
+        description: Ledger entry identifier.
+      - name: amount_usd
+        description: Signed revenue amount in USD.
+
+  - name: fct_regulatory_summary
+    description: >
+      Period revenue by entity for external reporting. Figures reach a regulatory
+      submission and must be exact.
+    columns:
+      - name: revenue_usd
+        description: Summed USD revenue for the period and entity.

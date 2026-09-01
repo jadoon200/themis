@@ -1,0 +1,70 @@
+[project]
+name = "themis"
+version = "0.1.0"
+description = "THEMIS — an automated reviewer for dbt model changes: semantic SQL diffing, derived grain, and execution-backed evidence for financial data transformations"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+dependencies = [
+    "sqlglot>=25.0",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+    "structlog>=24.1",
+    "typer>=0.12",
+    "rich>=13.7",
+    "httpx>=0.27",
+    "pyyaml>=6.0",
+    # dbt + the local zero-cost warehouse. dbt is not optional here: the compiled
+    # manifest is the primary grounding backend and Stage 3 shells out to `dbt build`.
+    "dbt-core>=1.8",
+    "dbt-duckdb>=1.8",
+    "duckdb>=1.0",
+]
+
+[project.scripts]
+themis = "themis.cli:app"
+
+[dependency-groups]
+dev = [
+    "ruff>=0.6",
+    "mypy>=1.11",
+    "pytest>=8.2",
+    "pytest-cov>=5.0",
+    "types-pyyaml>=6.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/themis"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+
+# Typer expresses CLI options as argument defaults; that is the framework idiom,
+# not the mutable-default bug B008 targets.
+[tool.ruff.lint.flake8-bugbear]
+extend-immutable-calls = ["typer.Option", "typer.Argument"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+mypy_path = "src"
+files = ["src/themis"]
+explicit_package_bases = true
+
+# Third-party libraries without type stubs — scoped, do not widen.
+[[tool.mypy.overrides]]
+module = ["duckdb.*", "dbt.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

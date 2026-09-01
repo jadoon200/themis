@@ -1,0 +1,213 @@
+"""THEMIS command line interface.
+
+Every command is a thin wrapper over the pipeline stages so that CI, a developer's
+shell, and the eval harness all exercise exactly the same code path.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Annotated
+
+import typer
+
+from themis import __version__
+from themis.acquire.manifest import load_manifest
+from themis.config import load_settings
+from themis.logging import configure_logging, get_logger
+from themis.models import Backend, Finding, GrainSource, Severity
+from themis.report import markdown
+
+app = typer.Typer(
+    name="themis",
+    help="Automated review of dbt model changes for financial data transformations.",
+    no_args_is_help=True,
+    add_completion=False,
+)
+log = get_logger(__name__)
+
+ProjectOpt = Annotated[
+    Path, typer.Option("--project", "-p", help="Path to the dbt project directory.")
+]
+BaseOpt = Annotated[str, typer.Option("--base", help="Base git revision to compare from.")]
+HeadOpt = Annotated[str, typer.Option("--head", help="Head git revision to compare to.")]
+VerboseOpt = Annotated[bool, typer.Option("--verbose", "-v", help="Debug logging.")]
+
+
+@app.callback()
+def _root() -> None:
+    """Shared entry point; per-command options configure logging themselves."""
+
+
+@app.command()
+def version() -> None:
+    """Print the THEMIS version."""
+    typer.echo(f"themis {__version__}")
+
+
+@app.command()
+def review(
+    project: ProjectOpt = Path("demo_project"),
+    base: BaseOpt = "main",
+    head: HeadOpt = "HEAD",
+    no_llm: Annotated[
+        bool, typer.Option("--no-llm", help="Deterministic analysis only. Free, fast, useful.")
+    ] = False,
+    execute: Annotated[
+        bool,
+        typer.Option("--execute/--no-execute", help="Build base and head and diff real results."),
+    ] = False,
+    verbose: VerboseOpt = False,
+) -> None:
+    """Review the dbt model changes between two revisions."""
+    from themis.pipeline import review as run_review
+
+    configure_logging(verbose=verbose)
+    settings = load_settings()
+    log.info("review.start", project=str(project), base=base, head=head, llm=not no_llm)
+
+    result = run_review(project, base=base, head=head, settings=settings)
+
+    if result.macro_affected:
+        for macro, models in sorted(result.macro_affected.items()):
+            log.info("review.macro_impact", macro=macro, models=len(models))
+
+    typer.echo(
+        markdown.render(
+            result.findings,
+            skipped=result.skipped,
+            models_reviewed=len(result.models_reviewed),
+            executed=result.executed,
+        )
+    )
+
+    if result.degraded_reason:
+        log.warning("review.degraded", reason=result.degraded_reason)
+
+    raise typer.Exit(code=_gate_exit_code(result.findings, settings.fail_on_severity))
+
+
+@app.command()
+def execute(
+    project: ProjectOpt = Path("demo_project"),
+    base: BaseOpt = "main",
+    head: HeadOpt = "HEAD",
+    explain: Annotated[
+        bool, typer.Option("--explain", help="Show per-model deltas, not just the summary.")
+    ] = False,
+    verbose: VerboseOpt = False,
+) -> None:
+    """Stage 3 only: build base and head, then diff the actual results."""
+    configure_logging(verbose=verbose)
+    log.info("execute.start", project=str(project), base=base, head=head, explain=explain)
+    raise typer.Exit(code=0)
+
+
+@app.command()
+def grain(
+    project: ProjectOpt = Path("demo_project"),
+    explain: Annotated[
+        bool, typer.Option("--explain", help="Show which of the grain sources produced each key.")
+    ] = False,
+    verbose: VerboseOpt = False,
+) -> None:
+    """Show the derived grain for every model, and how it was derived.
+
+    Verifiable independently of the rules, which matters because the target project
+    declares no uniqueness tests and the whole fan-out family rests on this.
+    """
+    from themis.analyze.grain import infer_grains
+
+    configure_logging(verbose=verbose)
+    settings = load_settings()
+
+    manifest_path = project / "target" / "manifest.json"
+    if not manifest_path.exists():
+        typer.echo(
+            f"No manifest at {manifest_path}. Run `dbt compile` in {project} first — "
+            "`dbt parse` is not enough, it leaves Jinja unexpanded.",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
+    snapshot = load_manifest(manifest_path, revision="HEAD", backend=Backend.MANIFEST)
+    grains = infer_grains(snapshot, dialect=settings.dialect)
+
+    proven = sum(1 for g in grains.values() if g.is_proven)
+    unknown = sum(1 for g in grains.values() if g.source is GrainSource.UNKNOWN)
+
+    for name, grain in sorted(grains.items()):
+        columns = ", ".join(grain.columns) or "—"
+        line = f"{name:32s} {grain.source.value:12s} ({columns})"
+        if explain and grain.note:
+            line += f"\n{'':32s} {grain.note}"
+        typer.echo(line)
+
+    typer.echo(
+        f"\n{len(grains)} model(s): {proven} proven, "
+        f"{len(grains) - proven - unknown} weak, {unknown} unknown."
+    )
+    if unknown:
+        typer.echo(
+            "Unknown grain escalates rather than being assumed safe. "
+            "Run with --execute to measure it instead of inferring."
+        )
+    raise typer.Exit(code=0)
+
+
+@app.command()
+def ask(
+    question: Annotated[str, typer.Argument(help="What to ask about a completed review.")],
+    run: Annotated[str, typer.Option("--run", help="Run id, or 'latest'.")] = "latest",
+    verbose: VerboseOpt = False,
+) -> None:
+    """Ask a grounded follow-up question about a completed review.
+
+    Answers come only from the persisted run artifact. A question the artifact cannot
+    answer gets a refusal, never an inference.
+    """
+    configure_logging(verbose=verbose)
+    log.info("ask.start", run=run, question=question)
+    raise typer.Exit(code=0)
+
+
+@app.command(name="eval")
+def eval_cmd(
+    project: ProjectOpt = Path("demo_project"),
+    mutations: Annotated[str, typer.Option("--mutations", help="Mutation set, or 'all'.")] = "all",
+    variants: Annotated[
+        str, typer.Option("--variants", help="Comma-separated: tested,testless.")
+    ] = "tested,testless",
+    verbose: VerboseOpt = False,
+) -> None:
+    """Run the mutation eval and report per-family precision and recall."""
+    configure_logging(verbose=verbose)
+    log.info("eval.start", project=str(project), mutations=mutations, variants=variants)
+    raise typer.Exit(code=0)
+
+
+def _gate_exit_code(findings: list[Finding], fail_on: str | None) -> int:
+    """Advisory by default: a review that blocks every merge stops being read.
+
+    Blocking is opt-in per severity, and only findings at or above that severity
+    fail the build.
+    """
+    if not fail_on:
+        return 0
+    order = [
+        Severity.CRITICAL,
+        Severity.HIGH,
+        Severity.MEDIUM,
+        Severity.LOW,
+        Severity.INFO,
+    ]
+    try:
+        threshold = order.index(Severity(fail_on))
+    except ValueError:
+        return 0
+
+    return int(any(order.index(f.severity) <= threshold for f in findings))
+
+
+if __name__ == "__main__":
+    app()

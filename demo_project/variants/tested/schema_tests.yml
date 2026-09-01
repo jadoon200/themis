@@ -1,0 +1,41 @@
+version: 2
+
+# The tested variant, used only by the eval harness. Copied over models/schema.yml to
+# measure the recall gap between grain read from declared tests and grain derived from
+# structure. The target project looks like the testless default, not this.
+
+models:
+  - name: stg_fx_rates
+    tests:
+      - unique:
+          column_name: "currency_code || '-' || cast(rate_date as varchar)"
+    columns:
+      - name: currency_code
+        tests: [not_null]
+      - name: rate_date
+        tests: [not_null]
+
+  - name: stg_accounts
+    columns:
+      - name: account_id
+        tests: [unique, not_null]
+
+  - name: stg_contracts
+    columns:
+      - name: contract_id
+        tests: [unique, not_null]
+
+  - name: stg_gl_entries
+    columns:
+      - name: entry_id
+        tests: [unique, not_null]
+
+  - name: int_gl_entries_converted
+    columns:
+      - name: entry_id
+        tests: [unique, not_null]
+
+  - name: fct_revenue
+    columns:
+      - name: entry_id
+        tests: [unique, not_null]

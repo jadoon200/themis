@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+
+# Environment
+.env
+
+# dbt
+target/
+dbt_packages/
+logs/
+*.duckdb
+*.duckdb.wal
+
+# Data and run artifacts (large / regenerable — stay out of git)
+data/
+.themis/
+
+# Real work artifacts NEVER reach GitHub — synthetic demo project only
+local/
+
+# Node / frontend
+node_modules/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+
+# Local agent/editor config — keep OUT of the repo (local copies are fine)
+.claude/
+CLAUDE.md
+AGENTS.md
+
+# dbt generates this per-user
+.user.yml

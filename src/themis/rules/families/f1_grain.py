@@ -1,0 +1,323 @@
+"""F1 — grain and fan-out. The silent-wrong-number family.
+
+These are the rules the whole design exists for. A join whose right-hand side is not
+unique on the join key multiplies every row it matches, and in a ledger that means
+revenue is overstated with nothing about the output looking wrong. No error, no failed
+test, no obviously odd number — just a total that is too big.
+
+Everything here is grounded on the derived grain lattice rather than declared tests,
+because the target project declares none.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+
+from sqlglot import exp
+
+from themis.analyze.parse import ParseError, find_joins, join_kind, parse_sql
+from themis.models import (
+    Backend,
+    Confidence,
+    Evidence,
+    Finding,
+    GrainSource,
+    Severity,
+)
+from themis.rules.base import Rule, RuleContext
+
+FAMILY = "F1"
+
+
+def _join_key_columns(join: exp.Join) -> tuple[str, ...]:
+    """Column names appearing in a join's ON condition."""
+    on = join.args.get("on")
+    if on is None:
+        return ()
+    return tuple(dict.fromkeys(col.name for col in on.find_all(exp.Column)))
+
+
+def _joined_relation_name(join: exp.Join) -> str | None:
+    """The table or CTE on the right-hand side of a join."""
+    target = join.this
+    if isinstance(target, exp.Table):
+        return target.name
+    if isinstance(target, exp.Alias):
+        return target.alias
+    return None
+
+
+def _severity_for(ctx: RuleContext, base: Severity) -> Severity:
+    """Escalate when the change reaches a regulatory figure or an exposure."""
+    if base is Severity.CRITICAL:
+        return base
+    if ctx.is_governed or ctx.reaches_exposure:
+        return Severity.CRITICAL if base is Severity.HIGH else Severity.HIGH
+    return base
+
+
+@dataclass
+class JoinFanOutRule(Rule):
+    """A join was added whose right-hand key is not proven unique.
+
+    This is the rule that catches revenue being multiplied. It fires on *possible*
+    fan-out rather than certain fan-out, because certainty needs either a declared
+    test (which does not exist here) or an actual count (which is Stage 3's job).
+    Stage 3 upgrades the survivors to MEASURED and settles them.
+    """
+
+    rule_id: str = field(init=False, default="F1001")
+    family: str = field(init=False, default=FAMILY)
+    severity: Severity = field(init=False, default=Severity.HIGH)
+    requires_backend: Backend = field(init=False, default=Backend.MANIFEST)
+
+    def check(self, ctx: RuleContext) -> list[Finding]:
+        if ctx.after is None or ctx.after.analysable_sql is None:
+            return []
+        try:
+            after_tree = parse_sql(ctx.after.analysable_sql, dialect=ctx.dialect)
+        except ParseError:
+            return []
+
+        before_joins: set[tuple[str, tuple[str, ...]]] = set()
+        if ctx.before is not None and ctx.before.analysable_sql is not None:
+            try:
+                before_tree = parse_sql(ctx.before.analysable_sql, dialect=ctx.dialect)
+                before_joins = {
+                    (_joined_relation_name(j) or "", _join_key_columns(j))
+                    for j in find_joins(before_tree)
+                }
+            except ParseError:
+                before_joins = set()
+
+        findings: list[Finding] = []
+        for join in find_joins(after_tree):
+            relation = _joined_relation_name(join)
+            keys = _join_key_columns(join)
+            if relation is None or not keys:
+                continue
+            if (relation, keys) in before_joins:
+                continue  # unchanged join; not this PR's problem
+
+            grain = ctx.grains.get(relation)
+            if grain is not None and grain.is_proven and set(grain.columns) <= set(keys):
+                continue  # the join key covers a proven unique key: safe
+
+            findings.append(self._finding(ctx, join, relation, keys, grain))
+        return findings
+
+    def _finding(
+        self,
+        ctx: RuleContext,
+        join: exp.Join,
+        relation: str,
+        keys: tuple[str, ...],
+        grain: object,
+    ) -> Finding:
+        from themis.models import Grain  # local import keeps the type annotation honest
+
+        assert ctx.after is not None
+        known = isinstance(grain, Grain) and grain.source is not GrainSource.UNKNOWN
+        if known:
+            assert isinstance(grain, Grain)
+            detail = (
+                f"{relation} is unique on ({', '.join(grain.columns)}) "
+                f"[{grain.source.value}], which the join key ({', '.join(keys)}) "
+                "does not cover"
+            )
+            confidence = Confidence.LIKELY
+        else:
+            detail = f"the grain of {relation} could not be derived"
+            confidence = Confidence.POSSIBLE
+
+        return Finding(
+            rule_id=self.rule_id,
+            family=self.family,
+            title=f"New join to {relation} may fan out",
+            severity=_severity_for(ctx, self.severity),
+            confidence=confidence,
+            evidence=Evidence(
+                model_name=ctx.model_name,
+                file_path=ctx.after.file_path,
+                sql_after=join.sql(dialect=ctx.dialect),
+                note=detail,
+            ),
+            consequence=(
+                f"If {relation} has more than one row per ({', '.join(keys)}), every "
+                "matched row is duplicated and any amount summed downstream is "
+                "overstated. Nothing errors and no row looks malformed — the total is "
+                "simply too large."
+            ),
+            suggestion=(
+                f"Confirm the grain of {relation}. If it is not unique on "
+                f"({', '.join(keys)}), either add the missing key columns to the ON "
+                "clause or pre-aggregate before joining. Re-run with --execute to "
+                "measure the row count directly."
+            ),
+            blast_radius=ctx.blast_radius,
+        )
+
+
+@dataclass
+class JoinTypeChangedRule(Rule):
+    """A join's type changed — LEFT to INNER drops rows, INNER to LEFT introduces NULLs.
+
+    Both directions are wrong in different ways, and both are near-invisible in a text
+    diff when the surrounding query was reformatted in the same commit.
+    """
+
+    rule_id: str = field(init=False, default="F1002")
+    family: str = field(init=False, default=FAMILY)
+    severity: Severity = field(init=False, default=Severity.HIGH)
+
+    def check(self, ctx: RuleContext) -> list[Finding]:
+        if ctx.before is None or ctx.after is None:
+            return []
+        before_sql = ctx.before.analysable_sql
+        after_sql = ctx.after.analysable_sql
+        if before_sql is None or after_sql is None:
+            return []
+        try:
+            before_joins = {
+                _joined_relation_name(j) or "": join_kind(j)
+                for j in find_joins(parse_sql(before_sql, dialect=ctx.dialect))
+            }
+            after_joins = {
+                _joined_relation_name(j) or "": join_kind(j)
+                for j in find_joins(parse_sql(after_sql, dialect=ctx.dialect))
+            }
+        except ParseError:
+            return []
+
+        findings: list[Finding] = []
+        for relation, after_kind in after_joins.items():
+            before_kind = before_joins.get(relation)
+            if before_kind is None or before_kind == after_kind:
+                continue
+            findings.append(
+                Finding(
+                    rule_id=self.rule_id,
+                    family=self.family,
+                    title=f"Join to {relation} changed from {before_kind} to {after_kind}",
+                    severity=_severity_for(ctx, self.severity),
+                    confidence=Confidence.PROVEN,
+                    evidence=Evidence(
+                        model_name=ctx.model_name,
+                        file_path=ctx.after.file_path,
+                        note=f"{before_kind} -> {after_kind} on {relation}",
+                    ),
+                    consequence=self._consequence(before_kind, after_kind, relation),
+                    suggestion=(
+                        "Confirm this was intended. Run with --execute to see the "
+                        "row-count and SUM impact rather than reasoning about it."
+                    ),
+                    blast_radius=ctx.blast_radius,
+                )
+            )
+        return findings
+
+    @staticmethod
+    def _consequence(before: str, after: str, relation: str) -> str:
+        if "LEFT" in before and after == "INNER":
+            return (
+                f"Rows with no match in {relation} are now dropped entirely. Revenue "
+                "belonging to unmatched entries silently disappears from the total, "
+                "and the result still looks like a complete dataset."
+            )
+        if before == "INNER" and "LEFT" in after:
+            return (
+                f"Unmatched rows from {relation} now arrive as NULLs. Any SUM over "
+                "them skips those rows, and any arithmetic involving them yields NULL "
+                "rather than an error."
+            )
+        return (
+            f"Join semantics against {relation} changed, so both the row set and any "
+            "aggregate computed over it change with it."
+        )
+
+
+@dataclass
+class GroupByGrainChangedRule(Rule):
+    """The GROUP BY key set changed, so the model's output grain changed.
+
+    Everything downstream was written against the old grain. A mart that was one row
+    per (period, entity) becoming one row per (period, entity, currency) does not
+    break — it just starts answering a different question.
+    """
+
+    rule_id: str = field(init=False, default="F1003")
+    family: str = field(init=False, default=FAMILY)
+    severity: Severity = field(init=False, default=Severity.HIGH)
+
+    def check(self, ctx: RuleContext) -> list[Finding]:
+        if ctx.before is None or ctx.after is None:
+            return []
+        before_sql = ctx.before.analysable_sql
+        after_sql = ctx.after.analysable_sql
+        if before_sql is None or after_sql is None:
+            return []
+        try:
+            before_keys = self._group_keys(parse_sql(before_sql, dialect=ctx.dialect))
+            after_keys = self._group_keys(parse_sql(after_sql, dialect=ctx.dialect))
+        except ParseError:
+            return []
+
+        if before_keys == after_keys or (not before_keys and not after_keys):
+            return []
+
+        added = tuple(sorted(set(after_keys) - set(before_keys)))
+        removed = tuple(sorted(set(before_keys) - set(after_keys)))
+        if not added and not removed:
+            return []
+
+        return [
+            Finding(
+                rule_id=self.rule_id,
+                family=self.family,
+                title="Output grain changed — GROUP BY key set differs",
+                severity=_severity_for(ctx, self.severity),
+                confidence=Confidence.PROVEN,
+                evidence=Evidence(
+                    model_name=ctx.model_name,
+                    file_path=ctx.after.file_path,
+                    note=(f"grain ({', '.join(before_keys)}) -> ({', '.join(after_keys)})"),
+                ),
+                consequence=(
+                    (f"Added to the grain: {', '.join(added)}. " if added else "")
+                    + (f"Removed from the grain: {', '.join(removed)}. " if removed else "")
+                    + "Every downstream model was written against the previous grain. "
+                    "Removing a key aggregates across a dimension that used to be "
+                    "separate; adding one splits rows that used to be combined. Either "
+                    "way, downstream totals change without any of them failing."
+                ),
+                suggestion=(
+                    f"Check the {len(ctx.blast_radius)} downstream model(s) for "
+                    "assumptions about the old grain, particularly any further "
+                    "aggregation or joins on the previous key."
+                ),
+                blast_radius=ctx.blast_radius,
+            )
+        ]
+
+    @staticmethod
+    def _group_keys(tree: exp.Expression) -> tuple[str, ...]:
+        select = tree.find(exp.Select)
+        if select is None:
+            return ()
+        group = select.args.get("group")
+        if not isinstance(group, exp.Group):
+            return ()
+        return tuple(
+            sorted(
+                col.name
+                for expression in group.expressions
+                for col in expression.find_all(exp.Column)
+            )
+        )
+
+
+RULES: tuple[Rule, ...] = (
+    JoinFanOutRule(),
+    JoinTypeChangedRule(),
+    GroupByGrainChangedRule(),
+)

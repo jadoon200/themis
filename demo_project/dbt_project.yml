@@ -1,0 +1,31 @@
+name: themis_demo
+version: "1.0.0"
+config-version: 2
+profile: themis_demo
+
+model-paths: ["models"]
+seed-paths: ["seeds"]
+macro-paths: ["macros"]
+target-path: "target"
+clean-targets: ["target", "dbt_packages"]
+
+# Trino-compatible SQL throughout; DuckDB only has to execute it. THEMIS always parses
+# with the trino dialect regardless of what runs the query.
+models:
+  themis_demo:
+    staging:
+      +materialized: view
+    intermediate:
+      +materialized: view
+    marts:
+      +materialized: table
+
+seeds:
+  themis_demo:
+    +quote_columns: false
+    raw_gl_entries:
+      +column_types:
+        amount_minor: BIGINT
+    raw_fx_rates:
+      +column_types:
+        rate: DECIMAL(18,8)

@@ -1,0 +1,9 @@
+account_id,account_code,account_name,account_type,entity_code,is_intercompany
+A001,4000,Revenue - Software Licences,revenue,SG01,false
+A002,4010,Revenue - Support Services,revenue,SG01,false
+A003,4020,Revenue - Professional Services,revenue,SG01,false
+A004,4000,Revenue - Software Licences,revenue,UK01,false
+A005,4010,Revenue - Support Services,revenue,UK01,false
+A006,5000,Cost of Revenue,expense,SG01,false
+A007,4900,Intercompany Revenue,revenue,SG01,true
+A008,4000,Revenue - Software Licences,revenue,US01,false
