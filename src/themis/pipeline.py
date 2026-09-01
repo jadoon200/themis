@@ -100,8 +100,7 @@ def review(
     findings, skipped = run_rules(contexts)
 
     macro_affected = {
-        macro: acquired.after.models_using_macro(macro)
-        for macro in acquired.changed_macros
+        macro: acquired.after.models_using_macro(macro) for macro in acquired.changed_macros
     }
 
     log.info(

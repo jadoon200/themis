@@ -90,9 +90,7 @@ def test_unfiltered_row_number_does_not_prove_grain() -> None:
     Treating it as if it did would assert a uniqueness the rows do not have — the
     exact failure that lets a fan-out through unflagged.
     """
-    source, _ = _grain_of(
-        "select *, row_number() over (partition by k order by ts) as rn from t"
-    )
+    source, _ = _grain_of("select *, row_number() over (partition by k order by ts) as rn from t")
     assert source is GrainSource.UNKNOWN
 
 

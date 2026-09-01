@@ -7,12 +7,11 @@ the real finding underneath goes unread too.
 
 from __future__ import annotations
 
-from themis.analyze.parse import join_kind, semantic_diff
-from themis.models import Backend
-from themis.snapshot import MacroNode, ModelNode, ProjectSnapshot
 from sqlglot import exp
 
-from themis.analyze.parse import find_joins, parse_sql
+from themis.analyze.parse import find_joins, join_kind, parse_sql, semantic_diff
+from themis.models import Backend
+from themis.snapshot import MacroNode, ModelNode, ProjectSnapshot
 
 BASE = "select a, b from t inner join u on t.id = u.id where a > 0"
 

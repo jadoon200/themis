@@ -15,7 +15,13 @@ from dataclasses import dataclass, field
 
 from sqlglot import exp
 
-from themis.analyze.parse import ParseError, find_joins, join_kind, parse_sql
+from themis.analyze.parse import (
+    ParseError,
+    find_joins,
+    join_kind,
+    parse_sql,
+    resolve_relation,
+)
 from themis.models import (
     Backend,
     Confidence,
@@ -92,13 +98,15 @@ class JoinFanOutRule(Rule):
 
         findings: list[Finding] = []
         for join in find_joins(after_tree):
-            relation = _joined_relation_name(join)
+            alias = _joined_relation_name(join)
             keys = _join_key_columns(join)
-            if relation is None or not keys:
+            if alias is None or not keys:
                 continue
-            if (relation, keys) in before_joins:
+            if (alias, keys) in before_joins:
                 continue  # unchanged join; not this PR's problem
 
+            # The join names a CTE; the grain is recorded against the model it reads.
+            relation = resolve_relation(after_tree, alias)
             grain = ctx.grains.get(relation)
             if grain is not None and grain.is_proven and set(grain.columns) <= set(keys):
                 continue  # the join key covers a proven unique key: safe
@@ -114,21 +122,32 @@ class JoinFanOutRule(Rule):
         keys: tuple[str, ...],
         grain: object,
     ) -> Finding:
-        from themis.models import Grain  # local import keeps the type annotation honest
+        from themis.models import Grain  # local import keeps the annotation honest
 
         assert ctx.after is not None
-        known = isinstance(grain, Grain) and grain.source is not GrainSource.UNKNOWN
-        if known:
-            assert isinstance(grain, Grain)
+        if not isinstance(grain, Grain) or grain.source is GrainSource.UNKNOWN:
+            detail = (
+                f"the grain of {relation} could not be derived, so whether this join "
+                "multiplies rows is unknown"
+            )
+            confidence = Confidence.POSSIBLE
+        elif not grain.is_proven:
+            # A weak grain must never read as a confident claim. It is exactly the
+            # case where the derived key is most likely to be incomplete -- and an
+            # incomplete key is what a fan-out hides behind.
+            detail = (
+                f"{relation} looks unique on ({', '.join(grain.columns)}), but that is "
+                f"{grain.source.value}, not proven — if the real key has more columns, "
+                "this join multiplies rows"
+            )
+            confidence = Confidence.POSSIBLE
+        else:
             detail = (
                 f"{relation} is unique on ({', '.join(grain.columns)}) "
                 f"[{grain.source.value}], which the join key ({', '.join(keys)}) "
                 "does not cover"
             )
             confidence = Confidence.LIKELY
-        else:
-            detail = f"the grain of {relation} could not be derived"
-            confidence = Confidence.POSSIBLE
 
         return Finding(
             rule_id=self.rule_id,

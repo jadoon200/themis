@@ -151,3 +151,34 @@ def select_joins(select: exp.Select) -> list[exp.Join]:
 def find_ctes(tree: exp.Expression) -> dict[str, exp.Expression]:
     """CTE name to its body, for tracing where a column actually comes from."""
     return {cte.alias_or_name: cte.this for cte in tree.find_all(exp.CTE) if cte.alias_or_name}
+
+
+def resolve_relation(tree: exp.Expression, name: str, *, depth: int = 10) -> str:
+    """Follow a CTE alias down to the model it actually reads.
+
+    dbt models almost always wrap each ``ref()`` in a named CTE, so the relation a
+    join names is nearly never the model name. Without this the grain lookup misses
+    every time and every join reports an underivable grain — which reads as a tool
+    that knows nothing rather than one that checked.
+
+    Returns the input unchanged when it is already a base table, or when the CTE does
+    something (a join, a set operation) that means it no longer corresponds to a
+    single upstream model.
+    """
+    ctes = find_ctes(tree)
+    current = name
+    for _ in range(depth):
+        body = ctes.get(current)
+        if body is None:
+            return current
+        select = body if isinstance(body, exp.Select) else body.find(exp.Select)
+        if not isinstance(select, exp.Select) or select_joins(select):
+            return current
+        source = select_from(select)
+        if source is None or not isinstance(source.this, exp.Table):
+            return current
+        next_name = source.this.name
+        if next_name == current:
+            return current
+        current = next_name
+    return current

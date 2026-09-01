@@ -8,7 +8,10 @@ enforced in exactly one place.
 
 from __future__ import annotations
 
+import os
+import shutil
 import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -38,6 +41,25 @@ class DbtResult:
     manifest_path: Path | None = None
 
 
+def dbt_executable() -> str:
+    """Locate the dbt that matches the installed dbt-core.
+
+    Preferring the interpreter's own bin directory over PATH is not just robustness:
+    a different dbt on PATH could resolve a different adapter or profile, and the
+    manifest THEMIS analyses would then not be the one the project actually builds.
+    """
+    candidate = Path(sys.executable).parent / "dbt"
+    if candidate.exists():
+        return str(candidate)
+    found = shutil.which("dbt")
+    if found:
+        return found
+    raise DbtError(
+        "dbt executable not found. Install it into this environment with "
+        "`uv pip install dbt-core dbt-duckdb`."
+    )
+
+
 def assert_target_allowed(target: str, allowed: tuple[str, ...]) -> None:
     """Refuse anything outside the allowlist, before dbt is invoked."""
     if target not in allowed:
@@ -62,7 +84,7 @@ def run_dbt(
     assert_target_allowed(target, allowed_targets)
 
     args = [
-        "dbt",
+        dbt_executable(),
         *command,
         "--project-dir",
         str(project_dir),
@@ -71,8 +93,6 @@ def run_dbt(
         "--target",
         target,
     ]
-    import os
-
     env = {**os.environ, **(env_overrides or {})}
     log.debug("dbt.run", command=" ".join(command), project=str(project_dir), target=target)
     try:
@@ -86,6 +106,8 @@ def run_dbt(
         )
     except subprocess.TimeoutExpired as exc:
         raise DbtError(f"dbt {' '.join(command)} timed out after {timeout_s}s") from exc
+    except OSError as exc:
+        raise DbtError(f"could not run dbt: {exc}") from exc
 
     manifest = project_dir / "target" / "manifest.json"
     result = DbtResult(
