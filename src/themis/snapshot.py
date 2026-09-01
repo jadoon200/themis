@@ -13,6 +13,15 @@ from pydantic import BaseModel, Field
 from themis.models import Backend
 
 
+def _normalise_path(path: str) -> str:
+    return path.replace("\\", "/").lstrip("./")
+
+
+def _same_file(a: str, b: str) -> bool:
+    """Whether two paths name the same file, allowing either to carry a prefix."""
+    return a == b or a.endswith("/" + b) or b.endswith("/" + a)
+
+
 class ColumnSchema(BaseModel):
     model_config = {"frozen": True}
 
@@ -168,12 +177,15 @@ class ProjectSnapshot(BaseModel):
         its filename finds only the macro that happens to share the name — and edits
         to every other macro in that file route to the wrong models, or to none.
         """
-        suffix = file_path.replace("\\", "/").lstrip("./")
+        # git reports paths from the repository root ("demo_project/macros/money.sql")
+        # while the manifest stores them relative to the project ("macros/money.sql").
+        # Comparing in one direction only silently matches nothing.
+        wanted = _normalise_path(file_path)
         return tuple(
             sorted(
                 macro.name
                 for macro in self.macros.values()
-                if macro.file_path and macro.file_path.replace("\\", "/").endswith(suffix)
+                if macro.file_path and _same_file(wanted, _normalise_path(macro.file_path))
             )
         )
 

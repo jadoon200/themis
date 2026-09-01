@@ -167,3 +167,12 @@ def test_changing_a_macro_file_reaches_models_using_any_macro_in_it() -> None:
 def test_an_unrelated_macro_file_reaches_nothing() -> None:
     snapshot = _snapshot_with_macros()
     assert snapshot.models_using_macro_file("macros/other.sql") == ()
+
+
+def test_macro_file_matches_whether_or_not_the_path_carries_a_prefix() -> None:
+    """git reports paths from the repository root; the manifest stores them relative
+    to the project. Comparing in one direction only matches nothing."""
+    snapshot = _snapshot_with_macros()
+    assert snapshot.macros_in_file("macros/money.sql")
+    assert snapshot.macros_in_file("demo_project/macros/money.sql")
+    assert snapshot.macros_in_file("./macros/money.sql")
