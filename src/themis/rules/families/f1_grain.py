@@ -6,7 +6,8 @@ revenue is overstated with nothing about the output looking wrong. No error, no 
 test, no obviously odd number — just a total that is too big.
 
 Everything here is grounded on the derived grain lattice rather than declared tests,
-because the target project declares none.
+because a project that declares none still needs these checks — and those are exactly
+the projects where a fan-out is most likely to reach production unnoticed.
 """
 
 from __future__ import annotations

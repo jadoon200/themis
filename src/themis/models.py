@@ -66,8 +66,8 @@ class Backend(StrEnum):
 class GrainSource(StrEnum):
     """Where a model's grain came from, in descending confidence.
 
-    The work project declares no tests, so ``DECLARED_TEST`` is expected to be rare and
-    the structural sources carry the load.
+    Where a project declares no tests, ``DECLARED_TEST`` never fires and the
+    structural sources carry the whole load.
     """
 
     MEASURED = "measured"  # counted it: count(*) vs count(distinct k)

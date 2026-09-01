@@ -1,6 +1,6 @@
 """Grain derivation — the component the fan-out family rests on.
 
-The target project declares no uniqueness tests, so every one of these patterns is
+Where a project declares no uniqueness tests, every one of these patterns is
 load-bearing: whatever they fail to derive becomes an `unknown` that escalates to a
 human, and whatever they derive *wrongly* becomes a confidently missed fan-out.
 """

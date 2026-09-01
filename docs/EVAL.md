@@ -9,8 +9,9 @@ is measurable today.
 
 ## Grain derivation coverage
 
-The target project declares no uniqueness tests, so grain is derived from the SQL. On
-the demo project (9 models, 4 seeds):
+THEMIS is built for projects that declare no uniqueness tests, so grain is derived
+from the SQL rather than read. On the demo project (9 models, 4 seeds), which is
+deliberately test-free for this reason:
 
 | Source | Models | |
 |---|---|---|

@@ -111,8 +111,9 @@ def grain(
 ) -> None:
     """Show the derived grain for every model, and how it was derived.
 
-    Verifiable independently of the rules, which matters because the target project
-    declares no uniqueness tests and the whole fan-out family rests on this.
+    Verifiable independently of the rules, which matters because the fan-out family
+    rests entirely on this and many projects declare no uniqueness tests to check it
+    against.
     """
     from themis.analyze.grain import infer_grains
 

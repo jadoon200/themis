@@ -84,8 +84,8 @@ def _model_from_node(unique_id: str, node: dict[str, Any]) -> ModelNode:
 def _tests_from_nodes(nodes: dict[str, Any]) -> tuple[DeclaredTest, ...]:
     """Extract declared tests.
 
-    Expected to come back near-empty against the target project. That is the whole
-    reason grain is derived rather than read, and the emptiness is itself reported.
+    Frequently comes back near-empty. That is the whole reason grain is derived
+    rather than read, and the emptiness is itself reported.
     """
     tests: list[DeclaredTest] = []
     for unique_id, node in nodes.items():

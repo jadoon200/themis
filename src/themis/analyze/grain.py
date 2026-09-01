@@ -1,7 +1,7 @@
 """Derive each model's grain — its unique key — without relying on declared tests.
 
-The target project declares no uniqueness tests, so reading grain off ``schema.yml``
-is not an option. Everything downstream that matters (does this join fan out? does
+Many projects declare no uniqueness tests, so reading grain off ``schema.yml`` is
+not an option. Everything downstream that matters (does this join fan out? does
 this SUM double-count?) needs a grain to reason against, so THEMIS derives one.
 
 Five sources, in descending confidence:

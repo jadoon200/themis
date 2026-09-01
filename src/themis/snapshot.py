@@ -24,9 +24,9 @@ class ColumnSchema(BaseModel):
 class DeclaredTest(BaseModel):
     """A test declared in schema.yml.
 
-    Expected to be near-empty on the target project — which is precisely why grain is
-    derived rather than read. Kept because the demo project has a tested variant, and
-    because tests THEMIS suggests get validated through this same shape.
+    Frequently near-empty in practice — which is precisely why grain is derived
+    rather than read. Kept because the demo project has a tested variant, and because
+    tests THEMIS suggests get validated through this same shape.
     """
 
     model_config = {"frozen": True}
