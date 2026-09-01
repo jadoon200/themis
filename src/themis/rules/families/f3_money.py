@@ -236,4 +236,132 @@ class DecimalScaleReducedRule(Rule):
         return findings
 
 
-RULES: tuple[Rule, ...] = (MoneyAsFloatRule(), DecimalScaleReducedRule())
+def _sign_assigning_cases(sql: str, dialect: str) -> dict[str, str]:
+    """CASE expressions that assign opposite signs to their branches.
+
+    A ledger encodes debit and credit as a sign, and that encoding is almost always a
+    CASE: one branch positive, the other negated. Flipping which side is which inverts
+    every amount in the model, and the diff is a single changed string literal.
+
+    Keyed by the branch outcomes so a changed *condition* is visible while a reordered
+    or reformatted CASE is not.
+    """
+    try:
+        tree = parse_sql(sql, dialect=dialect)
+    except ParseError:
+        return {}
+
+    found: dict[str, str] = {}
+    for case in tree.find_all(exp.Case):
+        rendered = case.sql(dialect=dialect)
+        if not _has_opposing_signs(case):
+            continue
+        columns = [c.name for c in case.find_all(exp.Column)]
+        if not any(_is_monetary(name) for name in columns):
+            continue
+        # The key is the branch shape; the value is the condition. Same shape with a
+        # different condition means the sign convention moved.
+        shape = "|".join(
+            branch.args.get("true").sql(dialect=dialect)
+            for branch in case.args.get("ifs") or []
+            if branch.args.get("true") is not None
+        )
+        conditions = "|".join(
+            branch.this.sql(dialect=dialect)
+            for branch in case.args.get("ifs") or []
+            if branch.this is not None
+        )
+        found[shape or rendered] = conditions
+    return found
+
+
+def _has_opposing_signs(case: exp.Case) -> bool:
+    """Whether a CASE has both a negated and a non-negated numeric outcome."""
+    outcomes: list[exp.Expression] = []
+    for branch in case.args.get("ifs") or []:
+        value = branch.args.get("true")
+        if value is not None:
+            outcomes.append(value)
+    default = case.args.get("default")
+    if default is not None:
+        outcomes.append(default)
+    if len(outcomes) < 2:
+        return False
+
+    def negated(node: exp.Expression) -> bool:
+        if isinstance(node, exp.Neg):
+            return True
+        # `-1 * x` is the same intent written differently.
+        if isinstance(node, exp.Mul):
+            for side in (node.this, node.expression):
+                if isinstance(side, exp.Neg):
+                    return True
+                if isinstance(side, exp.Literal) and side.name.startswith("-"):
+                    return True
+        return False
+
+    flags = [negated(o) for o in outcomes]
+    return any(flags) and not all(flags)
+
+
+@dataclass
+class SignConventionChangedRule(Rule):
+    """The condition deciding a monetary sign changed — every amount inverts."""
+
+    rule_id: str = field(init=False, default="F3003")
+    family: str = field(init=False, default=FAMILY)
+    severity: Severity = field(init=False, default=Severity.CRITICAL)
+
+    def check(self, ctx: RuleContext) -> list[Finding]:
+        if ctx.before is None or ctx.after is None:
+            return []
+        before_sql = ctx.before.analysable_sql
+        after_sql = ctx.after.analysable_sql
+        if before_sql is None or after_sql is None:
+            return []
+
+        before = _sign_assigning_cases(before_sql, ctx.dialect)
+        after = _sign_assigning_cases(after_sql, ctx.dialect)
+
+        findings: list[Finding] = []
+        for shape, condition in sorted(after.items()):
+            previous = before.get(shape)
+            if previous is None or previous == condition:
+                continue
+            via = f" via the `{ctx.via_macro}` macro" if ctx.via_macro else ""
+            findings.append(
+                Finding(
+                    rule_id=self.rule_id,
+                    family=self.family,
+                    title="Sign convention changed on a monetary expression",
+                    severity=self.severity,
+                    confidence=Confidence.PROVEN,
+                    evidence=Evidence(
+                        model_name=ctx.model_name,
+                        file_path=ctx.after.file_path,
+                        sql_after=condition[:300],
+                        note=f"branch condition {previous} -> {condition}{via}",
+                    ),
+                    consequence=(
+                        "The condition deciding which branch is negated has changed, "
+                        "so amounts that were positive are now negative and vice "
+                        "versa. Every total built on this column inverts, and a "
+                        "reversed figure of the right magnitude is far harder to spot "
+                        "than a missing one."
+                    ),
+                    suggestion=(
+                        "Confirm the debit/credit convention against the source "
+                        "ledger, and check any downstream model that nets or "
+                        "reconciles this column."
+                    ),
+                    blast_radius=ctx.blast_radius,
+                )
+            )
+        return findings
+
+
+RULES: tuple[Rule, ...] = (
+    MoneyAsFloatRule(),
+    DecimalScaleReducedRule(),
+    SignConventionChangedRule(),
+)

@@ -125,3 +125,55 @@ def test_increased_decimal_scale_is_not_flagged() -> None:
 def test_unchanged_scale_is_not_flagged() -> None:
     sql = "select cast(x as decimal(38,6)) as amount_usd from t"
     assert DecimalScaleReducedRule().check(_ctx(sql, sql)) == []
+
+
+# --- sign convention ----------------------------------------------------------
+#
+# A reversed figure of the right magnitude is far harder to spot than a missing one,
+# and the diff that causes it is a single changed string literal.
+
+CREDIT_POSITIVE = "select case when t = 'credit' then amt else -1 * amt end as amount_usd from x"
+DEBIT_POSITIVE = "select case when t = 'debit' then amt else -1 * amt end as amount_usd from x"
+
+
+def test_flipped_sign_condition_is_critical() -> None:
+    from themis.rules.families.f3_money import SignConventionChangedRule
+
+    findings = SignConventionChangedRule().check(_ctx(CREDIT_POSITIVE, DEBIT_POSITIVE))
+    assert len(findings) == 1
+    assert findings[0].severity is Severity.CRITICAL
+    assert findings[0].confidence is Confidence.PROVEN
+
+
+def test_unchanged_sign_convention_is_silent() -> None:
+    from themis.rules.families.f3_money import SignConventionChangedRule
+
+    assert SignConventionChangedRule().check(_ctx(CREDIT_POSITIVE, CREDIT_POSITIVE)) == []
+
+
+def test_reformatted_case_is_not_a_sign_change() -> None:
+    from themis.rules.families.f3_money import SignConventionChangedRule
+
+    reformatted = (
+        "select\n  case\n    when t = 'credit' then amt\n"
+        "    else -1 * amt\n  end as amount_usd\nfrom x"
+    )
+    assert SignConventionChangedRule().check(_ctx(CREDIT_POSITIVE, reformatted)) == []
+
+
+def test_case_without_opposing_signs_is_ignored() -> None:
+    """A CASE that does not assign a sign is just a CASE."""
+    from themis.rules.families.f3_money import SignConventionChangedRule
+
+    before = "select case when t = 'a' then amt else amt end as amount_usd from x"
+    after = "select case when t = 'b' then amt else amt end as amount_usd from x"
+    assert SignConventionChangedRule().check(_ctx(before, after)) == []
+
+
+def test_non_monetary_case_is_ignored() -> None:
+    """Sign flips matter because the column is money; a flag column is not."""
+    from themis.rules.families.f3_money import SignConventionChangedRule
+
+    before = "select case when t = 'a' then offset else -1 * offset end as delta from x"
+    after = "select case when t = 'b' then offset else -1 * offset end as delta from x"
+    assert SignConventionChangedRule().check(_ctx(before, after)) == []
