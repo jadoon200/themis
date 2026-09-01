@@ -5,13 +5,13 @@ from __future__ import annotations
 from themis.logging import get_logger
 from themis.models import Finding
 from themis.rules.base import Rule, RuleContext, SkippedRule
-from themis.rules.families import f1_grain
+from themis.rules.families import f1_grain, f3_money
 
 log = get_logger(__name__)
 
 # Families register here as they land. Order is presentation-neutral: findings are
 # ranked by severity and blast radius at report time, never by declaration order.
-ALL_RULES: tuple[Rule, ...] = (*f1_grain.RULES,)
+ALL_RULES: tuple[Rule, ...] = (*f1_grain.RULES, *f3_money.RULES)
 
 
 def rules_by_family() -> dict[str, tuple[Rule, ...]]:

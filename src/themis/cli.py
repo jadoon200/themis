@@ -68,9 +68,8 @@ def review(
 
     result = run_review(project, base=base, head=head, settings=settings)
 
-    if result.macro_affected:
-        for macro, models in sorted(result.macro_affected.items()):
-            log.info("review.macro_impact", macro=macro, models=len(models))
+    for macro, models in sorted(result.macro_affected.items()):
+        log.info("review.macro_impact", macro=macro, models=len(models))
 
     typer.echo(
         markdown.render(
@@ -78,11 +77,10 @@ def review(
             skipped=result.skipped,
             models_reviewed=len(result.models_reviewed),
             executed=result.executed,
+            macro_affected=result.macro_affected,
+            degraded_reason=result.degraded_reason,
         )
     )
-
-    if result.degraded_reason:
-        log.warning("review.degraded", reason=result.degraded_reason)
 
     raise typer.Exit(code=_gate_exit_code(result.findings, settings.fail_on_severity))
 

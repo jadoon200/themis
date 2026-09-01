@@ -129,6 +129,8 @@ def render(
     skipped: list[SkippedRule] | None = None,
     models_reviewed: int = 0,
     executed: bool = False,
+    macro_affected: dict[str, tuple[str, ...]] | None = None,
+    degraded_reason: str | None = None,
 ) -> str:
     """Render the full report."""
     ranked = sorted(findings, key=rank_key)
@@ -137,6 +139,28 @@ def render(
         counts[finding.severity] += 1
 
     lines = ["## THEMIS review", ""]
+
+    # State the macro expansion before anything else. Otherwise a reviewer who changed
+    # one macro file sees findings against models they never touched and reasonably
+    # concludes the tool is confused.
+    for macro, models in sorted((macro_affected or {}).items()):
+        if not models:
+            continue
+        shown = ", ".join(f"`{m}`" for m in models[:10])
+        more = f" and {len(models) - 10} more" if len(models) > 10 else ""
+        lines += [
+            f"Macro `{macro}` changed — its compiled SQL reaches "
+            f"**{len(models)} model(s)**: {shown}{more}. Those models are reviewed here "
+            "even though their own files are unchanged.",
+            "",
+        ]
+
+    if degraded_reason:
+        lines += [
+            f"**Grounding is degraded:** {degraded_reason}. "
+            "Some checks below could not run — see the end of this report.",
+            "",
+        ]
 
     if not ranked:
         lines += [
