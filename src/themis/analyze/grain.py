@@ -151,6 +151,17 @@ def _projection_covers(select: exp.Select, columns: tuple[str, ...]) -> bool:
     return set(columns) <= projected
 
 
+def structural_grain(sql: str, dialect: str = "trino") -> tuple[tuple[str, ...], str] | None:
+    """Public entry point for structural derivation.
+
+    Rules that need to compare a model's grain across revisions must go through this
+    rather than re-reading the AST themselves. The CTE resolution below is the whole
+    reason it works on real dbt models, and a rule that reimplements the easy version
+    silently never fires.
+    """
+    return _structural_grain(sql, dialect)
+
+
 def _structural_grain(sql: str, dialect: str) -> tuple[tuple[str, ...], str] | None:
     """Derive grain from the model's SQL, resolving through pass-through CTEs."""
     try:

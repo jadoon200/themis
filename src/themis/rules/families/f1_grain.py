@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 
 from sqlglot import exp
 
+from themis.analyze.grain import structural_grain
 from themis.analyze.parse import (
     ParseError,
     find_joins,
@@ -261,11 +262,17 @@ class JoinTypeChangedRule(Rule):
 
 @dataclass
 class GroupByGrainChangedRule(Rule):
-    """The GROUP BY key set changed, so the model's output grain changed.
+    """The model's output grain changed.
 
     Everything downstream was written against the old grain. A mart that was one row
     per (period, entity) becoming one row per (period, entity, currency) does not
-    break — it just starts answering a different question.
+    break — it starts answering a different question, and every total computed from it
+    moves without anything failing.
+
+    Grain comes from the shared derivation, which resolves through pass-through CTEs.
+    Reading the outermost SELECT directly does not work on real dbt models, where the
+    GROUP BY is almost always inside the final CTE — a rule written that way never
+    fires at all.
     """
 
     rule_id: str = field(init=False, default="F1003")
@@ -279,13 +286,15 @@ class GroupByGrainChangedRule(Rule):
         after_sql = ctx.after.analysable_sql
         if before_sql is None or after_sql is None:
             return []
-        try:
-            before_keys = self._group_keys(parse_sql(before_sql, dialect=ctx.dialect))
-            after_keys = self._group_keys(parse_sql(after_sql, dialect=ctx.dialect))
-        except ParseError:
+
+        before_grain = structural_grain(before_sql, ctx.dialect)
+        after_grain = structural_grain(after_sql, ctx.dialect)
+        if before_grain is None or after_grain is None:
             return []
 
-        if before_keys == after_keys or (not before_keys and not after_keys):
+        before_keys, _ = before_grain
+        after_keys, _ = after_grain
+        if set(before_keys) == set(after_keys):
             return []
 
         added = tuple(sorted(set(after_keys) - set(before_keys)))
@@ -297,7 +306,7 @@ class GroupByGrainChangedRule(Rule):
             Finding(
                 rule_id=self.rule_id,
                 family=self.family,
-                title="Output grain changed — GROUP BY key set differs",
+                title="Output grain changed",
                 severity=_severity_for(ctx, self.severity),
                 confidence=Confidence.PROVEN,
                 evidence=Evidence(
@@ -311,32 +320,16 @@ class GroupByGrainChangedRule(Rule):
                     + "Every downstream model was written against the previous grain. "
                     "Removing a key aggregates across a dimension that used to be "
                     "separate; adding one splits rows that used to be combined. Either "
-                    "way, downstream totals change without any of them failing."
+                    "way downstream totals move without anything failing."
                 ),
                 suggestion=(
                     f"Check the {len(ctx.blast_radius)} downstream model(s) for "
-                    "assumptions about the old grain, particularly any further "
-                    "aggregation or joins on the previous key."
+                    "assumptions about the old grain, particularly further aggregation "
+                    "or joins on the previous key."
                 ),
                 blast_radius=ctx.blast_radius,
             )
         ]
-
-    @staticmethod
-    def _group_keys(tree: exp.Expression) -> tuple[str, ...]:
-        select = tree.find(exp.Select)
-        if select is None:
-            return ()
-        group = select.args.get("group")
-        if not isinstance(group, exp.Group):
-            return ()
-        return tuple(
-            sorted(
-                col.name
-                for expression in group.expressions
-                for col in expression.find_all(exp.Column)
-            )
-        )
 
 
 RULES: tuple[Rule, ...] = (

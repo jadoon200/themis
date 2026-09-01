@@ -227,16 +227,89 @@ def ask(
 @app.command(name="eval")
 def eval_cmd(
     project: ProjectOpt = Path("demo_project"),
-    mutations: Annotated[str, typer.Option("--mutations", help="Mutation set, or 'all'.")] = "all",
-    variants: Annotated[
-        str, typer.Option("--variants", help="Comma-separated: tested,testless.")
-    ] = "tested,testless",
+    mutations: Annotated[
+        str, typer.Option("--mutations", help="all, defects, controls, or a mutation id.")
+    ] = "all",
+    base: BaseOpt = "main",
     verbose: VerboseOpt = False,
 ) -> None:
-    """Run the mutation eval and report per-family precision and recall."""
+    """Run the mutation corpus and score the reviewer against it.
+
+    Ground truth comes from execution, not from how each mutation was labelled: both
+    revisions are built and the results compared, so a change that moves no number is
+    treated as behaviour-preserving whatever it was called.
+    """
+    from themis.eval.harness import DirtyRepositoryError, run_corpus
+    from themis.eval.mutations import Kind, select
+
     configure_logging(verbose=verbose)
-    log.info("eval.start", project=str(project), mutations=mutations, variants=variants)
-    raise typer.Exit(code=0)
+    settings = load_settings()
+
+    try:
+        corpus = select(mutations)
+    except KeyError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=2) from exc
+
+    try:
+        report = run_corpus(project, corpus, settings=settings, base_ref=base)
+    except DirtyRepositoryError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=2) from exc
+
+    typer.echo("")
+    header = f"{'mutation':34s} {'truth':10s} {'flagged':8s} {'families':12s} {'result':15s}"
+    typer.echo(header)
+    typer.echo("-" * len(header))
+    for outcome in report.outcomes:
+        if outcome.error:
+            typer.echo(
+                f"{outcome.mutation.id:34s} {'—':10s} {'—':8s} {'—':12s} {outcome.error[:40]}"
+            )
+            continue
+        truth = "defect" if outcome.changed_results else "no-change"
+        families = ",".join(outcome.families_fired) or "—"
+        flagged = "yes" if outcome.detected else "no"
+        typer.echo(
+            f"{outcome.mutation.id:34s} {truth:10s} {flagged:8s} "
+            f"{families:12s} {outcome.classification:15s}"
+        )
+
+    counts = report.counts()
+    typer.echo("")
+    typer.echo(
+        f"true positives {counts['true_positive']}   "
+        f"false negatives {counts['false_negative']}   "
+        f"false positives {counts['false_positive']}   "
+        f"true negatives {counts['true_negative']}"
+    )
+
+    def _pct(value: float | None) -> str:
+        return "n/a" if value is None else f"{value * 100:.0f}%"
+
+    typer.echo(
+        f"recall {_pct(report.recall)}   "
+        f"precision {_pct(report.precision)}   "
+        f"false-positive rate {_pct(report.false_positive_rate)}"
+    )
+
+    if report.mislabelled:
+        typer.echo("")
+        typer.echo("Declared kind disagrees with what execution measured:")
+        for outcome in report.mislabelled:
+            expected = (
+                "should change results" if outcome.mutation.kind is Kind.DEFECT else "should not"
+            )
+            typer.echo(f"  {outcome.mutation.id}: {expected}, but it did not")
+
+    if report.stale:
+        typer.echo("")
+        typer.echo("Could not be applied (the demo project has moved on):")
+        for outcome in report.stale:
+            typer.echo(f"  {outcome.mutation.id}: {outcome.error}")
+
+    # A stale corpus silently measuring nothing is the failure mode worth guarding.
+    raise typer.Exit(code=1 if report.stale else 0)
 
 
 def _gate_exit_code(findings: list[Finding], fail_on: str | None) -> int:
