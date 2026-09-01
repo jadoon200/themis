@@ -275,8 +275,47 @@ def _sign_assigning_cases(sql: str, dialect: str) -> dict[str, str]:
     return found
 
 
+def _is_minus_one(node: exp.Expression) -> bool:
+    """Whether a node is the literal -1, however the dialect spelled it."""
+    if isinstance(node, exp.Neg):
+        inner = node.this
+        return isinstance(inner, exp.Literal) and inner.name == "1"
+    return isinstance(node, exp.Literal) and node.name in ("-1", "-1.0")
+
+
+def _split_sign(node: exp.Expression) -> tuple[bool, str]:
+    """Separate a numeric expression into (is negated, the expression without its sign).
+
+    The negation is rarely the outermost node. ``-1 * amount / 100`` parses as a
+    division whose numerator carries the sign, so a check that only looks at the top
+    node concludes the branches are not opposing and the rule never fires — which is
+    exactly what happened on the real compiled SQL.
+    """
+    if isinstance(node, exp.Neg):
+        return True, node.this.sql(dialect="trino")
+
+    if isinstance(node, exp.Mul):
+        for side, other in ((node.this, node.expression), (node.expression, node.this)):
+            if _is_minus_one(side):
+                return True, other.sql(dialect="trino")
+
+    # Descend the left spine of an arithmetic chain, where the sign lives.
+    if isinstance(node, exp.Div | exp.Mul) and node.this is not None:
+        negated, inner = _split_sign(node.this)
+        if negated:
+            rebuilt = node.copy()
+            rebuilt.set("this", exp.maybe_parse(inner, dialect="trino"))
+            return True, rebuilt.sql(dialect="trino")
+
+    return False, node.sql(dialect="trino")
+
+
 def _has_opposing_signs(case: exp.Case) -> bool:
-    """Whether a CASE has both a negated and a non-negated numeric outcome."""
+    """Whether a CASE returns the same quantity with opposite signs across branches.
+
+    Requiring the *same* underlying expression is what separates a debit/credit sign
+    convention from a CASE that merely happens to contain a negative number.
+    """
     outcomes: list[exp.Expression] = []
     for branch in case.args.get("ifs") or []:
         value = branch.args.get("true")
@@ -288,20 +327,10 @@ def _has_opposing_signs(case: exp.Case) -> bool:
     if len(outcomes) < 2:
         return False
 
-    def negated(node: exp.Expression) -> bool:
-        if isinstance(node, exp.Neg):
-            return True
-        # `-1 * x` is the same intent written differently.
-        if isinstance(node, exp.Mul):
-            for side in (node.this, node.expression):
-                if isinstance(side, exp.Neg):
-                    return True
-                if isinstance(side, exp.Literal) and side.name.startswith("-"):
-                    return True
-        return False
-
-    flags = [negated(o) for o in outcomes]
-    return any(flags) and not all(flags)
+    split = [_split_sign(o) for o in outcomes]
+    bodies = {body for _, body in split}
+    flags = {negated for negated, _ in split}
+    return len(bodies) == 1 and flags == {True, False}
 
 
 @dataclass
