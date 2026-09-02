@@ -180,6 +180,14 @@ def review(
         targets = set(changed)
         for name in changed:
             targets.update(acquired.after.downstream_of(name))
+        # Two-pass building is only needed when something in the selection is
+        # incremental; for everything else the second pass is wasted time.
+        has_incremental = any(
+            (acquired.after.models.get(name) or acquired.before.models.get(name))
+            and (acquired.after.models.get(name) or acquired.before.models[name]).materialization
+            == "incremental"
+            for name in targets
+        )
         execution = execute(
             project_dir,
             base=base,
@@ -188,6 +196,7 @@ def review(
             settings=settings,
             target=target,
             grain_candidates=grains,
+            has_incremental=has_incremental,
         )
         if execution.ran:
             findings = attach_execution(findings, execution)

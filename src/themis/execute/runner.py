@@ -55,8 +55,23 @@ def _build(
     profiles_root: Path,
     anchor_dir: Path,
     label: str,
+    has_incremental: bool = False,
 ) -> str | None:
-    """Build a selection into a schema. Returns an error string, or None on success."""
+    """Build a selection into a schema. Returns an error string, or None on success.
+
+    Incremental models are built twice: once with ``--full-refresh`` and once without.
+
+    The first pass is what makes the comparison deterministic. Incremental models
+    append into whatever is already in the schema, so without it a run inherits state
+    from whatever ran before — which silently poisoned the corpus, making
+    behaviour-preserving refactors measure as defects.
+
+    The second pass is what makes incremental *logic* measurable. Under full refresh
+    ``is_incremental()`` is false and the guarded branch never runs, so a removed guard
+    or a narrowed lookback would show no difference at all. Running both passes
+    reproduces what production does: an established table, then an incremental load
+    onto it.
+    """
     profiles_dir = write_profile_for_schema(
         project_dir,
         profiles_root / label,
@@ -83,12 +98,21 @@ def _build(
     selection = [arg for model in models for arg in ("--select", f"+{model}")]
     result = run_dbt(
         project_dir,
-        ["build", *selection],
+        ["build", "--full-refresh", *selection],
         target=target,
         allowed_targets=settings.execute_allowed_targets,
         profiles_dir=profiles_dir,
         timeout_s=settings.execute_timeout_s,
     )
+    if result.ok and has_incremental:
+        result = run_dbt(
+            project_dir,
+            ["build", *selection],
+            target=target,
+            allowed_targets=settings.execute_allowed_targets,
+            profiles_dir=profiles_dir,
+            timeout_s=settings.execute_timeout_s,
+        )
     if not result.ok:
         # A partial build is still worth measuring — the models that did build give
         # real evidence, and the failure itself is a finding.
@@ -131,6 +155,7 @@ def execute(
     settings: Settings,
     target: str = "dev",
     grain_candidates: dict[str, Grain] | None = None,
+    has_incremental: bool = False,
 ) -> ExecutionResult:
     """Build base and head side by side, then diff the results.
 
@@ -167,6 +192,7 @@ def execute(
             profiles_root=profiles_root,
             anchor_dir=project_dir,
             label="head",
+            has_incremental=has_incremental,
         )
 
         base_error: str | None
@@ -181,6 +207,7 @@ def execute(
                 # Anchor to the real project, never the worktree.
                 anchor_dir=project_dir,
                 label="base",
+                has_incremental=has_incremental,
             )
 
     client = client_for_profile(profile, project_dir)
