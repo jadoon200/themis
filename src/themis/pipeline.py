@@ -18,6 +18,7 @@ from themis.models import Confidence, Finding, Grain, GrainSource
 from themis.review.supervisor import ReviewSummary
 from themis.rules.base import RuleContext, SkippedRule
 from themis.rules.registry import run_rules
+from themis.snapshot import ProjectSnapshot
 
 log = get_logger(__name__)
 
@@ -99,6 +100,82 @@ def attach_execution(findings: list[Finding], result: ExecutionResult) -> list[F
             )
         )
     return attached
+
+
+def unexplained_change_findings(
+    result: ExecutionResult,
+    findings: list[Finding],
+    snapshot: ProjectSnapshot,
+) -> list[Finding]:
+    """Report models whose results moved with no rule explaining why.
+
+    This is the safety net under the entire rule catalogue. Rules only catch defect
+    classes somebody anticipated, so a change outside all of them produces a clean
+    report — while the money moves. That happened here: inverting an FX conversion
+    shifted revenue by 1.8 million across six models and the review said "no findings",
+    because multiplying instead of dividing is arithmetically ordinary and
+    structurally invisible.
+
+    A measured change nobody can account for is exactly what a reviewer needs to see,
+    and it does not require knowing what kind of defect it is.
+    """
+    from themis.models import Evidence, Severity
+
+    explained = {f.evidence.model_name for f in findings}
+    out: list[Finding] = []
+
+    for name, delta in sorted(result.deltas.items()):
+        if not delta.is_material or name in explained or delta.build_error:
+            continue
+
+        moved = [
+            (column, before, after)
+            for column, (before, after) in sorted(delta.sum_deltas.items())
+            if before != after
+        ]
+        rows_moved = delta.row_delta not in (0, None)
+        if not moved and not rows_moved and not delta.columns_retyped:
+            continue
+
+        model = snapshot.models.get(name)
+        governed = bool(model and {"regulatory", "recon", "control"} & set(model.tags))
+        # A monetary total moving with no explanation is the worst case; a row count
+        # moving alone is more often a deliberate scope change.
+        severity = Severity.CRITICAL if (moved and governed) else Severity.HIGH
+
+        detail: list[str] = []
+        if rows_moved:
+            detail.append(f"rows {delta.rows_before:,} -> {delta.rows_after:,}")
+        for column, before, after in moved:
+            shift = ((after - before) / before * 100) if before else 0.0
+            detail.append(f"sum({column}) {before:,.2f} -> {after:,.2f} ({shift:+.1f}%)")
+
+        out.append(
+            Finding(
+                rule_id="X0001",
+                family="X",
+                title=f"`{name}` changed and no rule explains why",
+                severity=severity,
+                confidence=Confidence.MEASURED,
+                evidence=Evidence(model_name=name, note="; ".join(detail)),
+                consequence=(
+                    "Building both revisions produced different results for this "
+                    "model, and none of the checks accounts for the difference. That "
+                    "means the change is outside every defect class this tool knows "
+                    "about — so it has not been assessed, only observed. "
+                    + ("A reported figure moved. " if governed and moved else "")
+                    + "It needs a human explanation before merging."
+                ),
+                suggestion=(
+                    "Confirm the movement is intended and expected at this magnitude. "
+                    "If it is a defect class worth catching automatically, it is a "
+                    "candidate for a new rule."
+                ),
+                blast_radius=snapshot.downstream_of(name),
+                execution_delta=delta,
+            )
+        )
+    return out
 
 
 def measured_grain_findings(result: ExecutionResult, inferred: dict[str, Grain]) -> list[Finding]:
@@ -205,6 +282,8 @@ def review(
         if execution.ran:
             findings = attach_execution(findings, execution)
             findings.extend(measured_grain_findings(execution, grains))
+            # Runs after the others so "explained" reflects everything already found.
+            findings.extend(unexplained_change_findings(execution, findings, acquired.after))
             grains = {**grains, **execution.measured_grains}
         else:
             log.warning("execute.skipped", reason=execution.skipped_reason)
