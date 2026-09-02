@@ -15,15 +15,8 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 
-from themis.models import Backend, Finding, Grain, Severity
+from themis.models import Finding, Grain, Severity
 from themis.snapshot import ModelNode, ProjectSnapshot
-
-# Backends ordered by capability, so a rule can express a minimum.
-_BACKEND_RANK = {
-    Backend.RAW_FILES: 0,
-    Backend.MANIFEST: 1,
-    Backend.DUAL_MANIFEST: 2,
-}
 
 
 @dataclass
@@ -83,8 +76,9 @@ class Rule(ABC):
     rule_id: str = field(init=False)
     family: str = field(init=False)
     severity: Severity = field(init=False)
-    requires_backend: Backend = field(init=False, default=Backend.MANIFEST)
-    # Most rules read the macro-expanded SQL; the few that read configs do not.
+    # Most rules read the macro-expanded SQL; the few that read configs do not. This is
+    # the only grounding requirement that does real work — every snapshot comes from a
+    # compiled manifest, so there is no weaker backend left to gate against.
     requires_compiled_sql: bool = field(init=False, default=True)
 
     @abstractmethod
@@ -93,9 +87,6 @@ class Rule(ABC):
 
     def applies_to(self, ctx: RuleContext) -> bool:
         """Whether the available grounding supports running this rule at all."""
-        available = _BACKEND_RANK[ctx.after_snapshot.backend]
-        if available < _BACKEND_RANK[self.requires_backend]:
-            return False
         if self.requires_compiled_sql:
             model = ctx.after or ctx.before
             if model is None or model.analysable_sql is None:

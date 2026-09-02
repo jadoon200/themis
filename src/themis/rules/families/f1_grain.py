@@ -25,7 +25,6 @@ from themis.analyze.parse import (
     resolve_relation,
 )
 from themis.models import (
-    Backend,
     Confidence,
     Evidence,
     Finding,
@@ -77,7 +76,6 @@ class JoinFanOutRule(Rule):
     rule_id: str = field(init=False, default="F1001")
     family: str = field(init=False, default=FAMILY)
     severity: Severity = field(init=False, default=Severity.HIGH)
-    requires_backend: Backend = field(init=False, default=Backend.MANIFEST)
 
     def check(self, ctx: RuleContext) -> list[Finding]:
         if ctx.after is None or ctx.after.analysable_sql is None:

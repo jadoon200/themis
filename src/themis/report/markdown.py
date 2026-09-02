@@ -84,6 +84,14 @@ def _format_delta(finding: Finding) -> list[str]:
         lines.append(f"- Columns added: {', '.join(f'`{c}`' for c in delta.columns_added)}")
     for column, (before_type, after_type) in sorted(delta.columns_retyped.items()):
         lines.append(f"- `{column}` retyped: `{before_type}` → `{after_type}`")
+
+    # A column that starts or stops being NULL is the signature of a join-semantics
+    # change — an outer join tightened, or a COALESCE removed. The aggregate was
+    # already being computed; not showing it was pure waste.
+    for column, (was, now) in sorted(delta.null_rate_deltas.items()):
+        if abs(now - was) < 0.001:
+            continue
+        lines.append(f"- `{column}` null rate: {was:.1%} → {now:.1%}")
     return lines
 
 

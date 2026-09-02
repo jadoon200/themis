@@ -11,6 +11,10 @@ but never asking the question in the first place.
 and an 8B model asked one narrow question with a fixed output shape is a very different
 proposition from one asked to reason freely. Free-form output would also have to be
 parsed, and a parse failure mid-review is indistinguishable from a clean result.
+
+There is no recorded-response provider. One was written and never wired to anything,
+which left the model path untested in CI while looking as though it were covered. The
+gap is recorded in docs/EVAL.md instead.
 """
 
 from __future__ import annotations
@@ -112,54 +116,6 @@ class OllamaProvider:
                 seconds=time.monotonic() - started,
             ),
         )
-
-
-class RecordingProvider:
-    """Wraps a provider and records every exchange to a cassette.
-
-    Recorded exchanges are what make the LLM path testable in CI: a merge gate has to
-    be deterministic and replayable, and downloading a model into a CI runner to get a
-    non-deterministic answer would be neither.
-    """
-
-    def __init__(self, inner: Provider, cassette: dict[str, Any]) -> None:
-        self._inner = inner
-        self._cassette = cassette
-
-    def complete(self, *, system: str, prompt: str, schema: dict[str, Any], model: str) -> Response:
-        key = cassette_key(system=system, prompt=prompt, model=model)
-        response = self._inner.complete(system=system, prompt=prompt, schema=schema, model=model)
-        self._cassette[key] = response.payload
-        return response
-
-
-class CassetteProvider:
-    """Replays recorded exchanges. Used in CI, where no model is available."""
-
-    def __init__(self, cassette: dict[str, Any], *, strict: bool = True) -> None:
-        self._cassette = cassette
-        self._strict = strict
-
-    def complete(self, *, system: str, prompt: str, schema: dict[str, Any], model: str) -> Response:
-        key = cassette_key(system=system, prompt=prompt, model=model)
-        if key not in self._cassette:
-            if self._strict:
-                raise LLMError(
-                    f"no recorded response for this prompt ({key[:12]}). "
-                    "Re-record the cassette with THEMIS_LLM_RECORD=1."
-                )
-            # Abstaining is the safe default: a missing recording must not become a
-            # confident verdict.
-            return Response(payload={"verdict": "uncertain", "rationale": "no recording"})
-        return Response(payload=self._cassette[key], usage=Usage(calls=1))
-
-
-def cassette_key(*, system: str, prompt: str, model: str) -> str:
-    """A stable key for one exchange."""
-    import hashlib
-
-    payload = "\x1f".join((model, system, prompt))
-    return hashlib.sha256(payload.encode()).hexdigest()[:32]
 
 
 def build_provider(settings: Settings) -> Provider:

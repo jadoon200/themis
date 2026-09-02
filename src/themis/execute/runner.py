@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from themis.acquire import git
-from themis.acquire.dbt_runner import DbtError, assert_target_allowed, run_dbt
+from themis.acquire.dbt_runner import assert_target_allowed, run_dbt
 from themis.config import Settings
 from themis.execute.differ import diff_tables, measure_grain
 from themis.execute.profiles import ProfileError, read_profile, write_profile_for_schema
@@ -280,20 +280,3 @@ def _measure(
         grains=len(grains),
     )
     return ExecutionResult(deltas=deltas, measured_grains=grains, built=models)
-
-
-def ensure_executable(project_dir: Path, *, target: str, settings: Settings) -> str | None:
-    """Why Stage 3 cannot run here, or None if it can. Checked before any build."""
-    try:
-        assert_target_allowed(target, settings.execute_allowed_targets)
-    except Exception as exc:
-        return str(exc)
-    try:
-        read_profile(project_dir, target=target)
-    except ProfileError as exc:
-        return str(exc)
-    try:
-        git.repo_root(project_dir)
-    except (git.GitError, DbtError) as exc:
-        return str(exc)
-    return None

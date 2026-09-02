@@ -52,15 +52,17 @@ class Verdict(StrEnum):
 
 
 class Backend(StrEnum):
-    """Which grounding backend produced a snapshot.
+    """How a snapshot's grounding was obtained.
 
-    Ordered by capability. Rules declare the minimum they need and are skipped with a
-    visible note rather than guessed at when it is not available.
+    Only two, because only two are built. A raw-files backend was designed and never
+    implemented: without a compiled manifest the Jinja is unexpanded, so the AST is not
+    the SQL that runs, and every analysis downstream would be reasoning about the wrong
+    thing. Naming a backend that does not exist made the tool look more capable than it
+    is.
     """
 
-    DUAL_MANIFEST = "dual_manifest"  # prod + CI manifest
-    MANIFEST = "manifest"  # CI-built compiled manifest (the primary target)
-    RAW_FILES = "raw_files"  # git files only; blind through macros
+    DUAL_MANIFEST = "dual_manifest"  # prod manifest + CI manifest
+    MANIFEST = "manifest"  # CI-built compiled manifest
 
 
 class GrainSource(StrEnum):
@@ -92,7 +94,6 @@ class Evidence(BaseModel):
     model_name: str
     file_path: str | None = None
     line: int | None = None
-    sql_before: str | None = None
     sql_after: str | None = None
     note: str | None = None
     # Another model the finding turns on — the joined table for a fan-out, say. Its

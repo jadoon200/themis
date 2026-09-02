@@ -300,6 +300,14 @@ code change behind it. Not yet handled, and recorded below.
   schema means every `ref()` resolves there, so the full ancestor closure of each
   measured model must be built. At scale the dbt-native answer is `--defer` against a
   production manifest; that needs the dual-manifest backend and is not built yet.
+- **The model path is untested in CI.** A recorded-response provider was written and
+  never wired to anything, so it was deleted rather than left looking like coverage.
+  CI runs the deterministic stages only; the specialists, self-check and explain pass
+  are covered by unit tests against a fake provider but never end to end.
+- **There is no raw-files backend.** The plan described three grounding backends and
+  two were built. Without a compiled manifest the Jinja is unexpanded, so the AST is
+  not the SQL that runs and every analysis downstream reasons about the wrong thing.
+  Naming a third made the tool look more capable than it is.
 - **Dynamic SQL generation is not handled.** A macro that builds SQL from query results
   at compile time produces compiled SQL that varies with the data. The semantic diff
   would attribute that to the change under review, which is wrong. Detecting such

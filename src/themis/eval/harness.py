@@ -23,7 +23,6 @@ from themis.acquire import git
 from themis.config import Settings
 from themis.eval.mutations import Kind, Mutation
 from themis.logging import get_logger
-from themis.models import Confidence
 from themis.pipeline import review as run_review
 
 log = get_logger(__name__)
@@ -41,9 +40,7 @@ class MutationOutcome:
     families_fired: tuple[str, ...]
     expected_family_fired: bool
     finding_count: int
-    measured_count: int
     row_delta: int | None = None
-    largest_sum_shift_pct: float | None = None
     error: str | None = None
     # Populated only when the model layer ran, so its contribution can be separated
     # from the deterministic result rather than assumed.
@@ -53,7 +50,6 @@ class MutationOutcome:
     llm_suppressed: int = 0
     llm_rejected: int = 0
     llm_explained: int = 0
-    findings_before_llm: int = 0
 
     # Set when the run had no execution oracle, so ground truth falls back to the
     # declared kind. Recorded explicitly because a score computed that way is a
@@ -93,31 +89,13 @@ def _git(repo: Path, *args: str) -> str:
     return result.stdout
 
 
-def _largest_sum_shift(deltas: dict[str, object]) -> float | None:
-    """The biggest relative move in any monetary total, as a percentage."""
-    from themis.models import ExecutionDelta
-
-    worst: float | None = None
-    for delta in deltas.values():
-        if not isinstance(delta, ExecutionDelta):
-            continue
-        for before, after in delta.sum_deltas.values():
-            if before == 0:
-                continue
-            shift = abs((after - before) / before) * 100
-            worst = shift if worst is None else max(worst, shift)
-    return worst
-
-
 class DirtyRepositoryError(RuntimeError):
     """The working tree has uncommitted changes.
 
-    No longer a safety matter — the harness works in a throwaway worktree and cannot
-    touch the caller's checkout. What remains is that uncommitted work is simply not
-    *in* the revision being measured, so the numbers would describe committed code
-    while the author believes they describe what is on disk.
-
-    ``--allow-dirty`` is therefore a real option now rather than a dangerous one.
+    Not a safety matter — the harness works in a throwaway worktree and cannot touch
+    the caller's checkout. What remains is that uncommitted work is not *in* the
+    revision being measured, so the numbers would describe committed code while the
+    author believes they describe what is on disk.
     """
 
 
@@ -173,7 +151,6 @@ def run_mutation(
                     families_fired=(),
                     expected_family_fired=False,
                     finding_count=0,
-                    measured_count=0,
                     error="anchor text not found — the mutation is stale",
                 )
 
@@ -212,7 +189,6 @@ def run_mutation(
                 families_fired=(),
                 expected_family_fired=False,
                 finding_count=0,
-                measured_count=0,
                 error=f"{type(exc).__name__}: {exc}",
             )
         finally:
@@ -245,20 +221,13 @@ def run_mutation(
         families_fired=families,
         expected_family_fired=mutation.expects_family in families,
         finding_count=len(result.findings),
-        measured_count=sum(1 for f in result.findings if f.confidence is Confidence.MEASURED),
         row_delta=row_delta,
-        largest_sum_shift_pct=(
-            _largest_sum_shift(dict(execution.deltas)) if execution and execution.ran else None
-        ),
         llm_calls=llm.usage.calls if llm else 0,
         llm_tokens=(llm.usage.prompt_tokens + llm.usage.completion_tokens) if llm else 0,
         llm_seconds=llm.usage.seconds if llm else 0.0,
         llm_suppressed=llm.suppressed if llm else 0,
         llm_explained=llm.explained if llm else 0,
         llm_rejected=llm.rejected_by_selfcheck if llm else 0,
-        findings_before_llm=(
-            llm.settled_without_llm + llm.adjudicated if llm else len(result.findings)
-        ),
     )
 
 

@@ -32,13 +32,6 @@ ALL_RULES: tuple[Rule, ...] = (
 )
 
 
-def rules_by_family() -> dict[str, tuple[Rule, ...]]:
-    families: dict[str, list[Rule]] = {}
-    for rule in ALL_RULES:
-        families.setdefault(rule.family, []).append(rule)
-    return {name: tuple(rules) for name, rules in families.items()}
-
-
 def run_rules(
     contexts: list[RuleContext], *, rules: tuple[Rule, ...] = ALL_RULES
 ) -> tuple[list[Finding], list[SkippedRule]]:
@@ -82,7 +75,4 @@ def _skip_reason(rule: Rule, ctx: RuleContext) -> str:
     model = ctx.after or ctx.before
     if rule.requires_compiled_sql and (model is None or model.analysable_sql is None):
         return "no compiled SQL — manifest came from `dbt parse`, not `dbt compile`"
-    return (
-        f"needs the {rule.requires_backend.value} backend; "
-        f"this run has {ctx.after_snapshot.backend.value}"
-    )
+    return "the rule's grounding requirement was not met"

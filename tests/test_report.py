@@ -87,3 +87,29 @@ def test_findings_are_ordered_hardest_first() -> None:
         models_reviewed=1,
     )
     assert output.index("Critical") < output.index("Low")
+
+
+def test_null_rate_shifts_are_shown() -> None:
+    """A column that starts or stops being NULL is the signature of a join-semantics
+    change. The aggregate was already computed; not showing it was pure waste."""
+    delta = ExecutionDelta(
+        model_name="fct_revenue",
+        rows_before=15,
+        rows_after=15,
+        null_rate_deltas={"contract_id": (0.0, 0.2)},
+    )
+    output = render([_finding(confidence=Confidence.MEASURED, delta=delta)], models_reviewed=1)
+    assert "null rate" in output
+    assert "20.0%" in output
+
+
+def test_negligible_null_rate_drift_is_not_shown() -> None:
+    delta = ExecutionDelta(
+        model_name="fct_revenue",
+        rows_before=15,
+        rows_after=15,
+        null_rate_deltas={"x": (0.10001, 0.10002)},
+    )
+    assert "null rate" not in render(
+        [_finding(confidence=Confidence.MEASURED, delta=delta)], models_reviewed=1
+    )

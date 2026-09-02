@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from sqlglot import exp
 
 from themis.analyze.parse import ParseError, parse_sql, select_from
-from themis.models import Backend, Confidence, Evidence, Finding, Severity
+from themis.models import Confidence, Evidence, Finding, Severity
 from themis.rules.base import Rule, RuleContext
 
 FAMILY = "F6"
@@ -76,7 +76,6 @@ class ColumnRemovedWithConsumersRule(Rule):
     rule_id: str = field(init=False, default="F6001")
     family: str = field(init=False, default=FAMILY)
     severity: Severity = field(init=False, default=Severity.HIGH)
-    requires_backend: Backend = field(init=False, default=Backend.MANIFEST)
 
     def check(self, ctx: RuleContext) -> list[Finding]:
         if ctx.before is None or ctx.after is None:
@@ -203,7 +202,6 @@ class ContractViolatedRule(Rule):
     rule_id: str = field(init=False, default="F6003")
     family: str = field(init=False, default=FAMILY)
     severity: Severity = field(init=False, default=Severity.CRITICAL)
-    requires_backend: Backend = field(init=False, default=Backend.MANIFEST)
 
     def check(self, ctx: RuleContext) -> list[Finding]:
         if ctx.after is None or not ctx.after.contract_enforced:

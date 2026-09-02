@@ -18,7 +18,7 @@ A funnel, not an agent loop. Most of the value is deterministic and free; the la
 model is reserved for judgement, and never produces facts of its own.
 
 ```
-0  ACQUIRE   git diff + dbt artifacts        →  ProjectSnapshot before/after
+0  ACQUIRE   git diff + compiled manifests   →  ProjectSnapshot before/after
 1  ANALYZE   AST, semantic diff, lineage,    →  Facts
              derived grain, macro impact
 2  RULES     rule families, recall-first     →  Findings
