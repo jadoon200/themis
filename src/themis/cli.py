@@ -53,6 +53,13 @@ def review(
     no_llm: Annotated[
         bool, typer.Option("--no-llm", help="Deterministic analysis only. Free, fast, useful.")
     ] = False,
+    save: Annotated[
+        bool,
+        typer.Option(
+            "--save/--no-save",
+            help="Record the run so it can be asked about later and compared with earlier runs.",
+        ),
+    ] = True,
     execute: Annotated[
         bool,
         typer.Option("--execute/--no-execute", help="Build base and head and diff real results."),
@@ -120,6 +127,9 @@ def review(
             degraded_reason=result.degraded_reason,
         )
     )
+
+    if save:
+        _persist(result, project=str(project), base=base, head=head, execute=execute)
 
     raise typer.Exit(code=_gate_exit_code(result.findings, settings.fail_on_severity))
 
@@ -500,6 +510,39 @@ def eval_cmd(
 
     # A stale corpus silently measuring nothing is the failure mode worth guarding.
     raise typer.Exit(code=1 if report.stale else 0)
+
+
+def _persist(result: object, *, project: str, base: str, head: str, execute: bool) -> None:
+    """Record a CLI run alongside the ones the service records.
+
+    Without this the store only ever held API-driven runs, so `themis ask` could not
+    answer about a review someone had just run and finding history had a hole in it
+    exactly where the tool is used most.
+    """
+    from themis.db.base import session_scope
+    from themis.db.models import RunSource, RunStatus
+    from themis.db.store import enqueue_run, save_result
+    from themis.pipeline import ReviewResult
+
+    if not isinstance(result, ReviewResult):
+        return
+    try:
+        with session_scope() as session:
+            run = enqueue_run(
+                session,
+                project=project,
+                base_ref=base,
+                head_ref=head,
+                source=RunSource.CLI,
+                execute=execute,
+            )
+            run.status = RunStatus.RUNNING
+            save_result(session, run, result)
+            log.info("review.saved", run_key=run.run_key)
+    except Exception as exc:
+        # Never fail a review because history could not be written. The findings the
+        # reviewer needs are already on screen.
+        log.warning("review.not_saved", error=str(exc)[:200])
 
 
 def _gate_exit_code(findings: list[Finding], fail_on: str | None) -> int:
