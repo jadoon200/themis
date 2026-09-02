@@ -321,6 +321,13 @@ def eval_cmd(
             "falls back to how each mutation was declared.",
         ),
     ] = True,
+    allow_dirty: Annotated[
+        bool,
+        typer.Option(
+            "--allow-dirty",
+            help="Measure the committed state even with uncommitted changes present.",
+        ),
+    ] = False,
     verbose: VerboseOpt = False,
 ) -> None:
     """Run the mutation corpus and score the reviewer against it.
@@ -354,6 +361,7 @@ def eval_cmd(
             base_ref=base,
             use_llm=use_llm,
             use_execution=execute,
+            allow_dirty=allow_dirty,
         )
     except DirtyRepositoryError as exc:
         typer.echo(str(exc), err=True)

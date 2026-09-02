@@ -13,7 +13,9 @@ against that belief; both can be wrong together, and the numbers still look fine
 
 from __future__ import annotations
 
+import contextlib
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -110,9 +112,12 @@ def _largest_sum_shift(deltas: dict[str, object]) -> float | None:
 class DirtyRepositoryError(RuntimeError):
     """The working tree has uncommitted changes.
 
-    The harness commits and discards branches, so anything uncommitted is at risk. It
-    is also meaningless to measure a reviewer against a tree that does not match any
-    revision. Refusing is both the safe answer and the correct one.
+    No longer a safety matter — the harness works in a throwaway worktree and cannot
+    touch the caller's checkout. What remains is that uncommitted work is simply not
+    *in* the revision being measured, so the numbers would describe committed code
+    while the author believes they describe what is on disk.
+
+    ``--allow-dirty`` is therefore a real option now rather than a dangerous one.
     """
 
 
@@ -122,9 +127,10 @@ def assert_clean(repo: Path) -> None:
     if dirty:
         count = len(dirty.splitlines())
         raise DirtyRepositoryError(
-            f"{count} uncommitted change(s) in {repo}. The eval harness creates and "
-            "deletes branches, so commit or stash first — otherwise that work is at "
-            "risk and the measurement does not correspond to any revision."
+            f"{count} uncommitted change(s) in {repo}. The harness measures a committed "
+            "revision in an isolated worktree, so those changes would not be included "
+            "and the numbers would not describe what is on disk. Commit them, or pass "
+            "--allow-dirty to measure the committed state deliberately."
         )
 
 
@@ -137,19 +143,67 @@ def run_mutation(
     use_llm: bool = False,
     use_execution: bool = True,
 ) -> MutationOutcome:
-    """Apply one mutation on a scratch branch, review it, then restore the repo.
+    """Apply one mutation in an isolated worktree, review it, and discard the worktree.
 
-    The branch is always cleaned up, including on failure. Leaving a scratch branch
-    behind would poison every later mutation in the run.
+    The harness never touches the caller's working tree. An earlier version created a
+    branch in place and restored with ``git checkout --force``, which discarded any
+    uncommitted work — it destroyed changes twice during development, and the
+    dirty-tree guard could not prevent it because edits made *during* a run are not
+    visible at the start.
+
+    Working in a throwaway worktree removes the possibility rather than guarding
+    against it.
     """
     repo = git.repo_root(project_dir)
-    branch = f"themis-eval/{mutation.id}"
-    original = _git(repo, "rev-parse", "--abbrev-ref", "HEAD").strip()
+    relative = project_dir.resolve().relative_to(repo.resolve())
+    base_sha = _git(repo, "rev-parse", base_ref).strip()
 
-    try:
-        _git(repo, "checkout", "-q", "-B", branch, base_ref)
+    with tempfile.TemporaryDirectory(prefix="themis-eval-") as tmp:
+        tree = Path(tmp) / "tree"
+        branch = f"themis-eval/{mutation.id}"
+        _git(repo, "worktree", "add", "--detach", "--quiet", str(tree), base_sha)
+        try:
+            mutated_project = tree / relative
+            if not mutation.apply(mutated_project):
+                return MutationOutcome(
+                    mutation=mutation,
+                    applied=False,
+                    changed_results=False,
+                    detected=False,
+                    families_fired=(),
+                    expected_family_fired=False,
+                    finding_count=0,
+                    measured_count=0,
+                    error="anchor text not found — the mutation is stale",
+                )
 
-        if not mutation.apply(project_dir):
+            # Commit inside the worktree, on a detached HEAD. Nothing here can reach
+            # the caller's checkout.
+            _git(tree, "add", "--", str((mutated_project / mutation.relative_path).resolve()))
+            _git(
+                tree,
+                "-c",
+                "user.email=eval@themis.invalid",
+                "-c",
+                "user.name=themis-eval",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-q",
+                "-m",
+                f"eval: {mutation.id}",
+            )
+
+            result = run_review(
+                mutated_project,
+                base=base_sha,
+                head="HEAD",
+                settings=settings,
+                run_execution=use_execution,
+                run_llm=use_llm,
+            )
+        except Exception as exc:
+            log.warning("eval.mutation_failed", mutation=mutation.id, error=str(exc)[:300])
             return MutationOutcome(
                 mutation=mutation,
                 applied=False,
@@ -159,81 +213,53 @@ def run_mutation(
                 expected_family_fired=False,
                 finding_count=0,
                 measured_count=0,
-                error="anchor text not found — the mutation is stale",
+                error=f"{type(exc).__name__}: {exc}",
             )
+        finally:
+            try:
+                _git(repo, "worktree", "remove", "--force", str(tree))
+            except RuntimeError:
+                _git(repo, "worktree", "prune")
+            # The branch name is unused now that the worktree is detached, but prune
+            # any leftover from an interrupted earlier run.
+            with contextlib.suppress(RuntimeError):
+                _git(repo, "branch", "-q", "-D", branch)
 
-        # Stage ONLY the mutated file. `git add -A` here would sweep every
-        # uncommitted change in the repository into a scratch commit, and the branch
-        # is deleted in the finally block below — destroying that work irrecoverably
-        # except through the reflog. This harness did exactly that once.
-        _git(repo, "add", "--", str((project_dir / mutation.relative_path).resolve()))
-        _git(repo, "-c", "commit.gpgsign=false", "commit", "-q", "-m", f"eval: {mutation.id}")
+    execution = result.execution
+    changed = bool(
+        execution and execution.ran and any(d.is_material for d in execution.deltas.values())
+    )
+    families = tuple(sorted({f.family for f in result.findings}))
+    row_delta = None
+    if execution and execution.ran:
+        deltas = [d.row_delta for d in execution.deltas.values() if d.row_delta]
+        row_delta = max(deltas, key=abs) if deltas else 0
 
-        result = run_review(
-            project_dir,
-            base=base_ref,
-            head="HEAD",
-            settings=settings,
-            run_execution=use_execution,
-            run_llm=use_llm,
-        )
-
-        execution = result.execution
-        changed = bool(
-            execution and execution.ran and any(d.is_material for d in execution.deltas.values())
-        )
-        families = tuple(sorted({f.family for f in result.findings}))
-        row_delta = None
-        if execution and execution.ran:
-            deltas = [d.row_delta for d in execution.deltas.values() if d.row_delta]
-            row_delta = max(deltas, key=abs) if deltas else 0
-
-        llm = result.llm
-        return MutationOutcome(
-            mutation=mutation,
-            applied=True,
-            oracle_available=use_execution,
-            llm_calls=llm.usage.calls if llm else 0,
-            llm_tokens=(llm.usage.prompt_tokens + llm.usage.completion_tokens) if llm else 0,
-            llm_seconds=llm.usage.seconds if llm else 0.0,
-            llm_suppressed=llm.suppressed if llm else 0,
-            llm_explained=llm.explained if llm else 0,
-            llm_rejected=llm.rejected_by_selfcheck if llm else 0,
-            findings_before_llm=(
-                llm.settled_without_llm + llm.adjudicated if llm else len(result.findings)
-            ),
-            changed_results=changed,
-            detected=bool(result.findings),
-            families_fired=families,
-            expected_family_fired=mutation.expects_family in families,
-            finding_count=len(result.findings),
-            measured_count=sum(1 for f in result.findings if f.confidence is Confidence.MEASURED),
-            row_delta=row_delta,
-            largest_sum_shift_pct=(
-                _largest_sum_shift(dict(execution.deltas)) if execution and execution.ran else None
-            ),
-        )
-    except Exception as exc:
-        log.warning("eval.mutation_failed", mutation=mutation.id, error=str(exc)[:300])
-        return MutationOutcome(
-            mutation=mutation,
-            applied=False,
-            changed_results=False,
-            detected=False,
-            families_fired=(),
-            expected_family_fired=False,
-            finding_count=0,
-            measured_count=0,
-            error=f"{type(exc).__name__}: {exc}",
-        )
-    finally:
-        # Restore unconditionally. A stranded scratch branch or a dirty tree would
-        # silently corrupt every subsequent mutation in the run.
-        try:
-            _git(repo, "checkout", "-q", "--force", original)
-            _git(repo, "branch", "-q", "-D", branch)
-        except RuntimeError as exc:
-            log.warning("eval.cleanup_failed", branch=branch, error=str(exc)[:200])
+    llm = result.llm
+    return MutationOutcome(
+        mutation=mutation,
+        applied=True,
+        oracle_available=use_execution,
+        changed_results=changed,
+        detected=bool(result.findings),
+        families_fired=families,
+        expected_family_fired=mutation.expects_family in families,
+        finding_count=len(result.findings),
+        measured_count=sum(1 for f in result.findings if f.confidence is Confidence.MEASURED),
+        row_delta=row_delta,
+        largest_sum_shift_pct=(
+            _largest_sum_shift(dict(execution.deltas)) if execution and execution.ran else None
+        ),
+        llm_calls=llm.usage.calls if llm else 0,
+        llm_tokens=(llm.usage.prompt_tokens + llm.usage.completion_tokens) if llm else 0,
+        llm_seconds=llm.usage.seconds if llm else 0.0,
+        llm_suppressed=llm.suppressed if llm else 0,
+        llm_explained=llm.explained if llm else 0,
+        llm_rejected=llm.rejected_by_selfcheck if llm else 0,
+        findings_before_llm=(
+            llm.settled_without_llm + llm.adjudicated if llm else len(result.findings)
+        ),
+    )
 
 
 @dataclass
