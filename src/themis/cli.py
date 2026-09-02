@@ -452,13 +452,20 @@ def eval_cmd(
             f"{tokens:,} tokens, {seconds:.0f}s"
         )
         typer.echo(
-            f"  findings it removed: {report.llm_suppressed_total}   "
+            f"  findings removed: {report.llm_suppressed_total}   "
+            f"causes proposed: {report.llm_explained_total}   "
             f"answers rejected as ungrounded: {report.llm_rejected_total}"
         )
-        if report.llm_suppressed_total == 0:
+        if report.llm_suppressed_total == 0 and report.llm_explained_total == 0:
             typer.echo(
                 "  It changed no decision on this corpus. That is the honest reading: "
                 "the deterministic stages had already settled everything."
+            )
+        elif report.llm_suppressed_total == 0:
+            typer.echo(
+                "  It suppressed nothing, so detection is entirely the rules' work. "
+                "What it added is explanation of measured changes no rule accounts "
+                "for — the one contribution rules cannot make."
             )
 
     if report.mislabelled:

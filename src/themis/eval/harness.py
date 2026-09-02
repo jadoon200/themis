@@ -50,6 +50,7 @@ class MutationOutcome:
     llm_seconds: float = 0.0
     llm_suppressed: int = 0
     llm_rejected: int = 0
+    llm_explained: int = 0
     findings_before_llm: int = 0
 
     # Set when the run had no execution oracle, so ground truth falls back to the
@@ -196,6 +197,7 @@ def run_mutation(
             llm_tokens=(llm.usage.prompt_tokens + llm.usage.completion_tokens) if llm else 0,
             llm_seconds=llm.usage.seconds if llm else 0.0,
             llm_suppressed=llm.suppressed if llm else 0,
+            llm_explained=llm.explained if llm else 0,
             llm_rejected=llm.rejected_by_selfcheck if llm else 0,
             findings_before_llm=(
                 llm.settled_without_llm + llm.adjudicated if llm else len(result.findings)
@@ -323,6 +325,15 @@ class EvalReport:
     @property
     def llm_rejected_total(self) -> int:
         return sum(o.llm_rejected for o in self.usable)
+
+    @property
+    def llm_explained_total(self) -> int:
+        """Measured changes the model proposed a cause for.
+
+        Counted apart from suppression because it is the one contribution the rules
+        structurally cannot make: if the cause were anticipable there would be a rule.
+        """
+        return sum(o.llm_explained for o in self.usable)
 
     @property
     def mislabelled(self) -> list[MutationOutcome]:
