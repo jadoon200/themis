@@ -21,13 +21,29 @@ from pathlib import Path
 class Kind(StrEnum):
     """What the mutation is meant to be.
 
-    Only used to report results by group. Whether a DEFECT actually changes the numbers
-    is settled by execution, and a DEFECT that turns out not to is reported as such
-    rather than quietly counted as one.
+    Whether a DEFECT actually changes the numbers is settled by execution, and one
+    that turns out not to is reported rather than quietly counted as one.
+
+    LATENT exists because the execution oracle has a real blind spot. It asks "did the
+    numbers move", which is the right question for most defects and the wrong one for
+    three kinds:
+
+    - **cost** — dropping an incremental guard reprocesses all history and produces
+      byte-identical output at many times the price;
+    - **lineage** — replacing ref() with a literal name reads the same table today,
+      while removing the DAG edge that guarantees build order and keeps dev out of
+      production;
+    - **latent** — narrowing a late-arrival window loses nothing until something
+      actually arrives late.
+
+    Scoring these against execution would count a correct flag as a false positive and
+    push the tool towards ignoring them. They are scored on detection instead, and
+    reported separately so the distinction stays visible.
     """
 
     DEFECT = "defect"
     CONTROL = "control"
+    LATENT = "latent"
 
 
 @dataclass(frozen=True)
@@ -67,7 +83,7 @@ _REVENUE_FILTER = (
 )
 
 
-DEFECTS: tuple[Mutation, ...] = (
+_ALL_INJECTED: tuple[Mutation, ...] = (
     Mutation(
         id="fanout_drop_join_predicate",
         kind=Kind.DEFECT,
@@ -152,7 +168,7 @@ DEFECTS: tuple[Mutation, ...] = (
     ),
     Mutation(
         id="incremental_guard_removed",
-        kind=Kind.DEFECT,
+        kind=Kind.LATENT,
         expects_family="F5",
         description="is_incremental() guard dropped, so every run reprocesses all history",
         relative_path=_INCREMENTAL,
@@ -176,7 +192,7 @@ DEFECTS: tuple[Mutation, ...] = (
     ),
     Mutation(
         id="incremental_lookback_narrowed",
-        kind=Kind.DEFECT,
+        kind=Kind.LATENT,
         expects_family="F5",
         description="Late-arrival window cut from 3 days to 1, silently dropping late rows",
         relative_path=_INCREMENTAL,
@@ -203,7 +219,7 @@ DEFECTS: tuple[Mutation, ...] = (
     ),
     Mutation(
         id="hardcoded_table_reference",
-        kind=Kind.DEFECT,
+        kind=Kind.LATENT,
         expects_family="F6",
         description="ref() replaced by a literal table name, cutting the DAG edge",
         relative_path=_MART_REVENUE,
@@ -237,6 +253,10 @@ DEFECTS: tuple[Mutation, ...] = (
         ),
     ),
 )
+
+
+DEFECTS: tuple[Mutation, ...] = tuple(m for m in _ALL_INJECTED if m.kind is Kind.DEFECT)
+LATENT: tuple[Mutation, ...] = tuple(m for m in _ALL_INJECTED if m.kind is Kind.LATENT)
 
 
 CONTROLS: tuple[Mutation, ...] = (
@@ -338,7 +358,7 @@ rates as (select * from fx),""",
 )
 
 
-ALL: tuple[Mutation, ...] = DEFECTS + CONTROLS
+ALL: tuple[Mutation, ...] = DEFECTS + LATENT + CONTROLS
 
 
 def select(name: str) -> tuple[Mutation, ...]:
@@ -349,6 +369,8 @@ def select(name: str) -> tuple[Mutation, ...]:
         return DEFECTS
     if name == "controls":
         return CONTROLS
+    if name == "latent":
+        return LATENT
     matched = tuple(m for m in ALL if m.id == name)
     if not matched:
         raise KeyError(f"unknown mutation {name!r}")

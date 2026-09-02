@@ -116,17 +116,30 @@ def _grain_of_select(
 def _passthrough_target(
     select: exp.Select, ctes: dict[str, exp.Expression]
 ) -> tuple[str, exp.Select] | None:
-    """The CTE this select reads through without changing its grain.
+    """The CTE or subquery this select reads through without changing its grain.
 
     A join is disqualifying — a join is exactly where grain changes. A WHERE is not:
     filtering removes rows but cannot make a unique key non-unique.
+
+    Inline subqueries count as well as named CTEs. ``select * from (select ...) as x``
+    is the same pass-through written differently, and handling only the named form
+    means a routine refactor makes a model's grain unprovable.
     """
     if select_joins(select):
         return None
     source = select_from(select)
     if source is None:
         return None
+
     table = source.this
+
+    # Inline subquery: `from (select ...) as alias`.
+    if isinstance(table, exp.Subquery):
+        inner = table.this if isinstance(table.this, exp.Select) else table.find(exp.Select)
+        if isinstance(inner, exp.Select):
+            return (table.alias_or_name or "subquery", inner)
+        return None
+
     if not isinstance(table, exp.Table):
         return None
     body = ctes.get(table.name)

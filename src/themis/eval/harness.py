@@ -201,9 +201,28 @@ class EvalReport:
     outcomes: list[MutationOutcome]
 
     @property
-    def scored(self) -> list[MutationOutcome]:
-        """Mutations that actually applied. A stale one is excluded, and reported."""
+    def usable(self) -> list[MutationOutcome]:
+        """Mutations that applied. A stale one is excluded, and reported."""
         return [o for o in self.outcomes if o.applied and o.error is None]
+
+    @property
+    def scored(self) -> list[MutationOutcome]:
+        """Mutations the execution oracle can judge.
+
+        Latent defects are excluded. Scoring a cost, lineage or not-yet-triggered
+        defect against "did the numbers move" counts a correct flag as a false
+        positive, which would push the tool towards not reporting them at all.
+        """
+        return [o for o in self.usable if o.mutation.kind is not Kind.LATENT]
+
+    @property
+    def latent(self) -> list[MutationOutcome]:
+        """Defects execution cannot see, scored on detection alone."""
+        return [o for o in self.usable if o.mutation.kind is Kind.LATENT]
+
+    @property
+    def latent_detected(self) -> int:
+        return sum(1 for o in self.latent if o.detected)
 
     @property
     def stale(self) -> list[MutationOutcome]:

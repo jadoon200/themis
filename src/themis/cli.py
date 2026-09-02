@@ -269,7 +269,10 @@ def eval_cmd(
                 f"{outcome.mutation.id:34s} {'—':10s} {'—':8s} {'—':12s} {outcome.error[:40]}"
             )
             continue
-        truth = "defect" if outcome.changed_results else "no-change"
+        if outcome.mutation.kind is Kind.LATENT:
+            truth = "latent"
+        else:
+            truth = "defect" if outcome.changed_results else "no-change"
         families = ",".join(outcome.families_fired) or "—"
         flagged = "yes" if outcome.detected else "no"
         # Distinguish a defect caught by the family designed for it from one caught
@@ -288,6 +291,16 @@ def eval_cmd(
 
     counts = report.counts()
     typer.echo("")
+    if report.latent:
+        detected = report.latent_detected
+        typer.echo(
+            f"latent defects (real, but produce no data change so the oracle cannot "
+            f"judge them): {detected}/{len(report.latent)} detected"
+        )
+        for outcome in report.latent:
+            mark = "caught" if outcome.detected else "MISSED"
+            typer.echo(f"  {mark:7s} {outcome.mutation.id}")
+        typer.echo("")
     typer.echo(
         f"true positives {counts['true_positive']}   "
         f"false negatives {counts['false_negative']}   "
