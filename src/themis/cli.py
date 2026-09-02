@@ -313,6 +313,14 @@ def eval_cmd(
         str | None,
         typer.Option("--model", help="Override the specialist model, to compare models."),
     ] = None,
+    execute: Annotated[
+        bool,
+        typer.Option(
+            "--execute/--no-execute",
+            help="Build both revisions. Without it there is no oracle and truth "
+            "falls back to how each mutation was declared.",
+        ),
+    ] = True,
     verbose: VerboseOpt = False,
 ) -> None:
     """Run the mutation corpus and score the reviewer against it.
@@ -378,6 +386,12 @@ def eval_cmd(
 
     counts = report.counts()
     typer.echo("")
+    if not execute:
+        typer.echo(
+            "No execution oracle in this run: truth is the declared kind, not a "
+            "measurement. Treat the numbers as weaker than an --execute run."
+        )
+        typer.echo("")
     if report.latent:
         detected = report.latent_detected
         typer.echo(

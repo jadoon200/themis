@@ -52,8 +52,15 @@ class MutationOutcome:
     llm_rejected: int = 0
     findings_before_llm: int = 0
 
+    # Set when the run had no execution oracle, so ground truth falls back to the
+    # declared kind. Recorded explicitly because a score computed that way is a
+    # different claim from one the oracle settled.
+    oracle_available: bool = True
+
     @property
     def is_true_defect(self) -> bool:
+        if not self.oracle_available:
+            return self.mutation.kind is not Kind.CONTROL
         return self.changed_results
 
     @property
@@ -123,6 +130,7 @@ def run_mutation(
     settings: Settings,
     base_ref: str,
     use_llm: bool = False,
+    use_execution: bool = True,
 ) -> MutationOutcome:
     """Apply one mutation on a scratch branch, review it, then restore the repo.
 
@@ -161,7 +169,7 @@ def run_mutation(
             base=base_ref,
             head="HEAD",
             settings=settings,
-            run_execution=True,
+            run_execution=use_execution,
             run_llm=use_llm,
         )
 
@@ -179,6 +187,7 @@ def run_mutation(
         return MutationOutcome(
             mutation=mutation,
             applied=True,
+            oracle_available=use_execution,
             llm_calls=llm.usage.calls if llm else 0,
             llm_tokens=(llm.usage.prompt_tokens + llm.usage.completion_tokens) if llm else 0,
             llm_seconds=llm.usage.seconds if llm else 0.0,
@@ -320,6 +329,7 @@ def run_corpus(
     base_ref: str = "main",
     allow_dirty: bool = False,
     use_llm: bool = False,
+    use_execution: bool = True,
 ) -> EvalReport:
     if not allow_dirty:
         assert_clean(git.repo_root(project_dir))
@@ -333,6 +343,7 @@ def run_corpus(
                 settings=settings,
                 base_ref=base_ref,
                 use_llm=use_llm,
+                use_execution=use_execution,
             )
         )
     return EvalReport(outcomes=outcomes)
