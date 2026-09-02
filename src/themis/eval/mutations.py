@@ -39,11 +39,18 @@ class Kind(StrEnum):
     Scoring these against execution would count a correct flag as a false positive and
     push the tool towards ignoring them. They are scored on detection instead, and
     reported separately so the distinction stays visible.
+
+    UNRULED is a defect deliberately outside every rule family. It exists to keep the
+    corpus honest: every other mutation is a class somebody wrote a rule for, so the
+    rules will always win on them. An unruled defect tests the safety net instead —
+    whether a measured change nobody anticipated is still reported rather than passing
+    as a clean review.
     """
 
     DEFECT = "defect"
     CONTROL = "control"
     LATENT = "latent"
+    UNRULED = "unruled"
 
 
 @dataclass(frozen=True)
@@ -239,6 +246,18 @@ _ALL_INJECTED: tuple[Mutation, ...] = (
         replace="        on 1 = 1",
     ),
     Mutation(
+        id="unruled_fx_inverted",
+        kind=Kind.UNRULED,
+        expects_family="X",
+        description=(
+            "FX conversion inverted — dividing where the code multiplied. "
+            "Arithmetically ordinary, structurally invisible, outside every rule"
+        ),
+        relative_path=_INT_CONVERTED,
+        find="{{ money('entries.amount_txn_ccy * rates.rate') }}   as amount_usd",
+        replace="{{ money('entries.amount_txn_ccy / rates.rate') }}   as amount_usd",
+    ),
+    Mutation(
         id="sign_convention_flipped",
         kind=Kind.DEFECT,
         expects_family="F3",
@@ -257,6 +276,7 @@ _ALL_INJECTED: tuple[Mutation, ...] = (
 
 DEFECTS: tuple[Mutation, ...] = tuple(m for m in _ALL_INJECTED if m.kind is Kind.DEFECT)
 LATENT: tuple[Mutation, ...] = tuple(m for m in _ALL_INJECTED if m.kind is Kind.LATENT)
+UNRULED: tuple[Mutation, ...] = tuple(m for m in _ALL_INJECTED if m.kind is Kind.UNRULED)
 
 
 CONTROLS: tuple[Mutation, ...] = (
@@ -358,7 +378,7 @@ rates as (select * from fx),""",
 )
 
 
-ALL: tuple[Mutation, ...] = DEFECTS + LATENT + CONTROLS
+ALL: tuple[Mutation, ...] = DEFECTS + LATENT + UNRULED + CONTROLS
 
 
 def select(name: str) -> tuple[Mutation, ...]:
@@ -371,6 +391,8 @@ def select(name: str) -> tuple[Mutation, ...]:
         return CONTROLS
     if name == "latent":
         return LATENT
+    if name == "unruled":
+        return UNRULED
     matched = tuple(m for m in ALL if m.id == name)
     if not matched:
         raise KeyError(f"unknown mutation {name!r}")

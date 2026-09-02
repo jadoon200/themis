@@ -72,6 +72,10 @@ class MutationOutcome:
         """
         if self.mutation.kind is Kind.LATENT:
             return "latent_caught" if self.detected else "latent_missed"
+        if self.mutation.kind is Kind.UNRULED:
+            # The measure that matters is whether anything reported it, not which
+            # family did — by construction no family covers it.
+            return "unruled_caught" if self.detected else "unruled_MISSED"
         if self.is_true_defect:
             return "true_positive" if self.detected else "false_negative"
         return "false_positive" if self.detected else "true_negative"
@@ -247,7 +251,7 @@ class EvalReport:
         defect against "did the numbers move" counts a correct flag as a false
         positive, which would push the tool towards not reporting them at all.
         """
-        return [o for o in self.usable if o.mutation.kind is not Kind.LATENT]
+        return [o for o in self.usable if o.mutation.kind not in (Kind.LATENT, Kind.UNRULED)]
 
     @property
     def latent(self) -> list[MutationOutcome]:
@@ -257,6 +261,15 @@ class EvalReport:
     @property
     def latent_detected(self) -> int:
         return sum(1 for o in self.latent if o.detected)
+
+    @property
+    def unruled(self) -> list[MutationOutcome]:
+        """Defects outside every rule family — the safety net's test."""
+        return [o for o in self.usable if o.mutation.kind is Kind.UNRULED]
+
+    @property
+    def unruled_detected(self) -> int:
+        return sum(1 for o in self.unruled if o.detected)
 
     @property
     def stale(self) -> list[MutationOutcome]:

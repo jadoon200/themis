@@ -366,6 +366,8 @@ def eval_cmd(
             continue
         if outcome.mutation.kind is Kind.LATENT:
             truth = "latent"
+        elif outcome.mutation.kind is Kind.UNRULED:
+            truth = "unruled"
         else:
             truth = "defect" if outcome.changed_results else "no-change"
         families = ",".join(outcome.families_fired) or "—"
@@ -392,6 +394,16 @@ def eval_cmd(
             "measurement. Treat the numbers as weaker than an --execute run."
         )
         typer.echo("")
+    if report.unruled:
+        typer.echo(
+            f"unruled defects (outside every rule family — the safety net's test): "
+            f"{report.unruled_detected}/{len(report.unruled)} detected"
+        )
+        for outcome in report.unruled:
+            mark = "caught" if outcome.detected else "MISSED"
+            typer.echo(f"  {mark:7s} {outcome.mutation.id}")
+        typer.echo("")
+
     if report.latent:
         detected = report.latent_detected
         typer.echo(
