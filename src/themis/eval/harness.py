@@ -253,8 +253,16 @@ class EvalReport:
         Latent defects are excluded. Scoring a cost, lineage or not-yet-triggered
         defect against "did the numbers move" counts a correct flag as a false
         positive, which would push the tool towards not reporting them at all.
+
+        Generated mutations are excluded too, and for a different reason: nobody chose
+        them, so folding them into a precision figure alongside cases picked to exercise
+        specific rules would mix two very different claims.
         """
-        return [o for o in self.usable if o.mutation.kind not in (Kind.LATENT, Kind.UNRULED)]
+        return [
+            o
+            for o in self.usable
+            if o.mutation.kind not in (Kind.LATENT, Kind.UNRULED, Kind.GENERATED)
+        ]
 
     @property
     def latent(self) -> list[MutationOutcome]:
