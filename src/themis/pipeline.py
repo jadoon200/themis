@@ -188,9 +188,18 @@ def _unexplained_finding(
     ]
     rows_moved = delta.row_delta not in (0, None)
 
-    model = after.models.get(name)
-    governed = bool(model and {"regulatory", "recon", "control"} & set(model.tags))
-    severity = Severity.CRITICAL if (moved and governed) else Severity.HIGH
+    # Severity follows where the change *lands*, not where it originates. Attributing
+    # to the root model was right for reporting, but an untagged staging model whose
+    # change reaches a regulatory mart is not a lesser problem than one that starts
+    # there — the reported figure moved either way.
+    reached = (name, *after.downstream_of(name))
+    governed_models = tuple(
+        reached_name
+        for reached_name in reached
+        if (reached_model := after.models.get(reached_name))
+        and {"regulatory", "recon", "control"} & set(reached_model.tags)
+    )
+    severity = Severity.CRITICAL if (moved and governed_models) else Severity.HIGH
 
     detail: list[str] = []
     if rows_moved and delta.rows_before is not None and delta.rows_after is not None:
@@ -221,7 +230,13 @@ def _unexplained_finding(
         consequence=(
             origin + " That means the change is outside every defect class this tool knows "
             "about — so it has not been assessed, only observed."
-            + (" A reported figure moved." if governed and moved else "")
+            + (
+                f" A reported figure moved: {', '.join(governed_models)} "
+                f"{'is' if len(governed_models) == 1 else 'are'} tagged for "
+                "reconciliation or regulatory reporting."
+                if governed_models and moved
+                else ""
+            )
             + reach
             + " It needs a human explanation before merging."
         ),
