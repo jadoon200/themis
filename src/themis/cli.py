@@ -305,6 +305,14 @@ def eval_cmd(
         str, typer.Option("--mutations", help="all, defects, controls, or a mutation id.")
     ] = "all",
     base: BaseOpt = "main",
+    use_llm: Annotated[
+        bool,
+        typer.Option("--llm", help="Also run the model layer, and report what it added."),
+    ] = False,
+    model: Annotated[
+        str | None,
+        typer.Option("--model", help="Override the specialist model, to compare models."),
+    ] = None,
     verbose: VerboseOpt = False,
 ) -> None:
     """Run the mutation corpus and score the reviewer against it.
@@ -325,8 +333,13 @@ def eval_cmd(
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=2) from exc
 
+    if model:
+        settings = settings.model_copy(
+            update={"llm_specialist_model": model, "llm_supervisor_model": model}
+        )
+
     try:
-        report = run_corpus(project, corpus, settings=settings, base_ref=base)
+        report = run_corpus(project, corpus, settings=settings, base_ref=base, use_llm=use_llm)
     except DirtyRepositoryError as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=2) from exc
@@ -403,6 +416,23 @@ def eval_cmd(
             typer.echo(
                 f"  {outcome.mutation.id}: expected {outcome.mutation.expects_family}, "
                 f"fired {','.join(outcome.families_fired)}"
+            )
+
+    if use_llm:
+        calls, tokens, seconds = report.llm_cost
+        typer.echo("")
+        typer.echo(
+            f"model layer ({settings.llm_specialist_model}): {calls} call(s), "
+            f"{tokens:,} tokens, {seconds:.0f}s"
+        )
+        typer.echo(
+            f"  findings it removed: {report.llm_suppressed_total}   "
+            f"answers rejected as ungrounded: {report.llm_rejected_total}"
+        )
+        if report.llm_suppressed_total == 0:
+            typer.echo(
+                "  It changed no decision on this corpus. That is the honest reading: "
+                "the deterministic stages had already settled everything."
             )
 
     if report.mislabelled:

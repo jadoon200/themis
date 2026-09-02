@@ -43,6 +43,14 @@ class MutationOutcome:
     row_delta: int | None = None
     largest_sum_shift_pct: float | None = None
     error: str | None = None
+    # Populated only when the model layer ran, so its contribution can be separated
+    # from the deterministic result rather than assumed.
+    llm_calls: int = 0
+    llm_tokens: int = 0
+    llm_seconds: float = 0.0
+    llm_suppressed: int = 0
+    llm_rejected: int = 0
+    findings_before_llm: int = 0
 
     @property
     def is_true_defect(self) -> bool:
@@ -114,6 +122,7 @@ def run_mutation(
     *,
     settings: Settings,
     base_ref: str,
+    use_llm: bool = False,
 ) -> MutationOutcome:
     """Apply one mutation on a scratch branch, review it, then restore the repo.
 
@@ -153,6 +162,7 @@ def run_mutation(
             head="HEAD",
             settings=settings,
             run_execution=True,
+            run_llm=use_llm,
         )
 
         execution = result.execution
@@ -165,9 +175,18 @@ def run_mutation(
             deltas = [d.row_delta for d in execution.deltas.values() if d.row_delta]
             row_delta = max(deltas, key=abs) if deltas else 0
 
+        llm = result.llm
         return MutationOutcome(
             mutation=mutation,
             applied=True,
+            llm_calls=llm.usage.calls if llm else 0,
+            llm_tokens=(llm.usage.prompt_tokens + llm.usage.completion_tokens) if llm else 0,
+            llm_seconds=llm.usage.seconds if llm else 0.0,
+            llm_suppressed=llm.suppressed if llm else 0,
+            llm_rejected=llm.rejected_by_selfcheck if llm else 0,
+            findings_before_llm=(
+                llm.settled_without_llm + llm.adjudicated if llm else len(result.findings)
+            ),
             changed_results=changed,
             detected=bool(result.findings),
             families_fired=families,
@@ -263,6 +282,27 @@ class EvalReport:
         return c["false_positive"] / total if total else None
 
     @property
+    def llm_cost(self) -> tuple[int, int, float]:
+        """Calls, tokens and seconds the model layer spent across the corpus."""
+        calls = sum(o.llm_calls for o in self.usable)
+        tokens = sum(o.llm_tokens for o in self.usable)
+        seconds = sum(o.llm_seconds for o in self.usable)
+        return calls, tokens, seconds
+
+    @property
+    def llm_suppressed_total(self) -> int:
+        """Findings the model removed.
+
+        The number that decides whether it earned its place: if it suppressed nothing
+        and detection is unchanged, it cost time and changed no decision.
+        """
+        return sum(o.llm_suppressed for o in self.usable)
+
+    @property
+    def llm_rejected_total(self) -> int:
+        return sum(o.llm_rejected for o in self.usable)
+
+    @property
     def mislabelled(self) -> list[MutationOutcome]:
         """Mutations whose declared kind disagrees with what execution found.
 
@@ -279,11 +319,20 @@ def run_corpus(
     settings: Settings,
     base_ref: str = "main",
     allow_dirty: bool = False,
+    use_llm: bool = False,
 ) -> EvalReport:
     if not allow_dirty:
         assert_clean(git.repo_root(project_dir))
     outcomes: list[MutationOutcome] = []
     for index, mutation in enumerate(mutations, start=1):
         log.info("eval.mutation", n=f"{index}/{len(mutations)}", id=mutation.id)
-        outcomes.append(run_mutation(project_dir, mutation, settings=settings, base_ref=base_ref))
+        outcomes.append(
+            run_mutation(
+                project_dir,
+                mutation,
+                settings=settings,
+                base_ref=base_ref,
+                use_llm=use_llm,
+            )
+        )
     return EvalReport(outcomes=outcomes)
