@@ -76,37 +76,51 @@ the truth. A change that moves no number is treated as behaviour-preserving what
 was labelled — so the corpus labels itself, and the author's belief about what *should*
 be caught never enters the scoring.
 
-Current corpus: **9 defects, 6 controls**.
+Current corpus: **13 defects, 3 latent, 6 controls** across all eight rule families.
 
 | | |
 |---|---|
-| recall | **100%** (9/9) |
+| recall | **100%** (13/13) |
 | precision | **100%** |
 | false-positive rate | **0%** (0/6 controls flagged) |
-| caught by the family designed for it | 9/9 |
+| caught by the family designed for it | 13/13 |
+| latent defects detected | 3/3 |
 
-### Read that number carefully
+### The oracle has a blind spot, and it is named
 
-**100% here means the corpus has become too easy, not that the reviewer is complete.**
-Three specific reasons to discount it:
+Execution asks whether the numbers moved. That is the right question for most defects
+and the wrong one for three kinds, which are scored separately as **latent**:
+
+- **cost** — dropping an `is_incremental()` guard reprocesses all history and produces
+  byte-identical output at many times the price;
+- **lineage** — replacing `ref()` with a literal name reads the same table today while
+  removing the DAG edge that guarantees build order and keeps development out of
+  production;
+- **not yet triggered** — narrowing a late-arrival window loses nothing until something
+  actually arrives late.
+
+Scoring these against execution counted three correct flags as false positives. Left
+that way, it would have pushed the tool towards not reporting them at all.
+
+### Read the headline number carefully
+
+**100% here means the corpus is calibrated to the rules, not that the reviewer is
+complete.** Three reasons to discount it:
 
 1. **The rules were fitted to this corpus.** F2, F4 and F3003 were written *because*
    this corpus exposed them as false negatives. Measuring them against the same corpus
-   measures how well a patch fits the hole it was cut for. Honest recall requires defect
-   classes chosen without reference to the rules that exist.
-2. **Fifteen cases is a small sample**, hand-written by the same person who wrote the
+   measures how well a patch fits the hole it was cut for.
+2. **Twenty-two cases is a small sample**, hand-written by the same person who wrote the
    rules.
 3. **The oracle only sees what the data exercises.** Two mutations initially scored as
    false positives purely because the seed data never triggered them: every entity
    booked in one currency, and every revenue entry had a contract. The rules were right
-   and the oracle could not tell. Execution measures whether a change moves the numbers
-   *on this data*, not whether the code is correct — a latent defect reads as
-   behaviour-preserving until the data grows into it.
+   and the oracle could not tell.
 
 ### What the corpus has actually been worth
 
-Its value so far has not been the score. It is the four defects it found in the reviewer
-itself, none of which the unit tests caught:
+Not the score — the seven defects it found in the reviewer itself, none of which the
+137 unit tests caught:
 
 - **`GroupByGrainChangedRule` had never fired.** It read the outermost `SELECT` for a
   `GROUP BY`; dbt models put theirs in the final CTE.
@@ -116,12 +130,15 @@ itself, none of which the unit tests caught:
   `-1 * amt`; the compiled macro produces `-1 * CAST(...) / CAST(...)`, where the sign
   sits inside a division.
 - **Macro edits routed by filename.** `macros/money.sql` defines three macros, so
-  editing `signed_amount` reached models using `money` and never reached the model that
-  actually changed.
-
-A regression during this work — a one-directional path comparison that silently routed
-macro changes to no models at all — was caught by the corpus on the very next run, with
-two previously-detected defects going quiet.
+  editing `signed_amount` reached models using `money` and never the model that changed.
+- **A one-directional path comparison** then routed macro changes to no models at all —
+  caught on the very next run, with two previously-detected defects going quiet.
+- **Incremental models carried state between runs.** Each mutation inherited the
+  previous one's table, so three behaviour-preserving refactors measured as defects and
+  `F1004` fired on leftover rows. Builds now run `--full-refresh` first, then again
+  without it so `is_incremental()` is actually exercised.
+- **Grain derivation stopped at inline subqueries.** Wrapping a select — a routine
+  refactor — made a model's grain unprovable and fired `F7002` on a control.
 
 ## What is verified today
 

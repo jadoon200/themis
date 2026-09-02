@@ -50,7 +50,13 @@ class MutationOutcome:
 
     @property
     def classification(self) -> str:
-        """Confusion-matrix cell, using execution as truth."""
+        """Confusion-matrix cell, using execution as truth.
+
+        Latent defects sit outside the matrix: execution cannot judge them, so calling
+        a correct flag a false positive would be actively misleading.
+        """
+        if self.mutation.kind is Kind.LATENT:
+            return "latent_caught" if self.detected else "latent_missed"
         if self.is_true_defect:
             return "true_positive" if self.detected else "false_negative"
         return "false_positive" if self.detected else "true_negative"
