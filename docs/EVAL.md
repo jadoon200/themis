@@ -76,7 +76,8 @@ the truth. A change that moves no number is treated as behaviour-preserving what
 was labelled — so the corpus labels itself, and the author's belief about what *should*
 be caught never enters the scoring.
 
-Current corpus: **13 defects, 3 latent, 6 controls** across all eight rule families.
+Current corpus: **13 defects, 3 latent, 1 unruled, 6 controls** across all eight rule
+families.
 
 | | |
 |---|---|
@@ -85,6 +86,7 @@ Current corpus: **13 defects, 3 latent, 6 controls** across all eight rule famil
 | false-positive rate | **0%** (0/6 controls flagged) |
 | caught by the family designed for it | 13/13 |
 | latent defects detected | 3/3 |
+| unruled defects detected | 1/1 |
 
 ### The oracle has a blind spot, and it is named
 
@@ -101,6 +103,33 @@ and the wrong one for three kinds, which are scored separately as **latent**:
 
 Scoring these against execution counted three correct flags as false positives. Left
 that way, it would have pushed the tool towards not reporting them at all.
+
+### Where the model layer earns its place
+
+Measured, which is the only way this question was ever going to be settled:
+
+| Run | Model calls | Findings removed | Causes proposed |
+|---|---|---|---|
+| corpus with `--execute` | **0** | 0 | 0 |
+| corpus with `--no-execute` | 2 | 0 | 0 |
+| unruled defect, with execution | 6 | 0 | **6** |
+
+**With execution enabled the model makes no calls at all.** Measurement settles every
+finding first, so there is nothing left to adjudicate. On the gated path, which model
+is configured is currently irrelevant.
+
+**It suppressed nothing, anywhere.** Detection is entirely the rules' work, and on a
+corpus calibrated to those rules that is the expected result rather than a surprise.
+
+**What it did contribute is explanation.** On `unruled_fx_inverted` — a defect outside
+every rule family — the rules found nothing, execution reported that revenue had moved
+12.8% on a regulatory model, and the model proposed the cause: *"dividing instead of
+multiplying the amount_txn_ccy by the exchange rate."* On the downstream models, where
+the compiled SQL was unchanged, it correctly declined and said the cause was upstream.
+
+That is the division the design settled on: **rules detect, execution verifies, and the
+model explains what neither can.** If a cause were anticipable, there would be a rule
+for it.
 
 ### Read the headline number carefully
 
@@ -139,6 +168,11 @@ Not the score — the seven defects it found in the reviewer itself, none of whi
   without it so `is_incremental()` is actually exercised.
 - **Grain derivation stopped at inline subqueries.** Wrapping a select — a routine
   refactor — made a model's grain unprovable and fired `F7002` on a control.
+- **A measured change with no finding was reported as "No findings".** Inverting an FX
+  conversion moved revenue by 1.8 million across six models, and because no rule
+  covered it the review came back clean. This is the worst failure a merge gate can
+  have, and only an unruled mutation could have found it. `X0001` now reports any
+  measured change nothing accounts for.
 
 ## What is verified today
 
