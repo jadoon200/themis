@@ -72,10 +72,24 @@ def review(
         head=head,
         settings=settings,
         run_execution=execute or settings.execute_enabled,
+        run_llm=not no_llm,
     )
 
     if result.execution is not None and not result.execution.ran:
         log.warning("review.execution_skipped", reason=result.execution.skipped_reason)
+
+    if result.llm is not None:
+        usage = result.llm.usage
+        log.info(
+            "review.llm",
+            adjudicated=result.llm.adjudicated,
+            settled_without_llm=result.llm.settled_without_llm,
+            suppressed=result.llm.suppressed,
+            rejected=result.llm.rejected_by_selfcheck,
+            calls=usage.calls,
+            tokens=usage.prompt_tokens + usage.completion_tokens,
+            seconds=round(usage.seconds, 1),
+        )
 
     for macro, models in sorted(result.macro_affected.items()):
         log.info("review.macro_impact", macro=macro, models=len(models))

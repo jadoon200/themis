@@ -15,6 +15,7 @@ from themis.config import Settings
 from themis.execute.runner import ExecutionResult, execute
 from themis.logging import get_logger
 from themis.models import Confidence, Finding, Grain, GrainSource
+from themis.review.supervisor import ReviewSummary
 from themis.rules.base import RuleContext, SkippedRule
 from themis.rules.registry import run_rules
 
@@ -33,6 +34,7 @@ class ReviewResult:
     degraded_reason: str | None = None
     executed: bool = False
     execution: ExecutionResult | None = None
+    llm: ReviewSummary | None = None
 
 
 def build_contexts(
@@ -147,6 +149,8 @@ def review(
     target: str = "dev",
     prod_manifest: Path | None = None,
     run_execution: bool = False,
+    run_llm: bool = False,
+    pr_description: str | None = None,
 ) -> ReviewResult:
     """Run the deterministic stages, optionally including execution.
 
@@ -205,12 +209,37 @@ def review(
         else:
             log.warning("execute.skipped", reason=execution.skipped_reason)
 
+    llm_summary: ReviewSummary | None = None
+    if run_llm and findings:
+        # Runs last on purpose. Execution settles what it can first, so the model is
+        # only asked about findings that are still genuinely open.
+        from themis.llm.provider import LLMError, build_provider
+        from themis.review import supervisor
+
+        try:
+            provider = build_provider(settings)
+            llm_summary = supervisor.review(
+                findings,
+                provider=provider,
+                settings=settings,
+                snapshot=acquired.after,
+                grains=grains,
+                changed_models=tuple(c.model_name for c in contexts),
+                pr_description=pr_description,
+            )
+            findings = llm_summary.findings
+        except LLMError as exc:
+            # A model that cannot be reached must not fail the review; the
+            # deterministic findings stand on their own.
+            log.warning("review.llm_unavailable", error=str(exc)[:200])
+
     log.info(
         "review.complete",
         models=len(contexts),
         findings=len(findings),
         skipped=len(skipped),
         executed=bool(execution and execution.ran),
+        llm=bool(llm_summary),
     )
     return ReviewResult(
         findings=findings,
@@ -221,4 +250,5 @@ def review(
         degraded_reason=acquired.degraded_reason,
         executed=bool(execution and execution.ran),
         execution=execution,
+        llm=llm_summary,
     )
