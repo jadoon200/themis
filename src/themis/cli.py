@@ -249,9 +249,53 @@ def ask(
     Answers come only from the persisted run artifact. A question the artifact cannot
     answer gets a refusal, never an inference.
     """
+    from themis.ask.answer import answer_question
+    from themis.ask.retrieval import gather, latest_run, run_by_key
+    from themis.db.base import session_scope
+    from themis.llm.provider import build_provider
+
     configure_logging(verbose=verbose)
-    log.info("ask.start", run=run, question=question)
-    raise typer.Exit(code=0)
+    settings = load_settings()
+
+    with session_scope() as session:
+        stored = latest_run(session) if run == "latest" else run_by_key(session, run)
+        if stored is None:
+            typer.echo(
+                "No completed review to ask about."
+                if run == "latest"
+                else f"No review with key {run}.",
+                err=True,
+            )
+            raise typer.Exit(code=2)
+
+        facts = gather(session, stored, question)
+        context_is_empty = facts.is_empty
+        run_key = stored.run_key
+
+        # Answering happens inside the session because the facts are ORM rows; nothing
+        # is written, and the model is never given a database handle.
+        result = answer_question(
+            question, facts, provider=build_provider(settings), settings=settings
+        )
+
+    typer.echo(f"[{run_key}]")
+    typer.echo("")
+
+    if result.grounded:
+        typer.echo(result.text)
+        if result.evidence_quote:
+            typer.echo("")
+            typer.echo(f"  based on: {result.evidence_quote}")
+        raise typer.Exit(code=0)
+
+    typer.echo(f"Cannot answer from this review: {result.refusal_reason}")
+    if context_is_empty:
+        typer.echo("")
+        typer.echo(
+            "This review recorded nothing about what you asked. That may itself be the "
+            "answer — or the question is about something the review did not cover."
+        )
+    raise typer.Exit(code=1)
 
 
 @app.command(name="eval")

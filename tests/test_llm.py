@@ -319,3 +319,20 @@ def test_a_pack_carries_measured_deltas_when_present() -> None:
     delta = ExecutionDelta(model_name="fct_revenue", rows_before=15, rows_after=45, sum_deltas={})
     pack = build_pack(_finding(delta=delta), snapshot=_snapshot(), grains=_grains())
     assert "15" in pack.text and "45" in pack.text
+
+
+def test_an_elided_quote_is_accepted() -> None:
+    """Models shorten a long quote rather than reproducing it in full. That is not
+    fabrication, and rejecting it discards correct answers."""
+    quote = "stg_fx_rates looks unique [...] but that is heuristic"
+    assert selfcheck.check(_adjudication(evidence_quote=quote), _pack()).ok
+
+
+def test_elision_does_not_smuggle_in_invention() -> None:
+    """Every substantial segment must still appear, so a fabricated half is caught."""
+    quote = "stg_fx_rates looks unique [...] a uniqueness test guarantees this is safe"
+    assert not selfcheck.check(_adjudication(evidence_quote=quote), _pack()).ok
+
+
+def test_a_quote_of_only_elision_markers_is_rejected() -> None:
+    assert not selfcheck.check(_adjudication(evidence_quote="... [...] ..."), _pack()).ok

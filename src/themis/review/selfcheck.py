@@ -25,10 +25,34 @@ log = get_logger(__name__)
 # A quote shorter than this proves nothing — "the" appears in every context.
 _MIN_QUOTE_CHARS = 12
 
+# Models elide the middle of a long quote rather than reproducing it in full. That is
+# not fabrication, so the check splits on the elision and requires every substantial
+# segment to appear — which keeps the property that every part was actually shown.
+_ELISION = re.compile(r"\s*(?:\[\.\.\.\]|\.\.\.|…|\[…\])\s*")
+_MIN_SEGMENT_CHARS = 12
+
 
 def _normalise(text: str) -> str:
     """Collapse whitespace so a reflowed quote still matches."""
     return re.sub(r"\s+", " ", text).strip().lower()
+
+
+def quote_is_grounded(quote: str, context: str) -> bool:
+    """Whether every substantial part of a quote appears in the context.
+
+    Shared by the specialists and the follow-up lane so there is exactly one definition
+    of what counts as grounded — two implementations would inevitably drift, and the
+    weaker one would decide.
+    """
+    normalised_context = _normalise(context)
+    segments = [
+        segment
+        for segment in (_normalise(part) for part in _ELISION.split(quote))
+        if len(segment) >= _MIN_SEGMENT_CHARS
+    ]
+    if not segments:
+        return False
+    return all(segment in normalised_context for segment in segments)
 
 
 @dataclass(frozen=True)
@@ -51,9 +75,10 @@ def check(adjudication: Adjudication, pack: ContextPack) -> CheckResult:
             ok=False, reason=f"evidence quote too short to prove anything ({len(quote)} chars)"
         )
 
-    if _normalise(quote) not in _normalise(pack.text):
+    if not quote_is_grounded(quote, pack.text):
         return CheckResult(
-            ok=False, reason="evidence quote does not appear in the context it was given"
+            ok=False,
+            reason="evidence quote does not appear in the context it was given",
         )
 
     if not adjudication.rationale.strip():
