@@ -305,6 +305,7 @@ def review(
                 grains=grains,
                 changed_models=tuple(c.model_name for c in contexts),
                 pr_description=pr_description,
+                before_snapshot=acquired.before,
             )
             findings = llm_summary.findings
         except LLMError as exc:

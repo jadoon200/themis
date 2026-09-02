@@ -20,6 +20,7 @@ from themis.llm.provider import Provider, Usage
 from themis.logging import get_logger
 from themis.models import Confidence, Finding, Grain, Severity, Verdict
 from themis.review import selfcheck
+from themis.review.explain import explain
 from themis.review.specialists import (
     INTENT,
     Adjudication,
@@ -49,6 +50,10 @@ class ReviewSummary:
     settled_without_llm: int = 0
     suppressed: int = 0
     rejected_by_selfcheck: int = 0
+    # Measured changes the model proposed a cause for. Counted separately from
+    # adjudications because it is a different job: not deciding whether a finding is
+    # real, only suggesting why an already-certain number moved.
+    explained: int = 0
     undisclosed: list[str] = field(default_factory=list)
 
     @property
@@ -120,6 +125,7 @@ def review(
     grains: dict[str, Grain],
     changed_models: tuple[str, ...] = (),
     pr_description: str | None = None,
+    before_snapshot: ProjectSnapshot | None = None,
 ) -> ReviewSummary:
     """Adjudicate the findings that warrant it, and run the intent pass."""
     summary = ReviewSummary()
@@ -127,6 +133,23 @@ def review(
 
     for finding in findings:
         if not _needs_adjudication(finding):
+            # X0001 means "the numbers moved and nothing accounts for it". The
+            # measurement is settled, so there is nothing to adjudicate — but the cause
+            # is genuinely unknown, and proposing one is the single job here that a
+            # rule cannot be written for. If it could be, the rule would exist.
+            if finding.rule_id == "X0001" and before_snapshot is not None:
+                hypothesis = explain(
+                    finding,
+                    provider=provider,
+                    settings=settings,
+                    before=before_snapshot,
+                    after=snapshot,
+                    usage=summary.usage,
+                )
+                if hypothesis:
+                    summary.explained += 1
+                    reviewed.append(finding.model_copy(update={"llm_rationale": hypothesis}))
+                    continue
             summary.settled_without_llm += 1
             reviewed.append(finding)
             continue
@@ -172,6 +195,7 @@ def review(
         settled=summary.settled_without_llm,
         suppressed=summary.suppressed,
         rejected=summary.rejected_by_selfcheck,
+        explained=summary.explained,
         calls=summary.usage.calls,
         tokens=summary.usage.prompt_tokens + summary.usage.completion_tokens,
     )
