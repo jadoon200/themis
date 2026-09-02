@@ -338,6 +338,12 @@ def eval_cmd(
             help="Measure the committed state even with uncommitted changes present.",
         ),
     ] = False,
+    generated_limit: Annotated[
+        int, typer.Option("--generated-limit", help="How many generated mutations to run.")
+    ] = 15,
+    generated_seed: Annotated[
+        int, typer.Option("--generated-seed", help="Seed, so a run is reproducible.")
+    ] = 0,
     verbose: VerboseOpt = False,
 ) -> None:
     """Run the mutation corpus and score the reviewer against it.
@@ -352,8 +358,18 @@ def eval_cmd(
     configure_logging(verbose=verbose)
     settings = load_settings()
 
+    if mutations == "generated":
+        from themis.eval.generator import generate
+
+        corpus = generate(project, limit=generated_limit, seed=generated_seed)
+        if not corpus:
+            typer.echo("No mutations could be generated from this project.", err=True)
+            raise typer.Exit(code=2)
+    else:
+        corpus = ()
+
     try:
-        corpus = select(mutations)
+        corpus = corpus or select(mutations)
     except KeyError as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=2) from exc
@@ -419,6 +435,27 @@ def eval_cmd(
             "measurement. Treat the numbers as weaker than an --execute run."
         )
         typer.echo("")
+    if report.generated:
+        moved = [o for o in report.generated if o.changed_results]
+        typer.echo(
+            f"generated mutations (produced from the code, not chosen): "
+            f"{len(report.generated)} run, {len(moved)} moved the numbers"
+        )
+        if report.generated_missed:
+            typer.echo(
+                "  MISSED — these changed results and nothing reported them. Each is a "
+                "defect class no rule covers:"
+            )
+            for outcome in report.generated_missed:
+                typer.echo(f"    {outcome.mutation.id}: {outcome.mutation.description}")
+        else:
+            typer.echo("  all of them were reported")
+        if report.generated_noise:
+            typer.echo("  reported but changed nothing:")
+            for outcome in report.generated_noise:
+                typer.echo(f"    {outcome.mutation.id}: {outcome.mutation.description}")
+        typer.echo("")
+
     if report.unruled:
         typer.echo(
             f"unruled defects (outside every rule family — the safety net's test): "

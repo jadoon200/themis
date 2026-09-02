@@ -71,6 +71,12 @@ class MutationOutcome:
         """
         if self.mutation.kind is Kind.LATENT:
             return "latent_caught" if self.detected else "latent_missed"
+        if self.mutation.kind is Kind.GENERATED:
+            # Nobody chose these, so they are scored on the oracle alone: did the
+            # numbers move, and was anything reported.
+            if not self.changed_results:
+                return "generated_inert" if not self.detected else "generated_noise"
+            return "generated_caught" if self.detected else "generated_MISSED"
         if self.mutation.kind is Kind.UNRULED:
             # The measure that matters is whether anything reported it, not which
             # family did — by construction no family covers it.
@@ -329,6 +335,25 @@ class EvalReport:
         structurally cannot make: if the cause were anticipable there would be a rule.
         """
         return sum(o.llm_explained for o in self.usable)
+
+    @property
+    def generated(self) -> list[MutationOutcome]:
+        """Mutations produced from the code rather than chosen."""
+        return [o for o in self.usable if o.mutation.kind is Kind.GENERATED]
+
+    @property
+    def generated_missed(self) -> list[MutationOutcome]:
+        """Generated mutations that moved the numbers and were not reported.
+
+        The most useful output this corpus can produce: a real defect class nobody
+        anticipated, found without anyone having to imagine it first.
+        """
+        return [o for o in self.generated if o.changed_results and not o.detected]
+
+    @property
+    def generated_noise(self) -> list[MutationOutcome]:
+        """Generated changes that moved nothing and were still reported."""
+        return [o for o in self.generated if not o.changed_results and o.detected]
 
     @property
     def mislabelled(self) -> list[MutationOutcome]:

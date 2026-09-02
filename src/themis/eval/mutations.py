@@ -40,6 +40,12 @@ class Kind(StrEnum):
     push the tool towards ignoring them. They are scored on detection instead, and
     reported separately so the distinction stays visible.
 
+    GENERATED marks a mutation produced mechanically from the code rather than chosen
+    by anyone. Whether it is a defect is unknown in advance and settled by execution.
+    These are the only cases in the corpus not selected with knowledge of the rules, so
+    a generated mutation that moves the numbers and goes unreported is the most useful
+    signal available: a real defect class nobody anticipated.
+
     UNRULED is a defect deliberately outside every rule family. It exists to keep the
     corpus honest: every other mutation is a class somebody wrote a rule for, so the
     rules will always win on them. An unruled defect tests the safety net instead —
@@ -51,6 +57,7 @@ class Kind(StrEnum):
     CONTROL = "control"
     LATENT = "latent"
     UNRULED = "unruled"
+    GENERATED = "generated"
 
 
 @dataclass(frozen=True)
