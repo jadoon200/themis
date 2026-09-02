@@ -261,6 +261,35 @@ Each mutation now runs in a throwaway git worktree on a detached HEAD, so the ha
 cannot reach the caller's tree at all. The failure is impossible rather than guarded
 against, which is the only version of this that survives someone editing during a run.
 
+## Calibration against a real project
+
+A dbt project in production was reviewed by eye (not committed here, and no code from
+it is in this repository). Four things it exposed:
+
+**Schema YAML changes reviewed nothing at all.** Where materialization, partitioning
+and hooks are declared in YAML rather than in the model file — which is common — a
+config change altering real write behaviour touched no `.sql` and produced an empty
+review. `is_schema_yml` existed and was never used. Models are now linked to their YAML
+through the manifest's `patch_path`; a four-line YAML edit reviews the nine models it
+configures.
+
+**Table properties and hooks were being discarded.** Hive- and Iceberg-backed projects
+express partitioning and write semantics through `properties` and `pre_hook`, so a
+reviewer ignoring them cannot see a repartitioning at all. Now captured, with `F5006`
+for a changed partition specification and `F5007` for the removal of
+partition-overwrite writes — after which re-processing a period appends a second copy
+instead of replacing the first.
+
+**Source tables addressed as `catalog.{{ env_var("SCHEMA") }}.table`** rather than
+`ref()` or `source()`. `F6002` would have fired on every model in the project, which is
+the same as not shipping the rule. It does not, because Jinja is stripped before the
+literal-name match — luck rather than design, so there is now a test holding it.
+
+**Dynamic SQL generated from data.** A macro that reads a table at compile time and
+builds a `CASE` expression from its rows means the compiled SQL changes when the *data*
+changes, not only the code. THEMIS would report that as a large semantic diff with no
+code change behind it. Not yet handled, and recorded below.
+
 ## Known limitations
 
 - **Backend C (raw files) is close to blind** against macro-heavy projects. Jinja is
@@ -271,6 +300,10 @@ against, which is the only version of this that survives someone editing during 
   schema means every `ref()` resolves there, so the full ancestor closure of each
   measured model must be built. At scale the dbt-native answer is `--defer` against a
   production manifest; that needs the dual-manifest backend and is not built yet.
+- **Dynamic SQL generation is not handled.** A macro that builds SQL from query results
+  at compile time produces compiled SQL that varies with the data. The semantic diff
+  would attribute that to the change under review, which is wrong. Detecting such
+  macros and reporting them as unreviewable is the honest fix; neither exists yet.
 - **Measurement is DuckDB-only.** The warehouse client protocol is small and a Trino
   implementation is a modest addition, but it does not exist today.
 - **DuckDB is not Trino.** The demo project stays inside the dialects' intersection.
