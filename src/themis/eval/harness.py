@@ -342,7 +342,13 @@ class EvalReport:
         Worth surfacing rather than hiding: a 'defect' that changes nothing is a bad
         test, and a 'control' that moves the numbers is a bug in the control.
         """
-        return [o for o in self.scored if (o.mutation.kind is Kind.DEFECT) != o.changed_results]
+        return [
+            o
+            for o in self.scored
+            # Meaningless without an oracle: nothing was measured, so every defect
+            # trivially "did not change results" and the whole list is noise.
+            if o.oracle_available and (o.mutation.kind is Kind.DEFECT) != o.changed_results
+        ]
 
 
 def run_corpus(
