@@ -317,9 +317,65 @@ def _final_select_is_star(sql: str, dialect: str) -> bool:
     return source.this.name not in ctes
 
 
+@dataclass
+class DataDependentSqlRule(Rule):
+    """This model's compiled SQL is assembled from the result of a query.
+
+    A macro that runs a query during compilation and builds SQL from its rows produces
+    compiled code that changes whenever the *data* changes. Two compilations of
+    identical code differ, so the semantic diff attributes those differences to the
+    change under review — and every finding on the model inherits that doubt.
+
+    Reporting it is the honest response. Silently diffing such a model produces
+    confident findings about edits nobody made.
+    """
+
+    rule_id: str = field(init=False, default="F6005")
+    family: str = field(init=False, default=FAMILY)
+    severity: Severity = field(init=False, default=Severity.MEDIUM)
+    requires_compiled_sql: bool = field(init=False, default=False)
+
+    def check(self, ctx: RuleContext) -> list[Finding]:
+        if ctx.after is None:
+            return []
+        affected = ctx.after_snapshot.data_dependent_models()
+        macros = affected.get(ctx.model_name)
+        if not macros:
+            return []
+
+        return [
+            Finding(
+                rule_id=self.rule_id,
+                family=self.family,
+                title="Compiled SQL is generated from query results",
+                severity=self.severity,
+                confidence=Confidence.PROVEN,
+                evidence=Evidence(
+                    model_name=ctx.model_name,
+                    file_path=ctx.after.file_path,
+                    note=f"built by macro(s) that query at compile time: {', '.join(macros)}",
+                ),
+                consequence=(
+                    "This model's SQL is assembled at compile time from the rows of a "
+                    "query, so it changes when that data changes even if nobody edits "
+                    "the code. Structural findings on this model — including any "
+                    "reported above — may describe differences the author did not "
+                    "make, and a clean result does not mean the model is unchanged."
+                ),
+                suggestion=(
+                    "Review this model against its source data as well as its diff. "
+                    "Running with --execute compares actual results, which is not "
+                    "affected by the generated SQL differing."
+                ),
+                blast_radius=ctx.blast_radius,
+            )
+        ]
+
+
 RULES: tuple[Rule, ...] = (
     ColumnRemovedWithConsumersRule(),
     HardcodedTableReferenceRule(),
     ContractViolatedRule(),
     SelectStarIntroducedRule(),
+    DataDependentSqlRule(),
 )

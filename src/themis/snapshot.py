@@ -128,6 +128,26 @@ class MacroNode(BaseModel):
     # reaches them through its callers, so the impact walk has to be transitive.
     depends_on_macros: tuple[str, ...] = ()
 
+    @property
+    def reads_data_at_compile_time(self) -> bool:
+        """Whether this macro builds SQL from the result of a query.
+
+        A macro that runs a query during compilation and assembles SQL from its rows
+        produces compiled code that changes when the *data* changes, not the code. Every
+        analysis downstream then attributes those differences to the change under
+        review, which is simply wrong.
+        """
+        lowered = self.raw_sql.lower()
+        return any(
+            marker in lowered
+            for marker in (
+                "run_query(",
+                "load_result(",
+                "call statement",
+                "get_column_values",
+            )
+        )
+
 
 class Exposure(BaseModel):
     """A downstream consumer — dashboard, report, or regulatory submission.
@@ -200,6 +220,39 @@ class ProjectSnapshot(BaseModel):
             if not grown:
                 break
         return callers
+
+    def data_dependent_models(self) -> dict[str, tuple[str, ...]]:
+        """Models whose compiled SQL is assembled from query results, and by which macros.
+
+        These cannot be diffed meaningfully: two compilations of identical code differ
+        whenever the underlying data has moved, so a semantic diff reports changes the
+        author did not make.
+        """
+        generators = {
+            macro.name for macro in self.macros.values() if macro.reads_data_at_compile_time
+        }
+        if not generators:
+            return {}
+
+        # A macro that merely calls a generator inherits the property.
+        reaching: set[str] = set(generators)
+        for _ in range(10):
+            grown = False
+            for macro in self.macros.values():
+                if macro.name in reaching:
+                    continue
+                if {ref.split(".")[-1] for ref in macro.depends_on_macros} & reaching:
+                    reaching.add(macro.name)
+                    grown = True
+            if not grown:
+                break
+
+        affected: dict[str, tuple[str, ...]] = {}
+        for name, model in self.models.items():
+            used = {ref.split(".")[-1] for ref in model.depends_on_macros} & reaching
+            if used:
+                affected[name] = tuple(sorted(used))
+        return affected
 
     def models_in_yaml(self, file_path: str) -> tuple[str, ...]:
         """Models configured by one schema YAML.

@@ -176,3 +176,70 @@ def test_macro_file_matches_whether_or_not_the_path_carries_a_prefix() -> None:
     assert snapshot.macros_in_file("macros/money.sql")
     assert snapshot.macros_in_file("demo_project/macros/money.sql")
     assert snapshot.macros_in_file("./macros/money.sql")
+
+
+def _snapshot_with_generator() -> ProjectSnapshot:
+    """A macro that queries at compile time, and one that merely calls it."""
+    return ProjectSnapshot(
+        revision="test",
+        backend=Backend.MANIFEST,
+        macros={
+            "build_case": MacroNode(
+                name="build_case",
+                unique_id="macro.d.build_case",
+                file_path="macros/gen.sql",
+                raw_sql="{% set rows = run_query('select 1') %}{{ rows }}",
+            ),
+            "wrapper": MacroNode(
+                name="wrapper",
+                unique_id="macro.d.wrapper",
+                file_path="macros/gen.sql",
+                raw_sql="{{ build_case() }}",
+                depends_on_macros=("macro.d.build_case",),
+            ),
+        },
+        models={
+            "generated": ModelNode(
+                name="generated",
+                unique_id="model.d.generated",
+                file_path="models/generated.sql",
+                raw_sql="select 1",
+                compiled_sql="select 1",
+                depends_on_macros=("macro.d.wrapper",),
+            ),
+            "ordinary": ModelNode(
+                name="ordinary",
+                unique_id="model.d.ordinary",
+                file_path="models/ordinary.sql",
+                raw_sql="select 1",
+                compiled_sql="select 1",
+            ),
+        },
+    )
+
+
+def test_a_macro_that_queries_at_compile_time_is_detected() -> None:
+    """Its compiled SQL is a function of the data, so a structural diff of a model
+    using it reports differences nobody made."""
+    snapshot = _snapshot_with_generator()
+    assert snapshot.macros["build_case"].reads_data_at_compile_time
+
+
+def test_a_plain_macro_is_not_flagged() -> None:
+    snapshot = _snapshot_with_macros()
+    assert not snapshot.macros["signed_amount"].reads_data_at_compile_time
+
+
+def test_the_property_is_inherited_through_a_calling_macro() -> None:
+    """A model calling a wrapper is just as affected as one calling the generator."""
+    affected = _snapshot_with_generator().data_dependent_models()
+    assert "generated" in affected
+    assert affected["generated"] == ("wrapper",)
+
+
+def test_models_not_using_a_generator_are_unaffected() -> None:
+    assert "ordinary" not in _snapshot_with_generator().data_dependent_models()
+
+
+def test_a_project_without_generators_reports_nothing() -> None:
+    assert _snapshot_with_macros().data_dependent_models() == {}
