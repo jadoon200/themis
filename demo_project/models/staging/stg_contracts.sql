@@ -8,5 +8,7 @@ select
     cast(contract_start as date) as contract_start,
     cast(contract_end as date)   as contract_end,
     recognition_method,
-    term_months
+    term_months,
+    -- Counterparty contact detail. Deliberately not carried into any mart.
+    customer_email
 from {{ ref('raw_contracts') }}

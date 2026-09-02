@@ -85,6 +85,7 @@ _STG_ENTRIES = "models/staging/stg_gl_entries.sql"
 _MACRO_MONEY = "macros/money.sql"
 _INCREMENTAL = "models/marts/fct_revenue_incremental.sql"
 _MART_REVENUE = "models/marts/fct_revenue.sql"
+_STG_CONTRACTS = "models/staging/stg_contracts.sql"
 _REVENUE_FILTER = (
     "    where {{ external_revenue_filter('accounts.account_type', 'accounts.is_intercompany') }}"
 )
@@ -244,6 +245,44 @@ _ALL_INJECTED: tuple[Mutation, ...] = (
             "        and entries.rate_period = rates.rate_date"
         ),
         replace="        on 1 = 1",
+    ),
+    Mutation(
+        id="pii_column_exposed",
+        kind=Kind.DEFECT,
+        expects_family="F7",
+        description="Counterparty email carried into a published mart",
+        relative_path=_MART_REVENUE,
+        find="    amount_txn_ccy,\n    amount_usd",
+        replace="    amount_txn_ccy,\n    amount_usd,\n    customer_email",
+    ),
+    Mutation(
+        id="approx_aggregate_in_regulatory",
+        kind=Kind.LATENT,
+        expects_family="F7",
+        description=(
+            "Exact contract count replaced by an approximation in a regulatory model — "
+            "identical on small data, wrong at scale"
+        ),
+        relative_path=_MART_SUMMARY,
+        find="count(distinct contract_id)     as contract_count",
+        replace="approx_distinct(contract_id)    as contract_count",
+    ),
+    Mutation(
+        id="grain_unprovable_on_regulatory",
+        kind=Kind.LATENT,
+        expects_family="F7",
+        description=(
+            "A join in the final select of a regulatory model, so its grain can no "
+            "longer be derived and no fan-out check on it means anything"
+        ),
+        relative_path=_MART_SUMMARY,
+        find="select * from aggregated",
+        replace=(
+            "select aggregated.*\n"
+            "from aggregated\n"
+            "left join {{ ref('dim_accounts') }} as accounts\n"
+            "    on accounts.entity_code = aggregated.entity_code"
+        ),
     ),
     Mutation(
         id="unruled_fx_inverted",
