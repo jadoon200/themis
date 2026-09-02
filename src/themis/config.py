@@ -24,8 +24,12 @@ class Settings(BaseSettings):
     llm_base_url: str = "http://127.0.0.1:11434"
     # High-volume, narrow, JSON-schema'd specialist calls.
     llm_specialist_model: str = "qwen3:8b"
-    # Low-volume calls that need actual judgement.
-    llm_supervisor_model: str = "qwen3:30b"
+    # The intent pass, once per review. Nominally the place for a larger model, but
+    # qwen3:30b measured at 2.0 tok/s locally and timed out before returning anything,
+    # so it cost 18GB and contributed nothing. Kept as a separate setting because a
+    # deployment with the hardware to run a larger model should use one here — that is
+    # a decision for the eval to make, not an assumption to ship.
+    llm_supervisor_model: str = "qwen3:8b"
     llm_timeout_s: float = 120.0
     # Context packs are kept small on purpose; the LLM never sees a whole file.
     llm_max_context_tokens: int = 2000

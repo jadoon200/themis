@@ -57,6 +57,13 @@ def review(
         bool,
         typer.Option("--execute/--no-execute", help="Build base and head and diff real results."),
     ] = False,
+    pr_description: Annotated[
+        str | None,
+        typer.Option(
+            "--pr-description",
+            help="What the author says the change does. Enables the intent pass.",
+        ),
+    ] = None,
     verbose: VerboseOpt = False,
 ) -> None:
     """Review the dbt model changes between two revisions."""
@@ -73,10 +80,19 @@ def review(
         settings=settings,
         run_execution=execute or settings.execute_enabled,
         run_llm=not no_llm,
+        pr_description=pr_description,
     )
 
     if result.execution is not None and not result.execution.ran:
         log.warning("review.execution_skipped", reason=result.execution.skipped_reason)
+
+    if result.llm is not None and result.llm.undisclosed:
+        typer.echo("")
+        typer.echo("### Not mentioned in the description")
+        typer.echo("")
+        for item in result.llm.undisclosed:
+            typer.echo(f"- {item}")
+        typer.echo("")
 
     if result.llm is not None:
         usage = result.llm.usage
