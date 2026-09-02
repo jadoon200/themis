@@ -83,13 +83,19 @@ def run_dbt(
     """Invoke dbt in a project directory, with the target guard applied first."""
     assert_target_allowed(target, allowed_targets)
 
+    # Absolute throughout. The subprocess runs with cwd set to the project, so a
+    # relative --project-dir would resolve against itself and quietly address the
+    # wrong directory — or, worse, an existing one.
+    project_dir = project_dir.resolve()
+    profiles = (profiles_dir or project_dir).resolve()
+
     args = [
         dbt_executable(),
         *command,
         "--project-dir",
         str(project_dir),
         "--profiles-dir",
-        str(profiles_dir or project_dir),
+        str(profiles),
         "--target",
         target,
     ]
@@ -103,6 +109,13 @@ def run_dbt(
             check=False,
             timeout=timeout_s,
             env=env,
+            # Run from the project directory. Relative paths in a profile — a DuckDB
+            # file, a keyfile — resolve against the working directory, so invoking dbt
+            # from elsewhere silently points it at a different database. That stayed
+            # invisible until a macro used run_query at compile time: the query then
+            # hit an empty database, dbt aborted, and *every* model lost its compiled
+            # SQL while the manifest still looked valid.
+            cwd=str(project_dir),
         )
     except subprocess.TimeoutExpired as exc:
         raise DbtError(f"dbt {' '.join(command)} timed out after {timeout_s}s") from exc

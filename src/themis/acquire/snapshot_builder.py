@@ -66,16 +66,36 @@ def _compile_snapshot(
     target: str,
     allowed_targets: tuple[str, ...],
     timeout_s: float,
+    anchor_dir: Path | None = None,
 ) -> ProjectSnapshot | None:
-    """Compile a project revision into a snapshot, or None if it cannot be compiled."""
+    """Compile a project revision into a snapshot, or None if it cannot be compiled.
+
+    ``anchor_dir`` points relative database paths at the real project. Without it a
+    base revision compiled in a worktree addresses an empty database beside itself,
+    and any macro that queries at compile time fails.
+    """
+    import tempfile
+
+    from themis.execute.profiles import ProfileError, write_anchored_profile
+
     try:
-        manifest_path = compile_project(
-            project_dir,
-            target=target,
-            allowed_targets=allowed_targets,
-            timeout_s=timeout_s,
-        )
-        return load_manifest(manifest_path, revision=revision, backend=Backend.MANIFEST)
+        profiles_dir: Path | None = None
+        with tempfile.TemporaryDirectory(prefix="themis-compile-") as tmp:
+            if anchor_dir is not None:
+                try:
+                    profiles_dir = write_anchored_profile(
+                        project_dir, Path(tmp), target=target, anchor_dir=anchor_dir
+                    )
+                except ProfileError as exc:
+                    log.warning("acquire.profile_unreadable", error=str(exc)[:200])
+            manifest_path = compile_project(
+                project_dir,
+                target=target,
+                allowed_targets=allowed_targets,
+                timeout_s=timeout_s,
+                profiles_dir=profiles_dir,
+            )
+            return load_manifest(manifest_path, revision=revision, backend=Backend.MANIFEST)
     except (DbtError, ManifestError) as exc:
         log.warning("acquire.compile_failed", revision=revision[:8], error=str(exc)[:400])
         return None
@@ -128,6 +148,9 @@ def acquire(
                 target=target,
                 allowed_targets=allowed_targets,
                 timeout_s=timeout_s,
+                # Anchor to the real project so a compile-time query reaches the
+                # actual database rather than an empty one in the worktree.
+                anchor_dir=project_dir,
             )
 
     degraded: str | None = None

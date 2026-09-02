@@ -89,6 +89,36 @@ def read_profile(
     return resolved
 
 
+def write_anchored_profile(
+    project_dir: Path,
+    destination: Path,
+    *,
+    target: str,
+    anchor_dir: Path,
+    profiles_dir: Path | None = None,
+) -> Path:
+    """Write a profile identical to the project's, but with paths anchored elsewhere.
+
+    Compiling a base revision happens inside a temporary worktree, where a relative
+    database path resolves to an empty database beside the checkout. That is harmless
+    until a macro queries at compile time — then the query fails, dbt aborts, and every
+    model in the project loses its compiled SQL while the manifest still looks valid.
+    """
+    output = dict(read_profile(project_dir, target=target, profiles_dir=profiles_dir))
+    raw_path = output.get("path")
+    if isinstance(raw_path, str) and raw_path and raw_path != ":memory:":
+        candidate = Path(raw_path)
+        if not candidate.is_absolute():
+            output["path"] = str((anchor_dir / candidate).resolve())
+
+    name = project_profile_name(project_dir)
+    destination.mkdir(parents=True, exist_ok=True)
+    (destination / "profiles.yml").write_text(
+        yaml.safe_dump({name: {"target": target, "outputs": {target: output}}}, sort_keys=False)
+    )
+    return destination
+
+
 def write_profile_for_schema(
     project_dir: Path,
     destination: Path,
