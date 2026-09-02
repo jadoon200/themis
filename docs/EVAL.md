@@ -106,30 +106,57 @@ that way, it would have pushed the tool towards not reporting them at all.
 
 ### Where the model layer earns its place
 
-Measured, which is the only way this question was ever going to be settled:
+Measured, which is the only way this was going to be settled:
 
-| Run | Model calls | Findings removed | Causes proposed |
-|---|---|---|---|
-| corpus with `--execute` | **0** | 0 | 0 |
-| corpus with `--no-execute` | 2 | 0 | 0 |
-| unruled defect, with execution | 6 | 0 | **6** |
+| Run | Model calls | Findings removed | Causes proposed | Rejected as ungrounded |
+|---|---|---|---|---|
+| corpus with `--execute` | **0** | 0 | 0 | 0 |
+| corpus with `--no-execute` | 4 | 0 | 0 | **1** |
+| unruled defect, with execution | 1 | 0 | **1** | 0 |
+
+*An earlier version of this table reported "2 calls" for the no-execute row. That figure
+was wrong: the `--no-execute` flag was not being forwarded to the harness, so the run
+had in fact built both revisions. The row above is from the fixed code.*
 
 **With execution enabled the model makes no calls at all.** Measurement settles every
-finding first, so there is nothing left to adjudicate. On the gated path, which model
-is configured is currently irrelevant.
+finding first, so nothing is left to adjudicate. On the gated path, which model is
+configured is currently irrelevant.
 
-**It suppressed nothing, anywhere.** Detection is entirely the rules' work, and on a
-corpus calibrated to those rules that is the expected result rather than a surprise.
+**It has never suppressed a finding.** Detection is entirely the rules' work, and on a
+corpus calibrated to those rules that is expected rather than surprising.
 
-**What it did contribute is explanation.** On `unruled_fx_inverted` — a defect outside
-every rule family — the rules found nothing, execution reported that revenue had moved
-12.8% on a regulatory model, and the model proposed the cause: *"dividing instead of
-multiplying the amount_txn_ccy by the exchange rate."* On the downstream models, where
-the compiled SQL was unchanged, it correctly declined and said the cause was upstream.
+**The self-check rejected one answer as ungrounded** in the no-execute run — the
+fabrication guard firing on real output rather than in a test.
 
-That is the division the design settled on: **rules detect, execution verifies, and the
-model explains what neither can.** If a cause were anticipable, there would be a rule
-for it.
+**What it does contribute is explanation.** On `unruled_fx_inverted`, a defect outside
+every rule family, the rules found nothing, execution reported revenue moving 11.3% on
+a regulatory model, and the model proposed the cause: *"dividing instead of multiplying
+the amount_txn_ccy by the exchange rate."*
+
+So: **rules detect, execution verifies, and the model explains what neither can.** If a
+cause were anticipable there would be a rule for it.
+
+### Tuning the model layer, and what it was worth
+
+Two changes, both measured on the fan-out fixture across three runs each:
+
+| | Verdict | Rationale |
+|---|---|---|
+| before | `uncertain` | "the context does not resolve this ambiguity" |
+| after | `confirm` | "stg_fx_rates is grained on (currency_code, rate_date), but the join only uses currency_code" |
+
+The first change was **a missing fact, not a better prompt**: the specialist was never
+shown the SQL of the model being joined to, so the only honest answer was that the
+question was open. The second was **verdict semantics**: it kept answering "uncertain"
+while its own rationale stated the problem, because "confirm" read as claiming the
+damage was proven rather than that the risk was real.
+
+Separately, attributing unexplained changes to their **root** model rather than
+reporting one per affected model took a single FX inversion from six findings and six
+model calls down to one of each — cheaper and more accurate at once, since five of the
+six could only report that nothing had changed in their own SQL.
+
+### Read the headline number carefully
 
 ### Read the headline number carefully
 
