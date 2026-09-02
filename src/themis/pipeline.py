@@ -14,7 +14,7 @@ from themis.analyze.grain import infer_grains
 from themis.config import Settings
 from themis.execute.runner import ExecutionResult, execute
 from themis.logging import get_logger
-from themis.models import Confidence, Finding, Grain, GrainSource
+from themis.models import Confidence, ExecutionDelta, Finding, Grain, GrainSource
 from themis.review.supervisor import ReviewSummary
 from themis.rules.base import RuleContext, SkippedRule
 from themis.rules.registry import run_rules
@@ -105,77 +105,134 @@ def attach_execution(findings: list[Finding], result: ExecutionResult) -> list[F
 def unexplained_change_findings(
     result: ExecutionResult,
     findings: list[Finding],
-    snapshot: ProjectSnapshot,
+    before: ProjectSnapshot,
+    after: ProjectSnapshot,
 ) -> list[Finding]:
     """Report models whose results moved with no rule explaining why.
 
     This is the safety net under the entire rule catalogue. Rules only catch defect
     classes somebody anticipated, so a change outside all of them produces a clean
-    report — while the money moves. That happened here: inverting an FX conversion
-    shifted revenue by 1.8 million across six models and the review said "no findings",
-    because multiplying instead of dividing is arithmetically ordinary and
-    structurally invisible.
+    report while the money moves. That happened: inverting an FX conversion shifted
+    revenue by 1.8 million across six models and the review said "no findings", because
+    multiplying instead of dividing is arithmetically ordinary and structurally
+    invisible.
 
-    A measured change nobody can account for is exactly what a reviewer needs to see,
-    and it does not require knowing what kind of defect it is.
+    Changes are attributed to their **root** — the model whose own SQL changed — rather
+    than reported once per affected model. A single edit propagates through the DAG, so
+    per-model reporting turns one defect into six findings, five of which can only say
+    that nothing changed in their own SQL. That is noise for the reviewer and, when the
+    model layer runs, five wasted calls producing five "unclear" answers.
     """
-    from themis.models import Evidence, Severity
 
     explained = {f.evidence.model_name for f in findings}
+
+    moved_models = {
+        name
+        for name, delta in result.deltas.items()
+        if delta.is_material and not delta.build_error and name not in explained
+    }
+    if not moved_models:
+        return []
+
+    # A root is a model whose own compiled SQL differs. Everything else inherited its
+    # change from upstream.
+    roots: set[str] = set()
+    for name in moved_models:
+        before_sql = (before.models.get(name) or after.models.get(name)) and (
+            before.models[name].analysable_sql if name in before.models else None
+        )
+        after_sql = after.models[name].analysable_sql if name in after.models else None
+        if before_sql != after_sql:
+            roots.add(name)
+
+    # Anything downstream of a root is accounted for by that root.
+    attributed: dict[str, list[str]] = {root: [] for root in roots}
+    unattributed: set[str] = set()
+    for name in sorted(moved_models - roots):
+        owner = next((root for root in sorted(roots) if name in after.downstream_of(root)), None)
+        if owner is not None:
+            attributed[owner].append(name)
+        else:
+            # Moved, own SQL unchanged, and downstream of nothing that changed. That is
+            # genuinely unexplained and must not be folded into someone else's finding.
+            unattributed.add(name)
+
     out: list[Finding] = []
-
-    for name, delta in sorted(result.deltas.items()):
-        if not delta.is_material or name in explained or delta.build_error:
-            continue
-
-        moved = [
-            (column, before, after)
-            for column, (before, after) in sorted(delta.sum_deltas.items())
-            if before != after
-        ]
-        rows_moved = delta.row_delta not in (0, None)
-        if not moved and not rows_moved and not delta.columns_retyped:
-            continue
-
-        model = snapshot.models.get(name)
-        governed = bool(model and {"regulatory", "recon", "control"} & set(model.tags))
-        # A monetary total moving with no explanation is the worst case; a row count
-        # moving alone is more often a deliberate scope change.
-        severity = Severity.CRITICAL if (moved and governed) else Severity.HIGH
-
-        detail: list[str] = []
-        if rows_moved:
-            detail.append(f"rows {delta.rows_before:,} -> {delta.rows_after:,}")
-        for column, before, after in moved:
-            shift = ((after - before) / before * 100) if before else 0.0
-            detail.append(f"sum({column}) {before:,.2f} -> {after:,.2f} ({shift:+.1f}%)")
-
+    for name in sorted(roots | unattributed):
+        delta = result.deltas[name]
+        consequences = tuple(sorted(attributed.get(name, [])))
         out.append(
-            Finding(
-                rule_id="X0001",
-                family="X",
-                title=f"`{name}` changed and no rule explains why",
-                severity=severity,
-                confidence=Confidence.MEASURED,
-                evidence=Evidence(model_name=name, note="; ".join(detail)),
-                consequence=(
-                    "Building both revisions produced different results for this "
-                    "model, and none of the checks accounts for the difference. That "
-                    "means the change is outside every defect class this tool knows "
-                    "about — so it has not been assessed, only observed. "
-                    + ("A reported figure moved. " if governed and moved else "")
-                    + "It needs a human explanation before merging."
-                ),
-                suggestion=(
-                    "Confirm the movement is intended and expected at this magnitude. "
-                    "If it is a defect class worth catching automatically, it is a "
-                    "candidate for a new rule."
-                ),
-                blast_radius=snapshot.downstream_of(name),
-                execution_delta=delta,
+            _unexplained_finding(
+                name,
+                delta,
+                after=after,
+                consequences=consequences,
+                is_root=name in roots,
             )
         )
     return out
+
+
+def _unexplained_finding(
+    name: str,
+    delta: ExecutionDelta,
+    *,
+    after: ProjectSnapshot,
+    consequences: tuple[str, ...],
+    is_root: bool,
+) -> Finding:
+    from themis.models import Evidence, Severity
+
+    moved = [
+        (column, was, now) for column, (was, now) in sorted(delta.sum_deltas.items()) if was != now
+    ]
+    rows_moved = delta.row_delta not in (0, None)
+
+    model = after.models.get(name)
+    governed = bool(model and {"regulatory", "recon", "control"} & set(model.tags))
+    severity = Severity.CRITICAL if (moved and governed) else Severity.HIGH
+
+    detail: list[str] = []
+    if rows_moved and delta.rows_before is not None and delta.rows_after is not None:
+        detail.append(f"rows {delta.rows_before:,} -> {delta.rows_after:,}")
+    for column, was, now in moved:
+        shift = ((now - was) / was * 100) if was else 0.0
+        detail.append(f"sum({column}) {was:,.2f} -> {now:,.2f} ({shift:+.1f}%)")
+
+    if consequences:
+        detail.append(f"same change reaches {len(consequences)} downstream model(s)")
+
+    origin = (
+        "Building both revisions produced different results for this model, and none "
+        "of the checks accounts for the difference."
+        if is_root
+        else "This model's results changed although its own SQL did not, and nothing "
+        "upstream that changed accounts for it."
+    )
+    reach = f" The same movement carries into {', '.join(consequences)}." if consequences else ""
+
+    return Finding(
+        rule_id="X0001",
+        family="X",
+        title=f"`{name}` changed and no rule explains why",
+        severity=severity,
+        confidence=Confidence.MEASURED,
+        evidence=Evidence(model_name=name, note="; ".join(detail)),
+        consequence=(
+            origin + " That means the change is outside every defect class this tool knows "
+            "about — so it has not been assessed, only observed."
+            + (" A reported figure moved." if governed and moved else "")
+            + reach
+            + " It needs a human explanation before merging."
+        ),
+        suggestion=(
+            "Confirm the movement is intended and expected at this magnitude. If it is "
+            "a defect class worth catching automatically, it is a candidate for a new "
+            "rule."
+        ),
+        blast_radius=after.downstream_of(name),
+        execution_delta=delta,
+    )
 
 
 def measured_grain_findings(result: ExecutionResult, inferred: dict[str, Grain]) -> list[Finding]:
@@ -283,7 +340,9 @@ def review(
             findings = attach_execution(findings, execution)
             findings.extend(measured_grain_findings(execution, grains))
             # Runs after the others so "explained" reflects everything already found.
-            findings.extend(unexplained_change_findings(execution, findings, acquired.after))
+            findings.extend(
+                unexplained_change_findings(execution, findings, acquired.before, acquired.after)
+            )
             grains = {**grains, **execution.measured_grains}
         else:
             log.warning("execute.skipped", reason=execution.skipped_reason)
