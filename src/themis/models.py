@@ -95,6 +95,10 @@ class Evidence(BaseModel):
     sql_before: str | None = None
     sql_after: str | None = None
     note: str | None = None
+    # Another model the finding turns on — the joined table for a fan-out, say. Its
+    # SQL is what actually decides the question, so the context packer needs to know
+    # which model to include rather than guessing from prose.
+    related_model: str | None = None
 
 
 class Grain(BaseModel):

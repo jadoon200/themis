@@ -167,6 +167,7 @@ class JoinFanOutRule(Rule):
                 file_path=ctx.after.file_path,
                 sql_after=join.sql(dialect=ctx.dialect),
                 note=detail,
+                related_model=relation,
             ),
             consequence=(
                 f"Any row matching more than once in {relation} on "

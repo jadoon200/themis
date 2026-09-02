@@ -336,3 +336,47 @@ def test_elision_does_not_smuggle_in_invention() -> None:
 
 def test_a_quote_of_only_elision_markers_is_rejected() -> None:
     assert not selfcheck.check(_adjudication(evidence_quote="... [...] ..."), _pack()).ok
+
+
+def test_the_pack_carries_the_joined_model_sql() -> None:
+    """The fact that decides a fan-out.
+
+    Without it a specialist can only repeat that the derived grain is unproven, which
+    is what it was already told. With it, it can read the upstream model and work out
+    the real key.
+    """
+    snapshot = _snapshot()
+    snapshot.models["stg_fx_rates"] = ModelNode(
+        name="stg_fx_rates",
+        unique_id="model.t.stg_fx_rates",
+        file_path="models/staging/stg_fx_rates.sql",
+        raw_sql="select currency_code, rate_date, rate from raw",
+        compiled_sql="select currency_code, rate_date, rate from raw",
+    )
+    finding = _finding().model_copy(
+        update={
+            "evidence": Evidence(
+                model_name="fct_revenue",
+                note="stg_fx_rates looks unique on (currency_code)",
+                related_model="stg_fx_rates",
+            )
+        }
+    )
+    pack = build_pack(finding, snapshot=snapshot, grains=_grains())
+    assert "stg_fx_rates`, the model being joined to" in pack.text
+    assert "rate_date" in pack.text
+
+
+def test_a_missing_related_model_does_not_break_the_pack() -> None:
+    finding = _finding().model_copy(
+        update={"evidence": Evidence(model_name="fct_revenue", related_model="not_a_model")}
+    )
+    assert build_pack(finding, snapshot=_snapshot(), grains=_grains()).text
+
+
+def test_the_prompt_distinguishes_risk_from_proven_harm() -> None:
+    """The specialists were answering "uncertain" while their own rationale stated the
+    problem, because they read "confirm" as claiming the damage was proven."""
+    prompt = GRAIN.system_prompt
+    assert "risk" in prompt.lower()
+    assert "not mean you have proved" in prompt

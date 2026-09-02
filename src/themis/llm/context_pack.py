@@ -85,6 +85,23 @@ def build_pack(
             "```",
         ]
 
+    # The model the finding turns on. For a fan-out this is the joined table, and its
+    # SQL is what settles whether the join key is actually unique — without it a
+    # specialist can only repeat that the derived grain is unproven, which is what it
+    # was already told.
+    related = finding.evidence.related_model
+    if related and related != model_name:
+        related_model = snapshot.models.get(related)
+        related_sql = _sql_excerpt(related_model.analysable_sql if related_model else None)
+        if related_sql:
+            sections += [
+                "",
+                f"## The SQL of `{related}`, the model being joined to",
+                "```sql",
+                related_sql,
+                "```",
+            ]
+
     grain = grains.get(model_name)
     if grain is not None:
         columns = ", ".join(grain.columns) or "unknown"

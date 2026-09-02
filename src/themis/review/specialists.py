@@ -52,6 +52,14 @@ INTENT_SCHEMA: dict[str, Any] = {
 
 _SHARED_RULES = """You review changes to dbt SQL models that transform financial data.
 
+You are judging whether a flagged **risk** is real, not whether harm has already
+occurred. "confirm" means the risk described is genuine and a reviewer should look at
+it. It does not mean you have proved the damage. If you can see the mechanism by which
+the change could produce a wrong result, that is "confirm".
+
+Reserve "uncertain" for when you genuinely cannot tell from the context — not for when
+you can see the problem but cannot quantify it.
+
 Rules you must follow:
 - Judge ONLY the finding you are given. Do not comment on anything else.
 - Everything you may rely on is in the context. Do not assume table contents, row
@@ -81,12 +89,21 @@ GRAIN = Specialist(
     families=frozenset({"F1", "F8"}),
     question="""You judge whether a flagged change actually duplicates or drops rows.
 
-A join multiplies rows when the joined table has more than one row per join key. The
-context gives you the grains that were established, and how: "structural" and
-"measured" are reliable, "heuristic" is a guess from column naming and proves nothing.
-An unestablished grain means the question is open, not that the join is safe.
+A join multiplies rows when the joined table has more than one row per join key.
 
-If a measurement is present, it settles the matter — prefer it over any reasoning.""",
+Work it out in this order:
+
+1. If a measurement is present, it settles the matter. Prefer it over any reasoning.
+2. Otherwise, read the SQL of the model being joined to, which you are given. Work out
+   what one row of it represents — from its GROUP BY, its DISTINCT, its comments, or
+   what it selects. If one row is identified by more columns than the join key uses,
+   the join multiplies rows and the finding is confirmed.
+3. Only if neither settles it, answer "uncertain".
+
+The stated grains are a starting point, not the answer. "structural" and "measured"
+are reliable; "heuristic" is a guess from column naming and proves nothing — do not
+treat a heuristic grain as evidence the join is safe, and do not stop at "the grain is
+unproven" if the SQL in front of you shows what the real key is.""",
 )
 
 MONEY = Specialist(
