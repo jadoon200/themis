@@ -1,4 +1,4 @@
-.PHONY: env install lint format typecheck test check demo-build review execute grain eval clean up down migrate api worker
+.PHONY: env install lint format typecheck test check demo-build review execute grain eval clean up down migrate api worker record-cassette
 
 # One-time: create the conda env, then `conda activate themis`
 env:
@@ -67,6 +67,11 @@ api:
 # Workers claim queued runs and execute the same pipeline the CLI does.
 worker:
 	PYTHONPATH=src python -m themis.worker
+
+# Re-record the model responses the replay test uses. Needs a real Ollama; run after
+# changing any prompt, because a cassette key includes the prompt it answered.
+record-cassette:
+	PYTHONPATH=src python scripts/record_cassette.py
 
 clean:
 	rm -rf demo_project/target demo_project/logs demo_project/*.duckdb .themis

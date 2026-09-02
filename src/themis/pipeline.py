@@ -310,6 +310,7 @@ def review(
     run_execution: bool = False,
     run_llm: bool = False,
     pr_description: str | None = None,
+    provider: object | None = None,
 ) -> ReviewResult:
     """Run the deterministic stages, optionally including execution.
 
@@ -380,14 +381,17 @@ def review(
     if run_llm and findings:
         # Runs last on purpose. Execution settles what it can first, so the model is
         # only asked about findings that are still genuinely open.
-        from themis.llm.provider import LLMError, build_provider
+        from themis.llm.provider import LLMError, Provider, build_provider
         from themis.review import supervisor
 
         try:
-            provider = build_provider(settings)
+            # Injectable so a recording or replaying provider can stand in. Without it
+            # the model path can only be tested against a fake, which proves the wiring
+            # and never that the real prompts produce parseable, grounded output.
+            active: Provider = provider if provider is not None else build_provider(settings)  # type: ignore[assignment]
             llm_summary = supervisor.review(
                 findings,
-                provider=provider,
+                provider=active,
                 settings=settings,
                 snapshot=acquired.after,
                 grains=grains,

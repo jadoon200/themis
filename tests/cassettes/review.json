@@ -1,0 +1,29 @@
+{
+  "40de9375d623d7b7231897055c8245b4": {
+    "_note": "## The finding",
+    "evidence_quote": "-- Monthly FX rates to USD. Grain is (currency_code, rate_date) -- there are several rows per currency, one per month...",
+    "rationale": "The SQL of stg_fx_rates shows it is grainned by (currency_code, rate_date), but the join only uses currency_code. This will multiply rows if multiple rate dates exist for the same currency, confirming the risk.",
+    "severity": "high",
+    "verdict": "confirm"
+  },
+  "559529e7bef0b4ed27cde3527be3f3d8": {
+    "_note": "## What the author said this change does",
+    "rationale": "The author claimed to simplify the FX join, but the change adds a new join to stg_fx_rates, which could alter the logic and potentially fan out results. This change is not covered by the author's description.",
+    "undisclosed_changes": [
+      "The change introduces a new join to stg_fx_rates in int_gl_entries_converted, which was not mentioned in the author's description."
+    ]
+  },
+  "6775471b8a215093f1799eb97fbf4c8e": {
+    "_note": "## What was measured",
+    "confidence": "likely",
+    "evidence_quote": "-    cast(entries.amount_txn_ccy * rates.rate as decimal(38, 6))\n+    cast(entries.amount_txn_ccy / rates.rate as decimal(38, 6))",
+    "hypothesis": "The change in the sum(amount_usd) is caused by dividing instead of multiplying the amount_txn_ccy by the exchange rate."
+  },
+  "e7a7422ece5b733de9998c53a4795eed": {
+    "_note": "## What the author said this change does",
+    "rationale": "The author's description does not explain why the model changed, and the automated check flags this as an unexplained change. This raises a risk that the simplification may have unintended effects on the model's output.",
+    "undisclosed_changes": [
+      "The author claimed to simplify the FX join by removing a redundant period predicate, but the automated checks found that `int_gl_entries_converted` changed without an explained reason. This suggests the change may have altered the logic in a way not described, potentially affecting the correctness of the model."
+    ]
+  }
+}
