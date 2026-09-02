@@ -55,7 +55,7 @@ def _build(
     profiles_root: Path,
     anchor_dir: Path,
     label: str,
-    has_incremental: bool = False,
+    incremental_models: tuple[str, ...] = (),
 ) -> str | None:
     """Build a selection into a schema. Returns an error string, or None on success.
 
@@ -104,10 +104,14 @@ def _build(
         profiles_dir=profiles_dir,
         timeout_s=settings.execute_timeout_s,
     )
-    if result.ok and has_incremental:
+    if result.ok and incremental_models:
+        # The second pass only needs to re-run the incremental models themselves.
+        # Pass one already built their upstreams, and rebuilding the whole closure
+        # again doubles the cost of every run for no additional signal.
+        second = [arg for model in incremental_models for arg in ("--select", model)]
         result = run_dbt(
             project_dir,
-            ["build", *selection],
+            ["build", *second],
             target=target,
             allowed_targets=settings.execute_allowed_targets,
             profiles_dir=profiles_dir,
@@ -155,7 +159,7 @@ def execute(
     settings: Settings,
     target: str = "dev",
     grain_candidates: dict[str, Grain] | None = None,
-    has_incremental: bool = False,
+    incremental_models: tuple[str, ...] = (),
 ) -> ExecutionResult:
     """Build base and head side by side, then diff the results.
 
@@ -192,7 +196,7 @@ def execute(
             profiles_root=profiles_root,
             anchor_dir=project_dir,
             label="head",
-            has_incremental=has_incremental,
+            incremental_models=incremental_models,
         )
 
         base_error: str | None
@@ -207,7 +211,7 @@ def execute(
                 # Anchor to the real project, never the worktree.
                 anchor_dir=project_dir,
                 label="base",
-                has_incremental=has_incremental,
+                incremental_models=incremental_models,
             )
 
     client = client_for_profile(profile, project_dir)
