@@ -118,7 +118,13 @@ class IncrementalStrategyChangedRule(Rule):
             return []
 
         extra = ""
-        if after == "merge":
+        if ctx.after.overwrites_partitions:
+            extra = (
+                " Note that this model overwrites whole partitions on write, so the "
+                "strategy name does not fully describe what happens: rows are replaced "
+                "a partition at a time regardless."
+            )
+        elif after == "merge":
             key = ", ".join(ctx.after.unique_key) or "no unique_key is configured"
             extra = (
                 f" `merge` requires a genuinely unique key ({key}) and a connector "
@@ -324,10 +330,129 @@ def _largest_interval(sql: str) -> tuple[int, str] | None:
     return max(parsed, key=lambda pair: pair[0])
 
 
+@dataclass
+class PartitioningChangedRule(Rule):
+    """The partition specification changed.
+
+    On a partitioned table this is not a config tweak. Existing data stays laid out the
+    old way while new writes use the new one, so the table holds two layouts at once —
+    and where writes replace whole partitions, the boundaries of what gets replaced
+    move with it. Neither shows up in the data until someone queries across the change.
+    """
+
+    rule_id: str = field(init=False, default="F5006")
+    family: str = field(init=False, default=FAMILY)
+    severity: Severity = field(init=False, default=Severity.HIGH)
+    requires_compiled_sql: bool = field(init=False, default=False)
+
+    def check(self, ctx: RuleContext) -> list[Finding]:
+        if ctx.before is None or ctx.after is None:
+            return []
+        before, after = ctx.before.partitioned_by, ctx.after.partitioned_by
+        if before == after:
+            return []
+
+        if before is None:
+            detail = f"partitioning added: {after}"
+            consequence = (
+                "The table was not partitioned before. Existing data has no partition "
+                "layout, so queries that rely on pruning will still scan all of it "
+                "until the table is rebuilt."
+            )
+        elif after is None:
+            detail = f"partitioning removed (was {before})"
+            consequence = (
+                "Partitioning has been removed. Every query that relied on pruning now "
+                "scans the whole table, and any write behaviour keyed on partitions no "
+                "longer has boundaries to work with."
+            )
+        else:
+            detail = f"partitioning {before} -> {after}"
+            consequence = (
+                "Rows already written keep the old layout while new writes use the new "
+                "one, so the table holds both at once. Reads that span the change are "
+                "served from two different layouts, and pruning behaves differently "
+                "either side of it."
+            )
+
+        if ctx.after.overwrites_partitions:
+            consequence += (
+                " This model replaces whole partitions on write, so the change also "
+                "moves the boundary of what each run overwrites."
+            )
+
+        return [
+            Finding(
+                rule_id=self.rule_id,
+                family=self.family,
+                title="Partition specification changed",
+                severity=_severity_for(ctx, self.severity),
+                confidence=Confidence.PROVEN,
+                evidence=Evidence(
+                    model_name=ctx.model_name,
+                    file_path=ctx.after.file_path,
+                    note=detail,
+                ),
+                consequence=consequence,
+                suggestion=(
+                    "A full rebuild is usually needed so the whole table shares one "
+                    "layout. Confirm with whoever owns the storage."
+                ),
+                blast_radius=ctx.blast_radius,
+            )
+        ]
+
+
+@dataclass
+class PartitionOverwriteRemovedRule(Rule):
+    """A hook that made writes replace partitions is gone, so writes now append."""
+
+    rule_id: str = field(init=False, default="F5007")
+    family: str = field(init=False, default=FAMILY)
+    severity: Severity = field(init=False, default=Severity.CRITICAL)
+    requires_compiled_sql: bool = field(init=False, default=False)
+
+    def check(self, ctx: RuleContext) -> list[Finding]:
+        if ctx.before is None or ctx.after is None:
+            return []
+        if not ctx.before.overwrites_partitions or ctx.after.overwrites_partitions:
+            return []
+        if ctx.after.materialization != "incremental":
+            return []
+
+        return [
+            Finding(
+                rule_id=self.rule_id,
+                family=self.family,
+                title="Partition-overwrite behaviour removed from an incremental model",
+                severity=_severity_for(ctx, self.severity),
+                confidence=Confidence.PROVEN,
+                evidence=Evidence(
+                    model_name=ctx.model_name,
+                    file_path=ctx.after.file_path,
+                    note="the hook setting partition-overwrite writes is gone",
+                ),
+                consequence=(
+                    "This model replaced whole partitions on each run. Without that, "
+                    "writes append instead — so re-processing any period adds a second "
+                    "copy of it rather than replacing the first. Totals for reprocessed "
+                    "periods double, and nothing fails."
+                ),
+                suggestion=(
+                    "Restore the hook, or move to an incremental strategy that "
+                    "deduplicates on a key."
+                ),
+                blast_radius=ctx.blast_radius,
+            )
+        ]
+
+
 RULES: tuple[Rule, ...] = (
     IncrementalGuardRemovedRule(),
     IncrementalStrategyChangedRule(),
     IncrementalKeyChangedRule(),
     MaterializationChangedRule(),
     LookbackWindowNarrowedRule(),
+    PartitioningChangedRule(),
+    PartitionOverwriteRemovedRule(),
 )

@@ -49,6 +49,15 @@ def build_contexts(
     """
     directly_changed = set(result.changed_models)
 
+    # Models reached only through a changed schema YAML. Where configuration lives in
+    # YAML — materialization, partitioning, hooks — a YAML-only change alters real
+    # behaviour while touching no .sql file at all.
+    via_yaml: dict[str, str] = {}
+    for yaml_file in result.changed_schema_files:
+        for model in result.after.models_in_yaml(yaml_file):
+            if model not in directly_changed:
+                via_yaml.setdefault(model, Path(yaml_file).name)
+
     via_macro: dict[str, str] = {}
     for macro_file in result.changed_macro_files:
         names = result.after.macros_in_file(macro_file) or (Path(macro_file).stem,)
@@ -58,7 +67,7 @@ def build_contexts(
                 via_macro.setdefault(model, label)
 
     contexts: list[RuleContext] = []
-    for name in sorted(directly_changed | set(via_macro)):
+    for name in sorted(directly_changed | set(via_macro) | set(via_yaml)):
         before = result.before.models.get(name)
         after = result.after.models.get(name)
         if before is None and after is None:
@@ -73,6 +82,7 @@ def build_contexts(
                 grains=grains,
                 dialect=dialect,
                 via_macro=via_macro.get(name),
+                via_yaml=via_yaml.get(name),
             )
         )
     return contexts

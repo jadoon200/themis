@@ -156,3 +156,30 @@ def test_pre_existing_current_date_is_not_reported_as_new() -> None:
 
 def test_deterministic_model_is_silent() -> None:
     assert NonDeterministicTimeRule().check(_ctx("select a from t", "select a, b from t")) == []
+
+
+# --- calibration against a real-world dbt house style -------------------------
+#
+# Some projects address source tables as three-part names built with env_var
+# (`catalog.{{ env_var("SCHEMA") }}.table`) rather than ref() or source(). That is a
+# deliberate convention, not a hardcoded reference, and a rule that flags it fires on
+# every model in the project — which is the same as not shipping the rule at all.
+
+
+def test_env_var_source_references_are_not_hardcoded_tables() -> None:
+    from themis.rules.families.f6_contracts import HardcodedTableReferenceRule
+
+    rule = HardcodedTableReferenceRule()
+    for sql in (
+        'select a from warehouse_cat.{{ env_var("SCHEMA_A") }}.some_table',
+        'select a from other_cat.{{env_var("SCHEMA_B")}}.rate_history',
+        "select a from cat.{{ env_var('S') }}.t where d = '{{ var(\"businessdate\") }}'",
+    ):
+        assert rule._literal_refs(sql) == set(), sql
+
+
+def test_a_genuinely_hardcoded_three_part_name_still_fires() -> None:
+    from themis.rules.families.f6_contracts import HardcodedTableReferenceRule
+
+    refs = HardcodedTableReferenceRule()._literal_refs('select a from "proj"."main"."int_x"')
+    assert refs

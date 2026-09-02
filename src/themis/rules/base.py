@@ -43,6 +43,8 @@ class RuleContext:
     dialect: str = "trino"
     # Populated when a macro edit is what pulled this model into the review.
     via_macro: str | None = None
+    # Populated when a schema YAML edit is what pulled it in.
+    via_yaml: str | None = None
 
     @property
     def is_new(self) -> bool:

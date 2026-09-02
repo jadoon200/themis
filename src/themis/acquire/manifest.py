@@ -42,6 +42,20 @@ def _as_tuple(value: Any) -> tuple[str, ...]:
     return ()
 
 
+def _hook_texts(value: Any) -> tuple[str, ...]:
+    """Hook SQL, which dbt records as a string, a dict, or a list of either."""
+    if value is None:
+        return ()
+    items = value if isinstance(value, list) else [value]
+    out: list[str] = []
+    for item in items:
+        if isinstance(item, dict):
+            out.append(str(item.get("sql", "")))
+        else:
+            out.append(str(item))
+    return tuple(text for text in out if text)
+
+
 def _model_from_node(unique_id: str, node: dict[str, Any]) -> ModelNode:
     config = node.get("config") or {}
     contract = node.get("contract") or {}
@@ -59,6 +73,7 @@ def _model_from_node(unique_id: str, node: dict[str, Any]) -> ModelNode:
         unique_id=unique_id,
         file_path=str(node.get("original_file_path", "")),
         resource_type=str(node.get("resource_type", "model")),
+        patch_path=node.get("patch_path"),
         raw_sql=str(node.get("raw_code") or ""),
         # Absent on a parse-only manifest. Left as None rather than falling back to
         # raw_code, so downstream code cannot accidentally parse Jinja as SQL.
@@ -71,6 +86,9 @@ def _model_from_node(unique_id: str, node: dict[str, Any]) -> ModelNode:
         meta={str(k): str(v) for k, v in (config.get("meta") or {}).items()},
         columns=columns,
         contract_enforced=bool(contract.get("enforced", False)),
+        properties={str(k): str(v) for k, v in (config.get("properties") or {}).items()},
+        pre_hooks=_hook_texts(config.get("pre-hook") or config.get("pre_hook")),
+        post_hooks=_hook_texts(config.get("post-hook") or config.get("post_hook")),
         depends_on_models=tuple(
             n for n in depends_on.get("nodes", []) if str(n).startswith(("model.", "seed."))
         ),

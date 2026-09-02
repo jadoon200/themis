@@ -40,6 +40,16 @@ class AcquireResult:
         return tuple(sorted({c.model_name for c in self.changed if c.is_macro}))
 
     @property
+    def changed_schema_files(self) -> tuple[str, ...]:
+        """Schema YAML files the change touched.
+
+        Not cosmetic: in many projects the materialization, partitioning and hooks are
+        declared here rather than in the model, so this is where a change of write
+        behaviour actually appears.
+        """
+        return tuple(sorted({c.path for c in self.changed if c.is_schema_yml}))
+
+    @property
     def changed_macro_files(self) -> tuple[str, ...]:
         """Paths of changed macro files.
 

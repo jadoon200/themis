@@ -53,6 +53,10 @@ class ModelNode(BaseModel):
     unique_id: str
     file_path: str
     resource_type: str = "model"
+    # The schema YAML that configures this model. In projects where materialization,
+    # partitioning and hooks live in YAML rather than in the model file, a YAML-only
+    # change is a real change — and without this link it reaches no model at all.
+    patch_path: str | None = None
     raw_sql: str = ""
     # Only populated from a *compiled* manifest. With heavy macro usage, raw_sql is
     # close to unanalysable, so most of the pipeline requires this to be present.
@@ -65,6 +69,33 @@ class ModelNode(BaseModel):
     meta: dict[str, str] = Field(default_factory=dict)
     columns: tuple[ColumnSchema, ...] = ()
     contract_enforced: bool = False
+    # Table properties and hooks. Hive- and Iceberg-backed projects express
+    # partitioning and write behaviour here rather than through dbt's own configs, so
+    # a reviewer that ignores them cannot see a repartitioning or a change of write
+    # semantics at all.
+    properties: dict[str, str] = Field(default_factory=dict)
+    pre_hooks: tuple[str, ...] = ()
+    post_hooks: tuple[str, ...] = ()
+
+    @property
+    def partitioned_by(self) -> str | None:
+        """The partition specification, however the adapter spells the key."""
+        for key, value in self.properties.items():
+            if key.strip().lower().replace("_", "") in ("partitionedby", "partitionby"):
+                return value
+        return None
+
+    @property
+    def overwrites_partitions(self) -> bool:
+        """Whether a hook switches the engine to partition-overwrite writes.
+
+        This changes what an incremental run *means*: rows are replaced a partition at
+        a time rather than appended, so advice about append duplicating rows is simply
+        wrong for such a model.
+        """
+        hooks = " ".join((*self.pre_hooks, *self.post_hooks)).lower()
+        return "insert_existing_partitions_behavior" in hooks and "overwrite" in hooks
+
     depends_on_models: tuple[str, ...] = ()
     depends_on_macros: tuple[str, ...] = ()
     depends_on_sources: tuple[str, ...] = ()
@@ -169,6 +200,22 @@ class ProjectSnapshot(BaseModel):
             if not grown:
                 break
         return callers
+
+    def models_in_yaml(self, file_path: str) -> tuple[str, ...]:
+        """Models configured by one schema YAML.
+
+        dbt records the patch as ``package://path``, and git reports a repository-root
+        path, so both are normalised before comparison.
+        """
+        wanted = _normalise_path(file_path)
+        found: list[str] = []
+        for name, model in self.models.items():
+            if not model.patch_path:
+                continue
+            patch = _normalise_path(model.patch_path.split("://")[-1])
+            if _same_file(wanted, patch):
+                found.append(name)
+        return tuple(sorted(found))
 
     def macros_in_file(self, file_path: str) -> tuple[str, ...]:
         """Every macro defined in one file.
