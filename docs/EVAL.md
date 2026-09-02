@@ -76,8 +76,8 @@ the truth. A change that moves no number is treated as behaviour-preserving what
 was labelled — so the corpus labels itself, and the author's belief about what *should*
 be caught never enters the scoring.
 
-Current corpus: **13 defects, 3 latent, 1 unruled, 6 controls** across all eight rule
-families.
+Current corpus: **14 defects, 5 latent, 1 unruled, 6 controls**, with at least one case
+for every rule family.
 
 | | |
 |---|---|
@@ -193,6 +193,10 @@ Not the score — the seven defects it found in the reviewer itself, none of whi
   previous one's table, so three behaviour-preserving refactors measured as defects and
   `F1004` fired on leftover rows. Builds now run `--full-refresh` first, then again
   without it so `is_incremental()` is actually exercised.
+- **F7 had three rules and no coverage at all.** Every previous dead-rule bug had
+  hidden in an unmeasured family, so this was the obvious place to look next. Adding
+  three governance mutations found all three rules working — the first family probed
+  that turned out to be healthy.
 - **Grain derivation stopped at inline subqueries.** Wrapping a select — a routine
   refactor — made a model's grain unprovable and fired `F7002` on a control.
 - **A measured change with no finding was reported as "No findings".** Inverting an FX
@@ -242,6 +246,20 @@ pack, no rulebook and no few-shot examples — precisely the grounding the speci
 design supplies. A small model given a tight context pack and one narrow question is a
 very different proposition from one asked to reason from scratch. Establishing which of
 those holds is the entire point of M4, and it needs the harness rather than one prompt.
+
+## The harness itself
+
+Worth recording, because it was the most damaging bug in the project and it recurred:
+
+The harness created a branch in the caller's checkout and restored with
+`git checkout --force`. That **destroyed uncommitted work twice during development** —
+once swept into a scratch commit that cleanup then deleted (recovered from the reflog),
+once discarded outright. The dirty-tree guard could not prevent the second: it checks at
+the start, and edits made *during* a run are invisible to it.
+
+Each mutation now runs in a throwaway git worktree on a detached HEAD, so the harness
+cannot reach the caller's tree at all. The failure is impossible rather than guarded
+against, which is the only version of this that survives someone editing during a run.
 
 ## Known limitations
 
