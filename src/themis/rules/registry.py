@@ -5,7 +5,16 @@ from __future__ import annotations
 from themis.logging import get_logger
 from themis.models import Finding
 from themis.rules.base import Rule, RuleContext, SkippedRule
-from themis.rules.families import f1_grain, f2_filters, f3_money, f4_periods
+from themis.rules.families import (
+    f1_grain,
+    f2_filters,
+    f3_money,
+    f4_periods,
+    f5_incremental,
+    f6_contracts,
+    f7_governance,
+    f8_engine,
+)
 
 log = get_logger(__name__)
 
@@ -16,6 +25,10 @@ ALL_RULES: tuple[Rule, ...] = (
     *f2_filters.RULES,
     *f3_money.RULES,
     *f4_periods.RULES,
+    *f5_incremental.RULES,
+    *f6_contracts.RULES,
+    *f7_governance.RULES,
+    *f8_engine.RULES,
 )
 
 

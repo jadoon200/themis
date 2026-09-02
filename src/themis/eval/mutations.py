@@ -60,6 +60,8 @@ _INT_REVENUE = "models/intermediate/int_revenue_recognized.sql"
 _MART_SUMMARY = "models/marts/fct_regulatory_summary.sql"
 _STG_ENTRIES = "models/staging/stg_gl_entries.sql"
 _MACRO_MONEY = "macros/money.sql"
+_INCREMENTAL = "models/marts/fct_revenue_incremental.sql"
+_MART_REVENUE = "models/marts/fct_revenue.sql"
 _REVENUE_FILTER = (
     "    where {{ external_revenue_filter('accounts.account_type', 'accounts.is_intercompany') }}"
 )
@@ -147,6 +149,78 @@ DEFECTS: tuple[Mutation, ...] = (
         relative_path=_STG_ENTRIES,
         find="{{ period_start('cast(posting_date as date)') }}  as rate_period",
         replace="cast(date_trunc('year', cast(posting_date as date)) as date) as rate_period",
+    ),
+    Mutation(
+        id="incremental_guard_removed",
+        kind=Kind.DEFECT,
+        expects_family="F5",
+        description="is_incremental() guard dropped, so every run reprocesses all history",
+        relative_path=_INCREMENTAL,
+        find="""    {% if is_incremental() %}
+    where posting_date >= (
+        select coalesce(max(posting_date), date '1900-01-01') - interval '3' day
+        from {{ this }}
+    )
+    {% endif %}
+""",
+        replace="",
+    ),
+    Mutation(
+        id="incremental_strategy_to_append",
+        kind=Kind.DEFECT,
+        expects_family="F5",
+        description="Strategy switched to append, which never deduplicates",
+        relative_path=_INCREMENTAL,
+        find="    incremental_strategy='delete+insert',",
+        replace="    incremental_strategy='append',",
+    ),
+    Mutation(
+        id="incremental_lookback_narrowed",
+        kind=Kind.DEFECT,
+        expects_family="F5",
+        description="Late-arrival window cut from 3 days to 1, silently dropping late rows",
+        relative_path=_INCREMENTAL,
+        find="- interval '3' day",
+        replace="- interval '1' day",
+    ),
+    Mutation(
+        id="incremental_key_changed",
+        kind=Kind.DEFECT,
+        expects_family="F5",
+        description="unique_key changed, so existing rows match differently",
+        relative_path=_INCREMENTAL,
+        find="    unique_key='entry_id',",
+        replace="    unique_key='account_id',",
+    ),
+    Mutation(
+        id="column_removed_with_consumers",
+        kind=Kind.DEFECT,
+        expects_family="F6",
+        description="currency_code dropped from fct_revenue while downstream still selects it",
+        relative_path=_MART_REVENUE,
+        find="    currency_code,\n",
+        replace="",
+    ),
+    Mutation(
+        id="hardcoded_table_reference",
+        kind=Kind.DEFECT,
+        expects_family="F6",
+        description="ref() replaced by a literal table name, cutting the DAG edge",
+        relative_path=_MART_REVENUE,
+        find="from {{ ref('int_revenue_recognized') }}",
+        replace='from "themis_demo"."main"."int_revenue_recognized"',
+    ),
+    Mutation(
+        id="cartesian_join_introduced",
+        kind=Kind.DEFECT,
+        expects_family="F8",
+        description="Join condition reduced to a tautology, pairing every row with every row",
+        relative_path=_INT_CONVERTED,
+        find=(
+            "        on entries.currency_code = rates.currency_code\n"
+            "        and entries.rate_period = rates.rate_date"
+        ),
+        replace="        on 1 = 1",
     ),
     Mutation(
         id="sign_convention_flipped",
