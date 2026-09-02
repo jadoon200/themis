@@ -16,6 +16,25 @@ concurrency:
 jobs:
   check:
     runs-on: ubuntu-latest
+    # Postgres is here because SELECT ... FOR UPDATE SKIP LOCKED is the whole basis for
+    # handing a queued run to exactly one worker, and SQLite has no row locking — the
+    # clause is skipped there, so without a real database that path is never exercised.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: themis
+          POSTGRES_PASSWORD: themis
+          POSTGRES_DB: themis
+        ports:
+          - 5436:5432
+        options: >-
+          --health-cmd "pg_isready -U themis"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      THEMIS_TEST_POSTGRES_URL: postgresql+psycopg://themis:themis@127.0.0.1:5436/themis
     steps:
       - uses: actions/checkout@v5
 
@@ -38,8 +57,19 @@ jobs:
       - name: Mypy (strict)
         run: mypy src/themis
 
+      - name: Migrations apply to Postgres
+        env:
+          THEMIS_DATABASE_URL: postgresql+psycopg://themis:themis@127.0.0.1:5436/themis
+        run: alembic upgrade head
+
       - name: Pytest
         run: pytest -q
+
+      - name: Confirm the Postgres queue tests actually ran
+        # These skip themselves when no database is reachable, so a broken service
+        # container would silently reduce coverage rather than fail.
+        run: pytest tests/test_queue_postgres.py -q --no-header -rN | grep -q "5 passed\|passed"
+
 
   demo:
     # The demo project is what every end-to-end claim rests on. If it stops building,
