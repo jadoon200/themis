@@ -347,7 +347,14 @@ def eval_cmd(
         )
 
     try:
-        report = run_corpus(project, corpus, settings=settings, base_ref=base, use_llm=use_llm)
+        report = run_corpus(
+            project,
+            corpus,
+            settings=settings,
+            base_ref=base,
+            use_llm=use_llm,
+            use_execution=execute,
+        )
     except DirtyRepositoryError as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=2) from exc
