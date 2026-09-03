@@ -279,6 +279,14 @@ def measured_grain_findings(result: ExecutionResult, inferred: dict[str, Grain])
     for name, measured in result.measured_grains.items():
         if measured.rows_per_key is None or measured.rows_per_key <= 1.0:
             continue
+        # Unchanged duplication is a pre-existing condition, not this change's doing.
+        baseline = result.baseline_grains.get(name)
+        if (
+            baseline is not None
+            and baseline.rows_per_key is not None
+            and measured.rows_per_key <= baseline.rows_per_key + 1e-9
+        ):
+            continue
         derived = inferred.get(name)
         source = derived.source.value if derived else GrainSource.UNKNOWN.value
         findings.append(

@@ -14,7 +14,6 @@ some defect class is undetectable without it:
   lookback loses nothing
 - amounts whose cents are not representable in binary floating point, in enough volume
   that a DOUBLE cast actually drifts a total rather than only changing a column type
-- a duplicated FX rate row, so a fan-out is worse than the row count alone suggests
 - contracts referenced but absent, so an inner join to them loses revenue
 
 Deterministic: same seed, same bytes. The corpus compares runs, so data that moved
@@ -68,8 +67,9 @@ def _fx() -> str:
         for period in PERIODS:
             rate = base[currency] * (1 + rng.uniform(-0.03, 0.03))
             rows.append(f"{currency},{period},{rate:.8f},ecb")
-    # A rate published twice for one currency-month.
-    rows.append(f"SGD,{PERIODS[2]},{base['SGD'] * 1.001:.8f},ecb_restated")
+    # No duplicate rate row. One was added here deliberately, and it made the
+    # *unmutated* project fan out — so every review reported a grain problem no change
+    # had introduced. Awkward data must still describe a correct baseline.
     return "\n".join(rows) + "\n"
 
 

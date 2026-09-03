@@ -33,6 +33,9 @@ class ExecutionResult:
 
     deltas: dict[str, ExecutionDelta] = field(default_factory=dict)
     measured_grains: dict[str, Grain] = field(default_factory=dict)
+    # The same measurement against the base revision, so a finding can say whether a
+    # change made the grain worse rather than merely that it is bad.
+    baseline_grains: dict[str, Grain] = field(default_factory=dict)
     built: tuple[str, ...] = ()
     skipped_reason: str | None = None
 
@@ -247,6 +250,7 @@ def _measure(
 ) -> ExecutionResult:
     deltas: dict[str, ExecutionDelta] = {}
     grains: dict[str, Grain] = {}
+    baselines: dict[str, Grain] = {}
 
     for model in models:
         delta = diff_tables(
@@ -272,6 +276,11 @@ def _measure(
         )
         if measured is not None:
             grains[model] = measured
+        baseline = measure_grain(
+            client, model, schema=settings.execute_base_schema, candidate=candidate
+        )
+        if baseline is not None:
+            baselines[model] = baseline
 
     log.info(
         "execute.measured",
@@ -279,4 +288,6 @@ def _measure(
         material=sum(1 for d in deltas.values() if d.is_material),
         grains=len(grains),
     )
-    return ExecutionResult(deltas=deltas, measured_grains=grains, built=models)
+    return ExecutionResult(
+        deltas=deltas, measured_grains=grains, baseline_grains=baselines, built=models
+    )
