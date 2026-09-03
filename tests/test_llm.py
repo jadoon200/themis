@@ -432,3 +432,18 @@ def test_a_fabricated_clause_among_real_ones_is_still_rejected() -> None:
         "title: Column removed but still selected downstream"
     )
     assert not selfcheck.quote_is_grounded(quote, context)
+
+
+def test_every_rule_family_has_a_specialist() -> None:
+    """A family with no reviewer passes through unadjudicated and silently.
+
+    F2 had none: filter and NULL-semantics findings reached the supervisor, found no
+    specialist, and were returned untouched — which looks identical to a specialist
+    declining to change them.
+    """
+    from themis.review.specialists import ALL_SPECIALISTS
+    from themis.rules.registry import ALL_RULES
+
+    families = {rule.family for rule in ALL_RULES}
+    covered = {family for s in ALL_SPECIALISTS for family in s.families}
+    assert families <= covered, f"no specialist for: {sorted(families - covered)}"

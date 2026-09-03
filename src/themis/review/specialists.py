@@ -120,6 +120,31 @@ Judge whether the specific flagged change does one of these things to a column t
 actually holds money.""",
 )
 
+FILTERS = Specialist(
+    name="filters",
+    families=frozenset({"F2"}),
+    question="""You judge whether a change to a predicate alters which rows are counted.
+
+A filter decides the population. Adding a condition removes rows from every total
+downstream; removing one adds them. Neither errors, and the output is still
+well-formed — only the figure changes.
+
+Work it out in this order:
+
+1. Read the predicate that changed and say plainly which rows it now includes or
+   excludes that it did not before.
+2. Judge whether that population change matters for what the model represents. A
+   filter on a monetary or entity column almost always does; one on a technical
+   column such as a batch id or a load timestamp often does not.
+3. Watch for three-valued logic. `NOT IN` against a subquery returning any NULL is
+   never true, so it removes every row. `<>` and `NOT LIKE` silently drop NULLs. Both
+   look like ordinary SQL and produce an empty or truncated result rather than an
+   error.
+
+A boundary moved by a small amount is still a population change — say so rather than
+treating it as cosmetic.""",
+)
+
 INCREMENTAL = Specialist(
     name="incremental",
     families=frozenset({"F5"}),
@@ -161,7 +186,13 @@ List nothing if the description covers the change. Do not repeat findings that t
 automated checks already reported; they are shown to you as context, not as output.""",
 )
 
-ALL_SPECIALISTS: tuple[Specialist, ...] = (GRAIN, MONEY, INCREMENTAL, CONTRACTS)
+ALL_SPECIALISTS: tuple[Specialist, ...] = (
+    GRAIN,
+    FILTERS,
+    MONEY,
+    INCREMENTAL,
+    CONTRACTS,
+)
 
 
 def specialist_for(family: str) -> Specialist | None:
