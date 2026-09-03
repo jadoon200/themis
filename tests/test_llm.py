@@ -380,3 +380,25 @@ def test_the_prompt_distinguishes_risk_from_proven_harm() -> None:
     prompt = GRAIN.system_prompt
     assert "risk" in prompt.lower()
     assert "not mean you have proved" in prompt
+
+
+def test_a_requoted_context_is_accepted() -> None:
+    """Models re-punctuate when they quote. Joining separate lines of context into one
+    sentence with commas is the commonest form, and rejecting it discards a correct
+    answer — five of fifteen in one corpus run, none of them actually fabricated."""
+    context = "model: fct_revenue\ntitle: Column removed but still selected downstream"
+    quote = "model: fct_revenue, title: Column removed but still selected downstream"
+    assert selfcheck.quote_is_grounded(quote, context)
+
+
+def test_reordered_words_are_still_rejected() -> None:
+    """Order must survive: the words being present somewhere is not the same claim."""
+    context = "stg_fx_rates is unique on currency_code and rate_date"
+    quote = "rate_date and currency_code on unique is stg_fx_rates"
+    assert not selfcheck.quote_is_grounded(quote, context)
+
+
+def test_invented_words_are_still_rejected() -> None:
+    context = "model: fct_revenue\ntitle: Column removed but still selected downstream"
+    quote = "a uniqueness test on rate_date confirms this join is safe"
+    assert not selfcheck.quote_is_grounded(quote, context)

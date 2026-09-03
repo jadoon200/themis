@@ -37,6 +37,30 @@ def _normalise(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip().lower()
 
 
+def _words(text: str) -> list[str]:
+    """Lowercased word tokens, with punctuation discarded.
+
+    Comparison happens on words rather than characters because models re-punctuate
+    when they quote: joining three lines of context into one sentence with commas is
+    the commonest form, and rejecting it discards a correct answer. What must survive
+    is that the words are really there, in order — a fabricated claim fails that
+    whether or not it is punctuated tidily.
+    """
+    # Alphanumerics and underscores only. Including the dot glued trailing periods to
+    # words, so "month" and "month..." stopped matching each other.
+    return re.findall(r"[a-z0-9_]+", text.lower())
+
+
+def _contains_sequence(haystack: list[str], needle: list[str]) -> bool:
+    if not needle or len(needle) > len(haystack):
+        return False
+    first = needle[0]
+    for i in range(len(haystack) - len(needle) + 1):
+        if haystack[i] == first and haystack[i : i + len(needle)] == needle:
+            return True
+    return False
+
+
 def quote_is_grounded(quote: str, context: str) -> bool:
     """Whether every substantial part of a quote appears in the context.
 
@@ -44,15 +68,15 @@ def quote_is_grounded(quote: str, context: str) -> bool:
     of what counts as grounded — two implementations would inevitably drift, and the
     weaker one would decide.
     """
-    normalised_context = _normalise(context)
+    context_words = _words(context)
     segments = [
         segment
-        for segment in (_normalise(part) for part in _ELISION.split(quote))
-        if len(segment) >= _MIN_SEGMENT_CHARS
+        for segment in (part.strip() for part in _ELISION.split(quote))
+        if len(_normalise(segment)) >= _MIN_SEGMENT_CHARS
     ]
     if not segments:
         return False
-    return all(segment in normalised_context for segment in segments)
+    return all(_contains_sequence(context_words, _words(segment)) for segment in segments)
 
 
 @dataclass(frozen=True)
