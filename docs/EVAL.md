@@ -286,6 +286,25 @@ All six fire. This is the second family probe in a row to come back healthy, whi
 weak evidence that the earlier dead rules were a phase rather than a pattern — but the
 only reason to believe it is that the cases now exist.
 
+### What harder data exposed
+
+Regenerating the seed data to be awkward rather than tidy immediately found three
+defects, none of which the previous data could have surfaced:
+
+- **The oracle compared totals for exact equality.** Summing a floating-point column in
+  a different order changes its last bits, so a comment-only control measured as having
+  moved the money. Comparison now uses a relative tolerance far below anything a
+  reviewer would notice.
+- **The demo project's own money was floating point.** DuckDB's division always returns
+  `DOUBLE` whatever the operands, while Trino keeps decimals decimal — so every
+  downstream amount was a float. That is the exact defect `F3001` exists to catch,
+  sitting in the project used to test it, invisible until the data contained cents that
+  binary floating point cannot represent.
+- **`F1004` described a state rather than a change.** A model already failing its
+  derived key goes on failing it, so the finding attached itself to four
+  behaviour-preserving refactors. Stage 3 now measures the base revision too, and it
+  fires only where a change made duplication worse.
+
 ### What the corpus has actually been worth
 
 Not the score — the seven defects it found in the reviewer itself, none of which the
