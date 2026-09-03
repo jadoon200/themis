@@ -136,29 +136,26 @@ def unexplained_change_findings(
 
     explained = {f.evidence.model_name for f in findings}
 
-    moved_models = {
-        name
-        for name, delta in result.deltas.items()
-        if delta.is_material and not delta.build_error and name not in explained
+    moved = {
+        name for name, delta in result.deltas.items() if delta.is_material and not delta.build_error
     }
-    if not moved_models:
+    if not moved:
         return []
 
-    # A root is a model whose own compiled SQL differs. Everything else inherited its
-    # change from upstream.
+    # Roots are computed over everything that moved, including models a rule already
+    # explains. Excluding those left their descendants ownerless, so a single flagged
+    # fan-out produced an "unexplained" critical for every model beneath it — three of
+    # them, each describing the consequence of a finding sitting directly above it.
     roots: set[str] = set()
-    for name in moved_models:
-        before_sql = (before.models.get(name) or after.models.get(name)) and (
-            before.models[name].analysable_sql if name in before.models else None
-        )
+    for name in moved:
+        before_sql = before.models[name].analysable_sql if name in before.models else None
         after_sql = after.models[name].analysable_sql if name in after.models else None
         if before_sql != after_sql:
             roots.add(name)
 
-    # Anything downstream of a root is accounted for by that root.
     attributed: dict[str, list[str]] = {root: [] for root in roots}
     unattributed: set[str] = set()
-    for name in sorted(moved_models - roots):
+    for name in sorted(moved - roots):
         owner = next((root for root in sorted(roots) if name in after.downstream_of(root)), None)
         if owner is not None:
             attributed[owner].append(name)
@@ -167,8 +164,12 @@ def unexplained_change_findings(
             # genuinely unexplained and must not be folded into someone else's finding.
             unattributed.add(name)
 
+    # Only report what no rule has already accounted for. A root a rule explains needs
+    # no second finding, and neither does anything downstream of it.
+    reportable = {name for name in (roots | unattributed) if name not in explained}
+
     out: list[Finding] = []
-    for name in sorted(roots | unattributed):
+    for name in sorted(reportable):
         delta = result.deltas[name]
         consequences = tuple(sorted(attributed.get(name, [])))
         out.append(
