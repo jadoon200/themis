@@ -156,7 +156,65 @@ reporting one per affected model took a single FX inversion from six findings an
 model calls down to one of each — cheaper and more accurate at once, since five of the
 six could only report that nothing had changed in their own SQL.
 
+## Mutations nobody chose
+
+Every hand-written case above is a defect class somebody wrote a rule for, so the rules
+always win on them. `themis eval --mutations generated` breaks that: it walks each
+model's own source and applies mechanical edits wherever they fit — tightening a join,
+flipping a boundary, swapping an aggregate, dropping a `COALESCE`. What gets produced is
+determined by what is *in the SQL*, not by what anyone thought to check, and execution
+decides which of them are defects.
+
+Twelve requested, eleven producible, seed 1:
+
+| | |
+|---|---|
+| moved the numbers | 4 |
+| of those, reported | **4** |
+| **missed** | **0** |
+| reported but moved nothing | 3 |
+| inert and silent | 4 |
+
+**Nothing that changed the numbers went unreported.** That is the result worth having,
+because these cases were not selected with any knowledge of the rules.
+
+The three reported-but-inert cases are the interesting half. Two loosened an inner join
+to a left join and one made a range boundary exclusive — all real semantic changes that
+happen not to bite on this data, because every row has a match and nothing sits on the
+boundary. They are the same category as the hand-written `latent` cases, except the
+generator cannot know that in advance. Counting them as false positives would be wrong;
+counting them as clean would be wrong too.
+
 ### Read the headline number carefully
+
+## Mutations nobody chose
+
+Every hand-written case above is a defect class somebody wrote a rule for, so the rules
+always win on them. `themis eval --mutations generated` breaks that: it walks each
+model's own source and applies mechanical edits wherever they fit — tightening a join,
+flipping a boundary, swapping an aggregate, dropping a `COALESCE`. What gets produced is
+determined by what is *in the SQL*, not by what anyone thought to check, and execution
+decides which of them are defects.
+
+Twelve requested, eleven producible, seed 1:
+
+| | |
+|---|---|
+| moved the numbers | 4 |
+| of those, reported | **4** |
+| **missed** | **0** |
+| reported but moved nothing | 3 |
+| inert and silent | 4 |
+
+**Nothing that changed the numbers went unreported.** That is the result worth having,
+because these cases were not selected with any knowledge of the rules.
+
+The three reported-but-inert cases are the interesting half. Two loosened an inner join
+to a left join and one made a range boundary exclusive — all real semantic changes that
+happen not to bite on this data, because every row has a match and nothing sits on the
+boundary. They are the same category as the hand-written `latent` cases, except the
+generator cannot know that in advance. Counting them as false positives would be wrong;
+counting them as clean would be wrong too.
 
 ### Read the headline number carefully
 
@@ -317,7 +375,8 @@ code change behind it. Not yet handled, and recorded below.
 - **DuckDB is not Trino.** The demo project stays inside the dialects' intersection.
   Analysis always parses as Trino regardless of what executes, and nothing is executed
   during analysis.
-- **The corpus is fitted and small.** See the caveats above. The next useful work is
+- **The corpus is fitted and small**, though generated mutations now offset this in
+  part. See the caveats above. The next useful work is
   defect classes chosen *without* reference to the rules that exist — the current score
   cannot rise, so it can only be made meaningful by making the corpus harder.
 - **Families F5–F8 are unimplemented.** Incremental and materialization logic, contracts
