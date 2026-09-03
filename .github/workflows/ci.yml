@@ -33,8 +33,22 @@ jobs:
           --health-interval 5s
           --health-timeout 3s
           --health-retries 10
+      # Trino is the engine this tool targets. Without one in CI the warehouse client
+      # for it is only ever exercised by hand, which is how the DuckDB-only assumption
+      # went unnoticed for so long.
+      trino:
+        image: trinodb/trino:latest
+        ports:
+          - 8085:8080
+        options: >-
+          --health-cmd "curl -sf http://localhost:8080/v1/info || exit 1"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 20
     env:
       THEMIS_TEST_POSTGRES_URL: postgresql+psycopg://themis:themis@127.0.0.1:5436/themis
+      THEMIS_TEST_TRINO_HOST: 127.0.0.1
+      THEMIS_TEST_TRINO_PORT: "8085"
     steps:
       - uses: actions/checkout@v5
 
@@ -64,6 +78,11 @@ jobs:
 
       - name: Pytest
         run: pytest -q
+
+      - name: Confirm the Trino client tests actually ran
+        # They skip themselves when no engine is reachable, so a broken service
+        # container would quietly drop the target engine from coverage.
+        run: pytest tests/test_warehouse_trino.py -q --no-header | grep -q "passed"
 
       - name: Confirm the Postgres queue tests actually ran
         # These skip themselves when no database is reachable, so a broken service

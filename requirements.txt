@@ -10,6 +10,7 @@ pyyaml>=6.0
 dbt-core>=1.8
 dbt-duckdb>=1.8
 duckdb>=1.0
+trino>=0.330
 sqlalchemy>=2.0
 alembic>=1.13
 psycopg[binary]>=3.2

@@ -19,6 +19,7 @@ dependencies = [
     "dbt-core>=1.8",
     "dbt-duckdb>=1.8",
     "duckdb>=1.0",
+    "trino>=0.330",
     # Persistence and the service layer.
     "sqlalchemy>=2.0",
     "alembic>=1.13",
@@ -73,7 +74,7 @@ explicit_package_bases = true
 
 # Third-party libraries without type stubs — scoped, do not widen.
 [[tool.mypy.overrides]]
-module = ["duckdb.*", "dbt.*"]
+module = ["duckdb.*", "dbt.*", "trino.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
