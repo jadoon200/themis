@@ -63,3 +63,14 @@ models:
     columns:
       - name: revenue_usd
         description: Summed USD revenue for the period and entity.
+
+  - name: dim_entity_contract
+    description: Entity dimension published under an enforced contract.
+    config:
+      contract:
+        enforced: true
+    columns:
+      - name: entity_code
+        data_type: varchar
+      - name: reference_code
+        data_type: varchar

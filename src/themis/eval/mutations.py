@@ -93,6 +93,8 @@ _MACRO_MONEY = "macros/money.sql"
 _INCREMENTAL = "models/marts/fct_revenue_incremental.sql"
 _MART_REVENUE = "models/marts/fct_revenue.sql"
 _STG_CONTRACTS = "models/staging/stg_contracts.sql"
+_CONTRACT_MART = "models/marts/dim_entity_contract.sql"
+_DIM_ENTITIES = "models/marts/dim_entities.sql"
 _REVENUE_FILTER = (
     "    where {{ external_revenue_filter('accounts.account_type', 'accounts.is_intercompany') }}"
 )
@@ -290,6 +292,76 @@ _ALL_INJECTED: tuple[Mutation, ...] = (
             "left join {{ ref('dim_accounts') }} as accounts\n"
             "    on accounts.entity_code = aggregated.entity_code"
         ),
+    ),
+    Mutation(
+        id="contract_column_dropped",
+        kind=Kind.DEFECT,
+        expects_family="F6",
+        description="A column promised by an enforced contract is no longer produced",
+        relative_path=_CONTRACT_MART,
+        find="    entity_code,\n    reference_code",
+        replace="    entity_code",
+    ),
+    Mutation(
+        id="select_star_introduced",
+        kind=Kind.LATENT,
+        expects_family="F6",
+        description=(
+            "An explicit column list replaced by a star, so the schema now follows "
+            "whatever upstream emits"
+        ),
+        relative_path=_MART_REVENUE,
+        find="select\n    entry_id,",
+        replace="select\n    *,\n    entry_id as entry_id_alias,\n    entry_id,",
+    ),
+    Mutation(
+        id="cross_catalog_join_introduced",
+        kind=Kind.LATENT,
+        expects_family="F8",
+        description=(
+            "A join across two catalogs, which Trino cannot push down — both sides cross the wire"
+        ),
+        relative_path=_MART_SUMMARY,
+        find="select * from aggregated",
+        replace=(
+            "select aggregated.*\n"
+            "from aggregated\n"
+            "left join {{ ref('stg_entity_reference') }} as ref\n"
+            "    on ref.entity_code = aggregated.entity_code"
+        ),
+    ),
+    Mutation(
+        id="unordered_limit_introduced",
+        kind=Kind.LATENT,
+        expects_family="F8",
+        description="A LIMIT with no ORDER BY, so which rows survive is undefined",
+        relative_path=_DIM_ENTITIES,
+        find="from {{ ref('stg_accounts') }}",
+        replace="from {{ ref('stg_accounts') }}\nlimit 100",
+    ),
+    Mutation(
+        id="partition_pruning_lost",
+        kind=Kind.LATENT,
+        expects_family="F8",
+        description=(
+            "A date filter wrapped in a function, so the engine can no longer prune "
+            "partitions and scans everything"
+        ),
+        relative_path=_INCREMENTAL,
+        find="    where posting_date >= (",
+        replace="    where date_trunc('day', posting_date) >= (",
+    ),
+    Mutation(
+        id="generated_sql_model_touched",
+        kind=Kind.LATENT,
+        expects_family="F6",
+        description=(
+            "A model whose SQL is built from query results is edited, so its diff "
+            "cannot be trusted to reflect the change"
+        ),
+        relative_path=_DIM_ENTITIES,
+        find="select distinct\n    entity_code,",
+        replace="select distinct\n    upper(entity_code) as entity_code,",
     ),
     Mutation(
         id="unruled_fx_inverted",

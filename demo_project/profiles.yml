@@ -9,3 +9,9 @@ themis_demo:
       path: themis_demo.duckdb
       schema: main
       threads: 4
+      # A second catalog. Trino projects routinely join across catalogs, and that is
+      # the one case the engine cannot push down — both sides are read in full and
+      # joined on the coordinator. Attaching one here makes that testable locally.
+      attach:
+        - path: reference.duckdb
+          alias: reference
