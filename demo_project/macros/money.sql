@@ -14,7 +14,13 @@
 
 {#- Ledger amounts are stored in minor units (cents) to keep them integral. -#}
 {% macro minor_to_major(expr) %}
-    cast({{ expr }} as decimal(38, 6)) / cast(100 as decimal(38, 6))
+    {#- The result is cast back to decimal because DuckDB's division always returns
+        DOUBLE, whatever the operands. Trino keeps decimals decimal, so this went
+        unnoticed: every downstream amount was a float, which is the exact defect
+        F3001 exists to catch, sitting in the project used to test it. It surfaced as
+        a comment-only control appearing to move the money, because summing floats in
+        a different order changes their last bits. -#}
+    cast(cast({{ expr }} as decimal(38, 6)) / 100 as decimal(38, 6))
 {% endmacro %}
 
 

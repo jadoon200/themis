@@ -8,7 +8,7 @@ that quietly ran half the rules is worse than no report.
 
 from __future__ import annotations
 
-from themis.models import Confidence, Finding, Severity
+from themis.models import Confidence, Finding, Severity, sum_moved
 from themis.rules.base import SkippedRule
 
 _SEVERITY_ORDER = {
@@ -70,7 +70,7 @@ def _format_delta(finding: Finding) -> list[str]:
             f"- Row count: {delta.rows_before:,} → {delta.rows_after:,} ({change:+,}, {pct:+.1f}%)"
         )
     for column, (before, after) in sorted(delta.sum_deltas.items()):
-        if before == after:
+        if not sum_moved(before, after):
             continue
         amount_change = after - before
         amount_pct = (amount_change / before * 100) if before else 0.0

@@ -158,7 +158,25 @@ class ExecutionDelta(BaseModel):
             return True
         if self.columns_added or self.columns_removed or self.columns_retyped:
             return True
-        return any(before != after for before, after in self.sum_deltas.values())
+        return any(sum_moved(before, after) for before, after in self.sum_deltas.values())
+
+
+def sum_moved(before: float, after: float) -> bool:
+    """Whether two totals differ by more than floating-point noise.
+
+    Exact equality is the wrong test. Summing a floating-point column in a different
+    order changes its last bits, so a comment-only change could read as having moved
+    the money — which it did, on a control, once the seed data contained cents that
+    binary floating point cannot represent.
+
+    The tolerance is relative and far below any difference a reviewer would care
+    about: a hundred-million-pound total would have to move by more than a ten-
+    thousandth of a penny to register.
+    """
+    if before == after:
+        return False
+    scale = max(abs(before), abs(after))
+    return abs(after - before) > max(1e-9, scale * 1e-12)
 
 
 class Finding(BaseModel):

@@ -113,3 +113,41 @@ def test_negligible_null_rate_drift_is_not_shown() -> None:
     assert "null rate" not in render(
         [_finding(confidence=Confidence.MEASURED, delta=delta)], models_reviewed=1
     )
+
+
+# --- float tolerance ----------------------------------------------------------
+#
+# Summing a floating-point column in a different order changes its last bits. Compared
+# for exact equality, a comment-only change read as having moved the money — which it
+# did, on a control, once the seed data held cents binary floating point cannot
+# represent.
+
+
+def test_floating_point_noise_is_not_a_change() -> None:
+    from themis.models import sum_moved
+
+    total = 352_532_068.03
+    assert not sum_moved(total, total + total * 1e-15)
+
+
+def test_a_real_movement_is_still_a_change() -> None:
+    from themis.models import sum_moved
+
+    assert sum_moved(352_532_068.03, 352_532_068.04)
+
+
+def test_a_tiny_absolute_change_on_a_tiny_total_still_counts() -> None:
+    """Relative tolerance must not swallow a real change to a small number."""
+    from themis.models import sum_moved
+
+    assert sum_moved(0.0, 0.01)
+
+
+def test_noise_does_not_make_a_delta_material() -> None:
+    delta = ExecutionDelta(
+        model_name="m",
+        rows_before=33,
+        rows_after=33,
+        sum_deltas={"revenue": (352_532_068.03, 352_532_068.03 + 4e-8)},
+    )
+    assert not delta.is_material

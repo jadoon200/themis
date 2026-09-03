@@ -14,7 +14,13 @@ from themis.analyze.grain import infer_grains
 from themis.config import Settings
 from themis.execute.runner import ExecutionResult, execute
 from themis.logging import get_logger
-from themis.models import Confidence, ExecutionDelta, Finding, Grain, GrainSource
+from themis.models import (
+    Confidence,
+    ExecutionDelta,
+    Finding,
+    Grain,
+    GrainSource,
+)
 from themis.review.supervisor import ReviewSummary
 from themis.rules.base import RuleContext, SkippedRule
 from themis.rules.registry import run_rules
