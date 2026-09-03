@@ -136,6 +136,35 @@ the amount_txn_ccy by the exchange rate."*
 So: **rules detect, execution verifies, and the model explains what neither can.** If a
 cause were anticipable there would be a rule for it.
 
+### The specialists, measured
+
+A no-execute corpus run is the only way to see the specialists at all: with execution
+enabled they are never called, because measurement settles every finding first.
+
+| | before | after |
+|---|---|---|
+| calls | 15 | 15 |
+| answers rejected as ungrounded | **5** | **0** |
+| findings removed | 0 | 0 |
+
+**None of the five rejections were fabrications.** Three had joined lines of context
+into one sentence with commas; two had additionally skipped a line while doing so. Every
+phrase used was genuinely present. The check compared characters, so a third of the
+model layer's output was being discarded for re-punctuation — and the log did not record
+what had been rejected, so it was undiagnosable.
+
+Comparison is now on ordered word tokens, with commas and elision markers treated as
+join points and each piece verified contiguously. A reordered quote, an invented one, or
+one fabricated clause among real ones is still rejected.
+
+**They still change no decision.** That is worth stating plainly rather than presenting
+the fix as a win: the specialists now agree with the rules where before a third of their
+agreement was thrown away. Their value would show where a rule is *wrong*, and on this
+corpus the rules are not wrong. A separate gap closed along the way — **F2 had no
+specialist at all**, so filter and NULL-semantics findings were returned unadjudicated,
+which is indistinguishable from a specialist declining to change them. A test now
+asserts every family has a reviewer.
+
 ### Tuning the model layer, and what it was worth
 
 Two changes, both measured on the fan-out fixture across three runs each:
