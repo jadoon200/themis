@@ -2,8 +2,20 @@ account_id,account_code,account_name,account_type,entity_code,is_intercompany
 A001,4000,Revenue - Software Licences,revenue,SG01,false
 A002,4010,Revenue - Support Services,revenue,SG01,false
 A003,4020,Revenue - Professional Services,revenue,SG01,false
-A004,4000,Revenue - Software Licences,revenue,UK01,false
-A005,4010,Revenue - Support Services,revenue,UK01,false
-A006,5000,Cost of Revenue,expense,SG01,false
-A007,4900,Intercompany Revenue,revenue,SG01,true
-A008,4000,Revenue - Software Licences,revenue,US01,false
+A004,5000,Cost of Revenue,expense,SG01,false
+A005,4900,Intercompany Revenue,revenue,SG01,true
+A006,4000,Revenue - Software Licences,revenue,UK01,false
+A007,4010,Revenue - Support Services,revenue,UK01,false
+A008,4020,Revenue - Professional Services,revenue,UK01,false
+A009,5000,Cost of Revenue,expense,UK01,false
+A010,4900,Intercompany Revenue,revenue,UK01,true
+A011,4000,Revenue - Software Licences,revenue,US01,false
+A012,4010,Revenue - Support Services,revenue,US01,false
+A013,4020,Revenue - Professional Services,revenue,US01,false
+A014,5000,Cost of Revenue,expense,US01,false
+A015,4900,Intercompany Revenue,revenue,US01,true
+A016,4000,Revenue - Software Licences,revenue,EU01,false
+A017,4010,Revenue - Support Services,revenue,EU01,false
+A018,4020,Revenue - Professional Services,revenue,EU01,false
+A019,5000,Cost of Revenue,expense,EU01,false
+A020,4900,Intercompany Revenue,revenue,EU01,true
