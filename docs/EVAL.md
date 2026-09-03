@@ -198,11 +198,17 @@ Twelve requested, eleven producible, seed 1:
 
 | | |
 |---|---|
-| moved the numbers | 4 |
-| of those, reported | **4** |
+| moved the numbers | **7** |
+| of those, reported | **7** |
 | **missed** | **0** |
 | reported but moved nothing | 3 |
-| inert and silent | 4 |
+| inert and silent | 1 |
+
+Seven, up from four, after the seed data was regenerated to be awkward rather than
+tidy. Dropping a `DISTINCT`, loosening a join and removing a `COALESCE` were all inert
+against data where every row matched and no key repeated; against data with duplicate
+keys, unmatched rows and NULLs in join columns, they bite. The corpus can now judge
+seven of eleven cases instead of four, on the same mutations.
 
 **Nothing that changed the numbers went unreported.** That is the result worth having,
 because these cases were not selected with any knowledge of the rules.
@@ -229,11 +235,17 @@ Twelve requested, eleven producible, seed 1:
 
 | | |
 |---|---|
-| moved the numbers | 4 |
-| of those, reported | **4** |
+| moved the numbers | **7** |
+| of those, reported | **7** |
 | **missed** | **0** |
 | reported but moved nothing | 3 |
-| inert and silent | 4 |
+| inert and silent | 1 |
+
+Seven, up from four, after the seed data was regenerated to be awkward rather than
+tidy. Dropping a `DISTINCT`, loosening a join and removing a `COALESCE` were all inert
+against data where every row matched and no key repeated; against data with duplicate
+keys, unmatched rows and NULLs in join columns, they bite. The corpus can now judge
+seven of eleven cases instead of four, on the same mutations.
 
 **Nothing that changed the numbers went unreported.** That is the result worth having,
 because these cases were not selected with any knowledge of the rules.
@@ -397,10 +409,10 @@ Kept current. Several entries here were closed and are gone rather than left sta
 a limitations list that lags the code is worse than none, because it teaches the reader
 to discount the rest of it.
 
-- **The demo project runs on DuckDB, not Trino.** The Trino warehouse client exists and
-  is tested against a real engine, so Stage 3 can measure against Trino. What has not
-  been done is building the demo project itself on Trino, so the *rules* are still
-  exercised only against DuckDB-compiled SQL.
+- **Trino coverage is single-catalog.** The demo project builds on Trino as well as
+  DuckDB, so the rules read Trino-compiled SQL. But Trino's memory connector is one
+  catalog, so the federated-join case is exercised on DuckDB's attached catalog rather
+  than on Trino itself.
 - **DuckDB is not Trino.** The demo project stays inside the dialects' intersection, so
   Trino-specific behaviour (decimal overflow at precision 38, connector MERGE support,
   federated pushdown) is reasoned about and never executed.
@@ -412,8 +424,7 @@ to discount the rest of it.
 - **The corpus is fitted**, though generated mutations offset this in part. The
   generator only applies transformations someone wrote down; it reaches cases nobody
   chose, not cases nobody could imagine.
-- **The demo data is small and uniform.** Seven of eleven generated mutations moved no
-  numbers at all, because every row has a match and nothing sits on a boundary. A
-  larger, more awkward dataset would make the oracle able to judge far more of them.
+- **The generator only applies transformations someone wrote down.** It reaches cases
+  nobody chose, which is the point, but not cases nobody could imagine.
 - **No column-level lineage.** Impact analysis is model-granular, so "this column is
   removed and four models read it" is answered by text search rather than by lineage.
