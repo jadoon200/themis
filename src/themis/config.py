@@ -44,7 +44,14 @@ class Settings(BaseSettings):
     execute_max_rows: int = 5_000_000
     # Any dbt target whose name is not in this set is refused outright. The guard is
     # deliberately an allowlist: a typo must fail closed, not run against prod.
-    execute_allowed_targets: tuple[str, ...] = ("dev", "ci", "duckdb", "test", "local")
+    execute_allowed_targets: tuple[str, ...] = (
+        "dev",
+        "ci",
+        "duckdb",
+        "trino",
+        "test",
+        "local",
+    )
 
     # --- gate ----------------------------------------------------------------
     # Advisory by default. Blocking is opt-in, per severity.

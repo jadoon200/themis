@@ -15,3 +15,21 @@ themis_demo:
       attach:
         - path: reference.duckdb
           alias: reference
+
+    # The engine THEMIS actually targets. Running the demo project here as well as on
+    # DuckDB is what makes the rules exercised against Trino-compiled SQL rather than
+    # against a dialect that merely resembles it — the two disagree on decimal
+    # arithmetic, on how date_trunc parses, and on what a three-part name means.
+    #
+    # The memory connector holds everything in the coordinator's heap, which is fine
+    # for a demo of this size and needs no object store to stand up.
+    trino:
+      type: trino
+      method: none
+      user: themis
+      host: 127.0.0.1
+      port: 8085
+      catalog: memory
+      schema: main
+      threads: 4
+      http_scheme: http

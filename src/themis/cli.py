@@ -71,6 +71,9 @@ def review(
             help="What the author says the change does. Enables the intent pass.",
         ),
     ] = None,
+    target: Annotated[
+        str, typer.Option("--target", help="dbt target to compile and build against.")
+    ] = "dev",
     verbose: VerboseOpt = False,
 ) -> None:
     """Review the dbt model changes between two revisions."""
@@ -85,6 +88,7 @@ def review(
         base=base,
         head=head,
         settings=settings,
+        target=target,
         run_execution=execute or settings.execute_enabled,
         run_llm=not no_llm,
         pr_description=pr_description,

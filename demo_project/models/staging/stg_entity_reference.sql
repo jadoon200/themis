@@ -1,9 +1,15 @@
-{{ config(materialized='table', database='reference', schema='main') }}
+{{ config(
+    materialized='table',
+    database=('reference' if target.type == 'duckdb' else target.database),
+    schema='main'
+) }}
 
--- Entity reference data, materialised into a second catalog.
+-- Entity reference data.
 --
--- Its purpose is to make a cross-catalog join real: in Trino such a join cannot be
--- pushed down, so both sides are read in full and joined on the coordinator.
+-- On DuckDB this lands in a second attached catalog so a cross-catalog join is real and
+-- measurable. Trino's memory connector is a single catalog, so there it sits alongside
+-- everything else — the federated case is exercised on DuckDB, and the dialect case on
+-- Trino.
 
 select
     entity_code,
