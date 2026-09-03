@@ -29,6 +29,12 @@ _MIN_QUOTE_CHARS = 12
 # not fabrication, so the check splits on the elision and requires every substantial
 # segment to appear — which keeps the property that every part was actually shown.
 _ELISION = re.compile(r"\s*(?:\[\.\.\.\]|\.\.\.|…|\[…\])\s*")
+
+# Models quote selectively as well as elliptically: they join lines of context into one
+# sentence with commas, skipping the lines between. Treating a comma as a possible join
+# point and verifying each piece contiguously accepts that, while still requiring every
+# substantial phrase to be genuinely present and in order.
+_JOIN = re.compile(r"\s*,\s*")
 _MIN_SEGMENT_CHARS = 12
 
 
@@ -69,11 +75,10 @@ def quote_is_grounded(quote: str, context: str) -> bool:
     weaker one would decide.
     """
     context_words = _words(context)
-    segments = [
-        segment
-        for segment in (part.strip() for part in _ELISION.split(quote))
-        if len(_normalise(segment)) >= _MIN_SEGMENT_CHARS
-    ]
+    pieces: list[str] = []
+    for part in _ELISION.split(quote):
+        pieces.extend(_JOIN.split(part))
+    segments = [piece.strip() for piece in pieces if len(_normalise(piece)) >= _MIN_SEGMENT_CHARS]
     if not segments:
         return False
     return all(_contains_sequence(context_words, _words(segment)) for segment in segments)

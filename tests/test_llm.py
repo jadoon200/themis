@@ -402,3 +402,33 @@ def test_invented_words_are_still_rejected() -> None:
     context = "model: fct_revenue\ntitle: Column removed but still selected downstream"
     quote = "a uniqueness test on rate_date confirms this join is safe"
     assert not selfcheck.quote_is_grounded(quote, context)
+
+
+def test_a_quote_that_skips_a_line_is_accepted() -> None:
+    """Models quote selectively as well as elliptically.
+
+    Here the context carries a severity line between the title and the reason, and the
+    model joined the other two with a comma and left it out. Every phrase it did use is
+    genuinely present.
+    """
+    context = (
+        "model: fct_revenue\n"
+        "title: Column removed but still selected downstream\n"
+        "severity as flagged: high\n"
+        "why it was flagged: referenced by fct_regulatory_summary"
+    )
+    quote = (
+        "model: fct_revenue, title: Column removed but still selected downstream, "
+        "why it was flagged: referenced by fct_regulatory_summary"
+    )
+    assert selfcheck.quote_is_grounded(quote, context)
+
+
+def test_a_fabricated_clause_among_real_ones_is_still_rejected() -> None:
+    """The point of the check: one invented phrase spoils the whole quote."""
+    context = "model: fct_revenue\ntitle: Column removed but still selected downstream"
+    quote = (
+        "model: fct_revenue, a uniqueness test confirms this is safe, "
+        "title: Column removed but still selected downstream"
+    )
+    assert not selfcheck.quote_is_grounded(quote, context)
