@@ -350,36 +350,30 @@ code change behind it. Not yet handled, and recorded below.
 
 ## Known limitations
 
-- **Backend C (raw files) is close to blind** against macro-heavy projects. Jinja is
-  unexpanded, so the parsed AST is not the SQL that runs. A compiled manifest is
-  required in practice, and `dbt parse` is not enough — only `dbt compile` populates
-  `compiled_code`.
+Kept current. Several entries here were closed and are gone rather than left standing —
+a limitations list that lags the code is worse than none, because it teaches the reader
+to discount the rest of it.
+
+- **Measurement is DuckDB-only.** The warehouse client protocol is small and a Trino
+  implementation is a modest addition, but it does not exist. Without it, Stage 3 —
+  which is where most of the tool's value sits — cannot run against the target engine
+  at all.
+- **DuckDB is not Trino.** The demo project stays inside the dialects' intersection, so
+  Trino-specific behaviour (decimal overflow at precision 38, connector MERGE support,
+  federated pushdown) is reasoned about and never executed.
 - **Execution rebuilds more than strictly changed.** Redirecting output into a fresh
   schema means every `ref()` resolves there, so the full ancestor closure of each
   measured model must be built. At scale the dbt-native answer is `--defer` against a
-  production manifest; that needs the dual-manifest backend and is not built yet.
-- **The model path is untested in CI.** A recorded-response provider was written and
-  never wired to anything, so it was deleted rather than left looking like coverage.
-  CI runs the deterministic stages only; the specialists, self-check and explain pass
-  are covered by unit tests against a fake provider but never end to end.
-- **There is no raw-files backend.** The plan described three grounding backends and
-  two were built. Without a compiled manifest the Jinja is unexpanded, so the AST is
-  not the SQL that runs and every analysis downstream reasons about the wrong thing.
-  Naming a third made the tool look more capable than it is.
-- **Dynamic SQL generation is not handled.** A macro that builds SQL from query results
-  at compile time produces compiled SQL that varies with the data. The semantic diff
-  would attribute that to the change under review, which is wrong. Detecting such
-  macros and reporting them as unreviewable is the honest fix; neither exists yet.
-- **Measurement is DuckDB-only.** The warehouse client protocol is small and a Trino
-  implementation is a modest addition, but it does not exist today.
-- **DuckDB is not Trino.** The demo project stays inside the dialects' intersection.
-  Analysis always parses as Trino regardless of what executes, and nothing is executed
-  during analysis.
-- **The corpus is fitted and small**, though generated mutations now offset this in
-  part. See the caveats above. The next useful work is
-  defect classes chosen *without* reference to the rules that exist — the current score
-  cannot rise, so it can only be made meaningful by making the corpus harder.
-- **Families F5–F8 are unimplemented.** Incremental and materialization logic, contracts
-  and lineage, governance, and Trino-specific cost rules have no coverage, and the
-  corpus contains no cases for them — so their absence does not show up in the score at
-  all.
+  production manifest; that needs the dual-manifest backend, which is loadable but
+  never exercised.
+- **F6 and F8 have thin corpus coverage** — five rules against two cases, and four
+  against one. Every dead-rule bug so far has hidden in an unmeasured family, so these
+  are the likeliest places for the next one.
+- **The corpus is fitted**, though generated mutations offset this in part. The
+  generator only applies transformations someone wrote down; it reaches cases nobody
+  chose, not cases nobody could imagine.
+- **The demo data is small and uniform.** Seven of eleven generated mutations moved no
+  numbers at all, because every row has a match and nothing sits on a boundary. A
+  larger, more awkward dataset would make the oracle able to judge far more of them.
+- **No column-level lineage.** Impact analysis is model-granular, so "this column is
+  removed and four models read it" is answered by text search rather than by lineage.
