@@ -95,10 +95,13 @@ def verified(
         return None, "the model did not answer"
     result = check(adjudication, pack)
     if not result.ok:
+        # The quote is logged because a rejection nobody can inspect is a rejection
+        # nobody can fix — it says a specialist misbehaved without saying how.
         log.warning(
             "selfcheck.rejected",
             specialist=adjudication.specialist,
             reason=result.reason,
+            quote=adjudication.evidence_quote[:160],
         )
         return None, result.reason
     return adjudication, None
