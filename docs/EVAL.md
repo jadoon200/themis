@@ -76,8 +76,8 @@ the truth. A change that moves no number is treated as behaviour-preserving what
 was labelled — so the corpus labels itself, and the author's belief about what *should*
 be caught never enters the scoring.
 
-Current corpus: **14 defects, 5 latent, 1 unruled, 6 controls**, with at least one case
-for every rule family.
+Current corpus: **15 defects, 10 latent, 1 unruled, 6 controls** — at least one case for
+every rule family, and **every one of the 28 rules exercised by at least one case**.
 
 | | |
 |---|---|
@@ -231,6 +231,20 @@ complete.** Three reasons to discount it:
    booked in one currency, and every revenue entry had a contract. The rules were right
    and the oracle could not tell.
 
+### Every rule now fires on something
+
+Six rules had no corpus case at all: `F6003`, `F6004`, `F6005`, `F8001`, `F8003`,
+`F8004`. That is precisely where every dead-rule bug had hidden — `F1003`, `F4001` and
+`F3003` all passed their unit tests while never firing on anything real.
+
+Two demo additions made the untestable cases testable: **a second attached catalog**, so
+a cross-catalog join is built and measured rather than reasoned about, and **a model
+under an enforced contract**, so there is a promise to break.
+
+All six fire. This is the second family probe in a row to come back healthy, which is
+weak evidence that the earlier dead rules were a phase rather than a pattern — but the
+only reason to believe it is that the cases now exist.
+
 ### What the corpus has actually been worth
 
 Not the score — the seven defects it found in the reviewer itself, none of which the
@@ -366,9 +380,6 @@ to discount the rest of it.
   measured model must be built. At scale the dbt-native answer is `--defer` against a
   production manifest; that needs the dual-manifest backend, which is loadable but
   never exercised.
-- **F6 and F8 have thin corpus coverage** — five rules against two cases, and four
-  against one. Every dead-rule bug so far has hidden in an unmeasured family, so these
-  are the likeliest places for the next one.
 - **The corpus is fitted**, though generated mutations offset this in part. The
   generator only applies transformations someone wrote down; it reaches cases nobody
   chose, not cases nobody could imagine.
