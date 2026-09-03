@@ -12,6 +12,7 @@
   and lineage, governance, and Trino engine behaviour. Plus `X0001`, the safety net
   that reports a measured change no rule accounts for. Skipped checks are reported
   rather than hidden.
+- **Warehouse clients.** DuckDB and **Trino**, both tested against a live engine.
 - **Report.** Ranked Markdown, macro attribution, measured deltas where present.
 - **Demo project.** A financial dbt project on DuckDB — general ledger, FX conversion,
   revenue recognition, regulatory mart. Macro-using and, deliberately, test-free.

@@ -397,10 +397,10 @@ Kept current. Several entries here were closed and are gone rather than left sta
 a limitations list that lags the code is worse than none, because it teaches the reader
 to discount the rest of it.
 
-- **Measurement is DuckDB-only.** The warehouse client protocol is small and a Trino
-  implementation is a modest addition, but it does not exist. Without it, Stage 3 —
-  which is where most of the tool's value sits — cannot run against the target engine
-  at all.
+- **The demo project runs on DuckDB, not Trino.** The Trino warehouse client exists and
+  is tested against a real engine, so Stage 3 can measure against Trino. What has not
+  been done is building the demo project itself on Trino, so the *rules* are still
+  exercised only against DuckDB-compiled SQL.
 - **DuckDB is not Trino.** The demo project stays inside the dialects' intersection, so
   Trino-specific behaviour (decimal overflow at precision 38, connector MERGE support,
   federated pushdown) is reasoned about and never executed.
