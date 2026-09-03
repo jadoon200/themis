@@ -311,6 +311,7 @@ def review(
     run_llm: bool = False,
     pr_description: str | None = None,
     provider: object | None = None,
+    data_anchor: Path | None = None,
 ) -> ReviewResult:
     """Run the deterministic stages, optionally including execution.
 
@@ -325,6 +326,7 @@ def review(
         allowed_targets=settings.execute_allowed_targets,
         timeout_s=settings.execute_timeout_s,
         prod_manifest=prod_manifest,
+        data_anchor=data_anchor,
     )
 
     grains = infer_grains(acquired.after, dialect=settings.dialect)

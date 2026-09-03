@@ -184,6 +184,11 @@ def run_mutation(
                 settings=settings,
                 run_execution=use_execution,
                 run_llm=use_llm,
+                # The worktree holds the mutated code; the data lives only in the
+                # original project. Without this a macro that queries at compile time
+                # reads an empty database and every rule is skipped for want of
+                # compiled SQL — which looks like a clean review.
+                data_anchor=project_dir,
             )
         except Exception as exc:
             log.warning("eval.mutation_failed", mutation=mutation.id, error=str(exc)[:300])

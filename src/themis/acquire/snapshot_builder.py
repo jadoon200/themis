@@ -110,12 +110,19 @@ def acquire(
     allowed_targets: tuple[str, ...] = ("dev", "ci", "duckdb", "test", "local"),
     timeout_s: float = 900.0,
     prod_manifest: Path | None = None,
+    data_anchor: Path | None = None,
 ) -> AcquireResult:
     """Produce the snapshot pair for a review.
 
     The head revision is compiled from the working tree — that is what the reviewer is
     actually proposing. The base is reconstructed in a detached worktree so the user's
     checkout is never touched.
+
+    ``data_anchor`` separates *where the code is* from *where the data is*. A caller
+    reviewing a copy of the project — the eval harness works this way — has code in a
+    throwaway directory and data only in the original. Without the distinction, any
+    macro that queries at compile time reads an empty database, dbt aborts, and every
+    model silently loses its compiled SQL.
     """
     repo = git.repo_root(project_dir)
     base_sha = git.resolve_revision(repo, base)
@@ -128,6 +135,7 @@ def acquire(
         target=target,
         allowed_targets=allowed_targets,
         timeout_s=timeout_s,
+        anchor_dir=data_anchor,
     )
 
     # Backend A: a production manifest removes the need to rebuild the base at all.
@@ -150,7 +158,7 @@ def acquire(
                 timeout_s=timeout_s,
                 # Anchor to the real project so a compile-time query reaches the
                 # actual database rather than an empty one in the worktree.
-                anchor_dir=project_dir,
+                anchor_dir=data_anchor or project_dir,
             )
 
     degraded: str | None = None
