@@ -742,6 +742,11 @@ def eval_cmd(
             f"benign changes (safe, and a rule flags them anyway — recall-first "
             f"working as designed): {benign_flagged}/{len(report.benign)} flagged"
         )
+        typer.echo(
+            "  This ratio is the number to read, not the precision below it. Every "
+            "benign case added lowers precision mechanically, so that figure describes "
+            "the corpus as much as the tool; this one does not."
+        )
         for outcome in report.benign:
             mark = "flagged" if outcome.detected else "silent"
             typer.echo(f"  {mark:8s} {outcome.mutation.id}: {outcome.mutation.description}")
