@@ -101,6 +101,16 @@ def _compile_snapshot(
         return None
 
 
+def manifest_file(given: Path) -> Path:
+    """Resolve a manifest reference that may name the file or its directory.
+
+    dbt's own `--state` takes a directory, so a caller holding one set of production
+    artifacts should be able to pass the same path to both `--prod-manifest` and
+    `--defer-state` and have each take what it needs.
+    """
+    return given / "manifest.json" if given.is_dir() else given
+
+
 def acquire(
     project_dir: Path,
     *,
@@ -140,11 +150,21 @@ def acquire(
 
     # Backend A: a production manifest removes the need to rebuild the base at all.
     before: ProjectSnapshot | None = None
-    if prod_manifest is not None and prod_manifest.exists():
-        try:
-            before = load_manifest(prod_manifest, revision=base_sha, backend=Backend.DUAL_MANIFEST)
-        except ManifestError as exc:
-            log.warning("acquire.prod_manifest_unusable", error=str(exc)[:300])
+    prod_backend_failed: str | None = None
+    if prod_manifest is not None:
+        path = manifest_file(prod_manifest)
+        if not path.exists():
+            # Asked for and not delivered. Falling through quietly would mean the
+            # review silently compares against a different revision than the caller
+            # believes, which is worse than either backend on its own.
+            prod_backend_failed = f"no manifest at {path}"
+        else:
+            try:
+                before = load_manifest(path, revision=base_sha, backend=Backend.DUAL_MANIFEST)
+            except ManifestError as exc:
+                prod_backend_failed = str(exc)
+        if prod_backend_failed:
+            log.warning("acquire.prod_manifest_unusable", error=prod_backend_failed[:300])
 
     if before is None:
         # Backend B: rebuild the base in a throwaway worktree.
@@ -161,19 +181,28 @@ def acquire(
                 anchor_dir=data_anchor or project_dir,
             )
 
-    degraded: str | None = None
     if after is None:
         raise DbtError(
             "could not compile the head revision; THEMIS needs a compiled manifest to "
             "analyse macro-expanded SQL"
         )
+
+    # Every reason the grounding is weaker than asked for, not just the last one — a
+    # report that names one degradation reads as though the rest did not happen.
+    reasons: list[str] = []
+    if prod_backend_failed:
+        reasons.append(
+            f"a production manifest was given but could not be used ({prod_backend_failed}); "
+            "the base was rebuilt from git instead"
+        )
     if before is None:
         # A new project, or a base that no longer compiles. Every model reads as new,
         # which is noisy but honest — better than silently comparing against nothing.
         before = ProjectSnapshot(revision=base_sha, backend=after.backend)
-        degraded = "base revision could not be compiled; every model is treated as new"
+        reasons.append("base revision could not be compiled; every model is treated as new")
     elif not after.has_compiled_sql:
-        degraded = "manifest has no compiled SQL; most rules cannot run"
+        reasons.append("manifest has no compiled SQL; most rules cannot run")
+    degraded = "; ".join(reasons) or None
 
     log.info(
         "acquire.complete",

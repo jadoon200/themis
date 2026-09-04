@@ -32,6 +32,16 @@ ProjectOpt = Annotated[
 BaseOpt = Annotated[str, typer.Option("--base", help="Base git revision to compare from.")]
 HeadOpt = Annotated[str, typer.Option("--head", help="Head git revision to compare to.")]
 VerboseOpt = Annotated[bool, typer.Option("--verbose", "-v", help="Debug logging.")]
+ProdManifestOpt = Annotated[
+    Path | None,
+    typer.Option(
+        "--prod-manifest",
+        help=(
+            "manifest.json from a production build, or the directory holding it. The "
+            "base is read from it instead of being recompiled from git."
+        ),
+    ),
+]
 DeferStateOpt = Annotated[
     Path | None,
     typer.Option(
@@ -84,10 +94,16 @@ def review(
     target: Annotated[
         str, typer.Option("--target", help="dbt target to compile and build against.")
     ] = "dev",
+    prod_manifest: ProdManifestOpt = None,
     defer_state: DeferStateOpt = None,
     verbose: VerboseOpt = False,
 ) -> None:
-    """Review the dbt model changes between two revisions."""
+    """Review the dbt model changes between two revisions.
+
+    `--prod-manifest` and `--defer-state` both take production build artifacts and can
+    be given the same `target/` directory: the first reads the base from it instead of
+    recompiling, the second stops Stage 3 rebuilding upstreams that already exist.
+    """
     from themis.pipeline import review as run_review
 
     configure_logging(verbose=verbose)
@@ -103,6 +119,7 @@ def review(
         run_execution=execute or settings.execute_enabled,
         run_llm=not no_llm,
         pr_description=pr_description,
+        prod_manifest=prod_manifest,
         defer_state=defer_state,
     )
 

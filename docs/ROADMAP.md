@@ -4,7 +4,9 @@
 
 - **Stage 0 — Acquire.** Git worktree diffing against the merge base; dbt runner with a
   fail-closed target allowlist; manifest loader; three grounding backends, with the
-  compiled manifest as the primary target.
+  compiled manifest as the primary target and `--prod-manifest` reading the base from a
+  production build instead of recompiling it. A backend weaker than the one asked for is
+  named in the report rather than substituted quietly.
 - **Stage 1 — Analyze.** Trino parsing, semantic AST diff (reformatting yields nothing),
   the grain lattice, transitive macro impact, blast radius, and **column-level
   lineage** — schemas derived in dependency order so `select *` resolves, then every
@@ -49,9 +51,9 @@ flagged?", answered from persisted absence. An unanswerable question gets a refu
 **M6 — cost.** Triage rubric, feature extraction, SARIF output. Token accounting is
 done; the rest is not.
 
-**Next.** Corpus coverage for F4 and F8, which still have more rules than cases. The
-dual-manifest backend exercised rather than merely loadable. Deferral measured against
-a closure large enough for the saving to show as time rather than as object counts.
+**Next.** Deferral and the dual-manifest backend measured against a project large
+enough for the saving to show as time rather than as object counts — that number has to
+come from a real warehouse. A tuned dbt-bouncer ingest for the governance family.
 
 ## Deferred
 

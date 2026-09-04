@@ -84,6 +84,17 @@ unchanged upstreams are read where they already are instead of being rebuilt twi
 themis execute --base main --head HEAD --defer-state path/to/prod/target
 ```
 
+A full review can take the same production artifacts twice over — the base read from
+the prod manifest rather than recompiled from git, and Stage 3 deferring to the same
+relations:
+
+```bash
+themis review --prod-manifest path/to/prod/target --defer-state path/to/prod/target --execute
+```
+
+If the manifest turns out to be missing or unreadable, the review says so and rebuilds
+the base from git. It does not quietly answer a different question than the one asked.
+
 Everything runs locally and costs nothing: DuckDB as the warehouse, Ollama for the
 model. No warehouse credentials, no API keys, no paid dependency.
 
