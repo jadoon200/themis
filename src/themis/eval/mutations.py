@@ -490,6 +490,48 @@ _ALL_INJECTED: tuple[Mutation, ...] = (
         replace="from {{ ref('int_revenue_recognized') }}\nwhere entry_id is not null",
     ),
     Mutation(
+        id="benign_inner_to_left_where_all_rows_match",
+        kind=Kind.BENIGN,
+        expects_family="F1",
+        description=(
+            "An inner join relaxed to a left join where every row already matches. "
+            "A join-type flip is exactly what recall-first should catch, and this one "
+            "adds no rows and loses none"
+        ),
+        relative_path=_INT_REVENUE,
+        find="    inner join accounts\n        on converted.account_id = accounts.account_id",
+        replace="    left join accounts\n        on converted.account_id = accounts.account_id",
+    ),
+    Mutation(
+        id="benign_lookback_widened",
+        kind=Kind.BENIGN,
+        expects_family="F2",
+        description=(
+            "The late-arrival window widened rather than narrowed. The mirror of a "
+            "real defect in this corpus: narrowing loses data silently, widening costs "
+            "compute and changes no number"
+        ),
+        relative_path=_INCREMENTAL,
+        find="- interval '3' day",
+        replace="- interval '30' day",
+    ),
+    Mutation(
+        id="benign_hashed_identifier",
+        kind=Kind.BENIGN,
+        expects_family="F7",
+        description=(
+            "A pseudonymised identifier whose name trips the sensitive-column match. "
+            "A hash of an identifier is not the identifier, and name matching cannot "
+            "tell the difference — the commonest false positive class in PII tooling"
+        ),
+        relative_path=_MART_REVENUE,
+        find="    amount_txn_ccy,\n    amount_usd",
+        replace=(
+            "    amount_txn_ccy,\n    amount_usd,\n"
+            "    md5(cast(customer_id as varchar)) as customer_email_hash"
+        ),
+    ),
+    Mutation(
         id="unruled_fx_inverted",
         kind=Kind.UNRULED,
         expects_family="X",
