@@ -267,3 +267,80 @@ def test_relative_database_path_anchors_to_the_original_project(
 def test_unknown_target_is_refused(project: Path) -> None:
     with pytest.raises(ProfileError):
         read_profile(project, target="nonexistent")
+
+
+# --- deferral -------------------------------------------------------------------
+
+
+def test_deferral_without_a_manifest_is_refused_rather_than_attempted(tmp_path: Path) -> None:
+    """A state directory with no manifest cannot resolve anything.
+
+    Letting the build start would fail deep inside dbt with a message about a missing
+    relation, which reads as a broken project rather than a mis-set flag.
+    """
+    from themis.config import Settings
+    from themis.execute.runner import execute
+
+    result = execute(
+        tmp_path,
+        base="main",
+        head="HEAD",
+        models=("m",),
+        settings=Settings(),
+        defer_state=tmp_path / "empty_state",
+    )
+    assert not result.ran
+    assert "manifest.json" in (result.skipped_reason or "")
+
+
+def test_deferral_selects_only_the_measured_models(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Without a state manifest each model drags in its whole ancestor closure.
+
+    With one, the ancestors are read where they already are — which is the entire
+    point, and the only thing that makes this stage affordable on a real project.
+    """
+    from themis.execute import runner
+
+    calls: list[list[str]] = []
+
+    class _Result:
+        ok = True
+        stdout = ""
+
+    def _fake_run_dbt(project_dir: Path, args: list[str], **kwargs: object) -> _Result:
+        calls.append(args)
+        return _Result()
+
+    monkeypatch.setattr(runner, "run_dbt", _fake_run_dbt)
+    monkeypatch.setattr(
+        runner, "write_profile_for_schema", lambda *a, **k: Path("/tmp/themis-test-profiles")
+    )
+
+    from themis.config import Settings
+
+    def _build(defer_state: Path | None) -> list[str]:
+        calls.clear()
+        runner._build(
+            Path("/tmp/project"),
+            models=("mart",),
+            schema="themis_head",
+            target="dev",
+            settings=Settings(),
+            profiles_root=Path("/tmp"),
+            anchor_dir=Path("/tmp/project"),
+            label="head",
+            defer_state=defer_state,
+        )
+        return calls[0]
+
+    without = _build(None)
+    assert "--select" in without and "+mart" in without
+    assert "--defer" not in without
+
+    with_state = _build(Path("/tmp/state"))
+    assert "mart" in with_state and "+mart" not in with_state
+    assert "--defer" in with_state
+    # Without --favor-state a table left over from an earlier run would be preferred
+    # over the state relation, so two runs of the same code could measure differently.
+    assert "--favor-state" in with_state
+    assert "--state" in with_state
