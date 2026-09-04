@@ -447,3 +447,49 @@ def test_every_rule_family_has_a_specialist() -> None:
     families = {rule.family for rule in ALL_RULES}
     covered = {family for s in ALL_SPECIALISTS for family in s.families}
     assert families <= covered, f"no specialist for: {sorted(families - covered)}"
+
+
+def test_a_heading_quoted_with_its_own_code_block_is_grounded() -> None:
+    """A pack is markdown, and specialists quote across its structure.
+
+    "The SQL of `x`, the model being joined to: select ..." joins a section heading to
+    the fence beneath it. Every word is genuinely present; only the fence sits between.
+    Rejecting that discards a correct answer for punctuation, which is how a third of
+    the model layer's output was thrown away once already.
+    """
+    context = (
+        "## The SQL of `dim_accounts`, the model being joined to\n"
+        "```sql\n"
+        "select account_id, account_code, entity_code\n"
+        'from "themis_demo"."main"."stg_accounts"\n'
+        "```\n"
+    )
+    quote = (
+        "The SQL of `dim_accounts`, the model being joined to: "
+        "select account_id, account_code, entity_code"
+    )
+    assert selfcheck.quote_is_grounded(quote, context)
+
+
+def test_a_paraphrased_relation_name_is_still_rejected() -> None:
+    """The other rejection from the same run, and this one was correct.
+
+    The compiled SQL names `"themis_demo"."main"."raw_contracts"`. A quote saying
+    `from raw_contracts` has rewritten the reference, and a reviewer told the model
+    reads an unqualified table would be told something false.
+    """
+    context = 'select contract_id, customer_id from "themis_demo"."main"."raw_contracts"'
+    assert not selfcheck.quote_is_grounded("select contract_id, ... from raw_contracts", context)
+
+
+def test_a_logged_quote_says_when_it_was_truncated() -> None:
+    """A rejection log that silently cuts mid-identifier invents a second fault.
+
+    It reads exactly like the model fabricating a truncated name, and the log exists
+    to make rejections diagnosable rather than to add one more thing to diagnose.
+    """
+    long_quote = "select " + ", ".join(f"column_{i}" for i in range(200))
+    logged = selfcheck._for_log(long_quote)
+    assert "truncated for the log" in logged
+    assert str(len(long_quote)) in logged
+    assert selfcheck._for_log("short one") == "short one"

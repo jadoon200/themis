@@ -31,10 +31,15 @@ _MIN_QUOTE_CHARS = 12
 _ELISION = re.compile(r"\s*(?:\[\.\.\.\]|\.\.\.|…|\[…\])\s*")
 
 # Models quote selectively as well as elliptically: they join lines of context into one
-# sentence with commas, skipping the lines between. Treating a comma as a possible join
-# point and verifying each piece contiguously accepts that, while still requiring every
-# substantial phrase to be genuinely present and in order.
-_JOIN = re.compile(r"\s*,\s*")
+# sentence, skipping the lines between. Treating the punctuation they join with as a
+# possible split point and verifying each piece contiguously accepts that, while still
+# requiring every substantial phrase to be genuinely present and in order.
+#
+# The colon earns its place separately from the comma. A pack is markdown, so a
+# specialist quoting a section and the block beneath it writes
+# "The SQL of `x`, the model being joined to: select ...", joining a heading to its
+# own code fence. Every word is genuinely there; only the fence sits between them.
+_JOIN = re.compile(r"\s*[,:]\s*")
 _MIN_SEGMENT_CHARS = 12
 
 
@@ -84,6 +89,16 @@ def quote_is_grounded(quote: str, context: str) -> bool:
     return all(_contains_sequence(context_words, _words(segment)) for segment in segments)
 
 
+_LOG_QUOTE_CHARS = 600
+
+
+def _for_log(quote: str) -> str:
+    """A quote for the log, with any truncation stated rather than silent."""
+    if len(quote) <= _LOG_QUOTE_CHARS:
+        return quote
+    return f"{quote[:_LOG_QUOTE_CHARS]}… [truncated for the log, {len(quote)} chars]"
+
+
 @dataclass(frozen=True)
 class CheckResult:
     ok: bool
@@ -130,7 +145,11 @@ def verified(
             "selfcheck.rejected",
             specialist=adjudication.specialist,
             reason=result.reason,
-            quote=adjudication.evidence_quote[:160],
+            # Logged nearly in full. At 160 characters a rejected quote was cut
+            # mid-identifier, which reads exactly like the model having fabricated a
+            # truncated name — the log meant to make rejections diagnosable was
+            # manufacturing a second, imaginary fault to diagnose.
+            quote=_for_log(adjudication.evidence_quote),
         )
         return None, result.reason
     return adjudication, None
