@@ -14,7 +14,11 @@
   Join keys and filter predicates are collected alongside, because a column can break
   a model while contributing nothing to its output.
 - **Suggested tests.** The derived grain emitted as `schema.yml` assertions, with a
-  refusal policy strict enough that a suggestion does not fail on first run.
+  refusal policy strict enough that a suggestion does not fail on first run — and
+  measured to be worth accepting: declaring the keys halves the false-positive rate.
+- **Tested-vs-testless measurement.** `themis eval --variant tested` merges declared
+  keys into the demo project and reruns the corpus, which is how the cost of deriving
+  grain rather than reading it is finally a number rather than an expectation.
 - **Stage 2 — Rules.** 29 rules across eight families: grain and fan-out, filters and
   NULL semantics, money precision, periods, incremental and materialization, contracts
   and lineage, governance, and Trino engine behaviour. Plus `X0001`, the safety net

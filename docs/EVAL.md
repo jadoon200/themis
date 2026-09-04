@@ -738,6 +738,67 @@ make grain `proven` and refutation becomes possible at all. That is also the com
 claim `themis suggest-tests` makes: accept the suggested tests and the adjudicator gains
 something to reason from. Not yet run.
 
+## Tested against testless, measured at last
+
+The plan asked how much **recall** derivation costs against having declared tests. The
+variant that would answer it sat in the repository as a file nothing read, and the flag
+described for it was never built. Both now exist, and the answer is that the plan asked
+the wrong question.
+
+Same corpus, same code, the only difference being whether the project declares its keys:
+
+| | testless (the default) | `--variant tested` |
+|---|---|---|
+| recall | 100% | 100% |
+| **precision** | 89% | **94%** |
+| **false-positive rate** | 25% | **12%** |
+| true positives | 17 | 17 |
+| false positives | 2 | **1** |
+| true negatives | 6 | **7** |
+| rules firing | 29/29 | 29/29 |
+| findings raised | 52 | 48 |
+
+**Derivation costs no recall here at all. It costs precision.** Every defect is caught
+either way; what declared tests buy is not flagging the safe changes. That is a more
+useful thing to know than the number the plan expected, and it points somewhere
+different: the argument for adding tests to a project like this is a quieter review, not
+a more thorough one.
+
+### The finding underneath it
+
+Chasing why one benign case flipped from false positive to true negative found a bug
+that had been suppressing the whole effect. `dim_accounts` — `select … from
+stg_accounts`, no join, no aggregation — carried grain `propagated(account_id)` while
+`is_proven` returned False, because `PROPAGATED` was grouped with the guesses.
+
+It is not a guess. Propagation only happens from a parent already proven, across a
+single upstream, with no join. What was missing was a fourth condition: **the key has to
+survive the projection.** A pass-through selecting a subset can drop part of the
+parent's key, and rows unique on `(a, b)` are not unique on `(a)`. The structural path
+had always checked this and propagation had not — the difference between a derivation
+and something that merely usually holds.
+
+With the guard added, a proven key survives one hop, and a dimension selecting from a
+tested staging model stops reading as having no key at all. Every join onto such a
+dimension had been reported as a possible fan-out, which is most joins in a warehouse.
+
+This is also the compounding claim `themis suggest-tests` makes, demonstrated rather
+than asserted for the first time: accept the suggested `unique` test on
+`stg_accounts.account_id`, and a false positive in a different model downstream stops
+being raised.
+
+### And what it says about the model layer
+
+The benign case was built to give the adjudicator its only real job, and the layer
+suppressed nothing. The reason turned out not to be the adjudicator: the grounding was
+discarding a fact it had already derived. Fix the grounding and the rule answers
+correctly on its own, with no model call.
+
+That is the honest shape of the result. Where an inference can be made sound, making it
+sound beats asking a model to second-guess it — and the cases left over, where the
+evidence genuinely cannot settle the question, are the ones a specialist should mark
+`uncertain` and escalate rather than decide.
+
 ## Known limitations
 
 Kept current. Several entries here were closed and are gone rather than left standing —

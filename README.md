@@ -52,6 +52,11 @@ recall, so a triage stage demotes a finding that a more specific rule already co
 relationship named and nothing deleted. The score behind the ranking prints its own
 components, because an opaque number gating a merge is not a reviewable statement.
 
+**Deriving grain costs precision, not recall — measured.** Running the same corpus
+against a variant of the demo project that declares its keys: recall is 100% either
+way, while the false-positive rate halves, 25% to 12%. Every defect is caught without
+declared tests; what they buy is not flagging the safe changes.
+
 **The derived grain is handed back as tests.** Because THEMIS works out each model's
 key without being told, it can emit the assertions the project never wrote — and it
 refuses to emit any it cannot stand behind, so a suggested test does not turn red on
