@@ -28,6 +28,7 @@ from themis.review.supervisor import ReviewSummary
 from themis.rules.base import RuleContext, SkippedRule
 from themis.rules.registry import run_rules
 from themis.snapshot import ProjectSnapshot
+from themis.triage.rubric import calibrate
 
 log = get_logger(__name__)
 
@@ -515,6 +516,11 @@ def review(
         executed=bool(execution and execution.ran),
         llm=bool(llm_summary),
     )
+    # Last, after execution has had its chance to turn an inference into a measurement.
+    # A critical that execution demonstrated keeps its level; one that is still a
+    # prediction does not.
+    findings = calibrate(findings)
+
     reviewed = {c.model_name for c in contexts}
     untested = tuple(
         suggestion.model_name

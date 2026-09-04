@@ -52,7 +52,10 @@ def test_added_filter_is_reported() -> None:
     )
     assert len(findings) == 1
     assert "added" in findings[0].title
-    assert findings[0].confidence is Confidence.PROVEN
+    # Not PROVEN: the predicate change is provable, the population change is not, and
+    # confidence answers the second. It also routes the model layer — labelling this
+    # proven meant a filter finding never reached the reviewer written to judge it.
+    assert findings[0].confidence is Confidence.LIKELY
 
 
 def test_removed_filter_is_reported() -> None:

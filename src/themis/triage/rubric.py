@@ -69,6 +69,40 @@ _REACH_STEPS: tuple[tuple[int, float], ...] = ((20, 16.0), (5, 13.0), (1, 8.0))
 _GOVERNED_BONUS = 25.0
 
 
+def calibrate(findings: list[Finding]) -> list[Finding]:
+    """Cap severity at what the evidence supports.
+
+    Every family escalates a high to critical when the change reaches a governed or
+    exposure-facing model, and several rules start at critical. On a regulatory mart
+    that makes most of what fires critical, and a level almost everything reaches
+    stops telling a reviewer anything — least of all which one to open first.
+
+    So critical means one thing: a wrong number in a reported figure, *demonstrated*.
+    Anything still inferred caps at high, however bad the class would be if real. An
+    unmeasured critical is a prediction, and predictions and measurements should not
+    share a word in a report someone signs.
+
+    Applied centrally rather than by editing twenty-nine rules, because the rules
+    encode how bad a defect class is — which is right — and this encodes how much of
+    that the evidence currently supports, which is a different question and one that
+    changes as execution runs.
+    """
+    out: list[Finding] = []
+    for finding in findings:
+        if finding.severity is Severity.CRITICAL and finding.confidence is not Confidence.MEASURED:
+            out.append(
+                finding.model_copy(
+                    update={
+                        "severity": Severity.HIGH,
+                        "suggestion": finding.suggestion,
+                    }
+                )
+            )
+        else:
+            out.append(finding)
+    return out
+
+
 @dataclass(frozen=True)
 class Triaged:
     """One finding, ranked, with the ranking's reasoning attached."""

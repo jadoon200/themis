@@ -40,6 +40,9 @@ class MutationOutcome:
     families_fired: tuple[str, ...]
     expected_family_fired: bool
     finding_count: int
+    # Severity of each finding. A level almost everything reaches stops telling a
+    # reviewer which one to open first, and that is only visible if it is counted.
+    severities: tuple[str, ...] = ()
     # Individual rule ids, not just families. A family can look well covered while
     # three of its rules have never fired on a real case -- which has happened here,
     # to rules whose unit tests all passed.
@@ -228,6 +231,7 @@ def run_mutation(
     )
     families = tuple(sorted({f.family for f in result.findings}))
     rules = tuple(sorted({f.rule_id for f in result.findings}))
+    severities = tuple(f.severity.value for f in result.findings)
     row_delta = None
     if execution and execution.ran:
         deltas = [d.row_delta for d in execution.deltas.values() if d.row_delta]
@@ -242,6 +246,7 @@ def run_mutation(
         detected=bool(result.findings),
         families_fired=families,
         rules_fired=rules,
+        severities=severities,
         expected_family_fired=mutation.expects_family in families,
         finding_count=len(result.findings),
         row_delta=row_delta,

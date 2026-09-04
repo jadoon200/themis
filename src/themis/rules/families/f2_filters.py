@@ -102,7 +102,12 @@ class FilterChangedRule(Rule):
             family=self.family,
             title=f"Filter {verb}: {predicate[:80]}",
             severity=_severity_for(ctx, self.severity),
-            confidence=Confidence.PROVEN,
+            # That the predicate changed is provable; that the population changed with
+            # it is not. Labelling this PROVEN conflated the two, and because the
+            # model layer is routed by confidence, it also meant a filter finding
+            # never reached the filters reviewer — the one written to judge exactly
+            # this. Confidence answers "is this a problem", not "did this happen".
+            confidence=Confidence.LIKELY,
             evidence=Evidence(
                 model_name=ctx.model_name,
                 file_path=ctx.after.file_path,

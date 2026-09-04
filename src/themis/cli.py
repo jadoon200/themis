@@ -771,6 +771,22 @@ def eval_cmd(
             typer.echo(f"  {len(extra)} of {len(reported)} were reported by more than one family")
         typer.echo("")
 
+    levels: dict[str, int] = {}
+    for outcome in report.usable:
+        for level in outcome.severities:
+            levels[level] = levels.get(level, 0) + 1
+    total_findings = sum(levels.values())
+    if total_findings:
+        shown = ", ".join(f"{levels[k]} {k}" for k in sorted(levels) if levels[k])
+        typer.echo(f"severity mix across {total_findings} finding(s): {shown}")
+        critical_share = levels.get("critical", 0) / total_findings
+        if critical_share > 0.15:
+            typer.echo(
+                f"  {critical_share:.0%} are critical — a level most findings reach "
+                "stops saying which one to open first."
+            )
+        typer.echo("")
+
     fired, never = report.rule_coverage()
     typer.echo(
         f"rule coverage: {len(fired)}/{len(fired) + len(never)} rules fired on at least one case"
