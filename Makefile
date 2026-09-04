@@ -1,4 +1,4 @@
-.PHONY: env install lint format typecheck test check demo-build review execute grain lineage suggest-tests eval clean up down migrate api worker record-cassette
+.PHONY: env install lint format typecheck test check demo-build review execute grain lineage suggest-tests warm eval clean up down migrate api worker record-cassette
 
 # One-time: create the conda env, then `conda activate themis`
 env:
@@ -50,6 +50,10 @@ lineage:
 # The uniqueness tests the project never declared, as a schema.yml fragment.
 suggest-tests:
 	PYTHONPATH=src python -m themis.cli suggest-tests --project demo_project --yaml
+
+# Compile main into the manifest cache, so no review pays for the base compile.
+warm:
+	PYTHONPATH=src python -m themis.cli cache --warm main --project demo_project
 
 # Mutation eval: per-family precision/recall against the execution oracle.
 eval:

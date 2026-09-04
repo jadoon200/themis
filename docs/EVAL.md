@@ -572,6 +572,57 @@ Coverage is not correctness — a rule that fires once has been shown to be reac
 not to be right. But a rule that never fires has been shown to be nothing at all, and
 until this report existed there was no way to tell the two apart.
 
+## The manifest cache, and what it must refuse
+
+dbt writes its manifest into `target/`, which every dbt project gitignores. A manifest
+is therefore never something a review *finds* — it is something THEMIS compiles, and it
+recompiles the same base revision on every review of a branch.
+
+A compiled manifest is a pure function of the code at a git SHA, so it is content
+addressable. Measured on an ordinary dbt project (17 models, no compile-time queries),
+reviewing the same change twice:
+
+| | Wall clock | Findings |
+|---|---|---|
+| Cold cache | 6.16s | 1 high |
+| Warm cache | **0.47s** | 1 high, identical |
+
+Both revisions hit; the whole review becomes the analysis, which is milliseconds.
+
+**The demo project gets none of this, and that is the correct answer.** It contains a
+macro that calls `run_query`, so its compiled SQL is built from whatever the warehouse
+held at compile time — the same revision compiles differently as data moves. A cached
+manifest would then describe last week's data, and the semantic diff would report
+changes nobody made or stay silent about ones they did. Such projects are detected from
+the manifest and refused outright, and the refusal is logged, because a project that
+silently never caches looks exactly like a cache that is broken.
+
+A working tree is never cached either: one with uncommitted edits is described by no
+SHA, so there is no honest key for it. Only a clean checkout gets one.
+
+## Capability-scoped workers
+
+A single worker running every stage needs git, dbt, warehouse credentials with write
+access, a model endpoint and the database simultaneously. Stage 3 is the only stage
+that runs code against a warehouse, so it is the only one that needs credentials at
+all — and it is now the only one that can get them.
+
+| Capability | Needs | Default |
+|---|---|---|
+| `analyse` | nothing but CPU | on |
+| `compile` | the project and dbt; warehouse read-only, and only for compile-time macros | on |
+| `execute` | warehouse credentials with write access | **off** |
+| `review` | a model endpoint | on |
+
+Enforced twice, deliberately. A worker without `execute` does not *claim* a run that
+asked for it — leaving it queued for one that can, rather than returning a review
+quietly missing its strongest evidence. And execution itself refuses, so a bug in the
+scheduler cannot route around the first gate. Both paths have a test.
+
+The capabilities are part of the worker identity recorded against every run, so "the
+machine that produced this review could not reach the warehouse" is legible from the
+record rather than reconstructed from deployment configuration.
+
 ## Known limitations
 
 Kept current. Several entries here were closed and are gone rather than left standing —
@@ -595,6 +646,10 @@ to discount the rest of it.
   fall back to the name search. On the demo project this never happens; on a project
   with undeclared sources it would, which is why unresolved is reported rather than
   quietly treated as clean.
+- **A project with any compile-time query gets no manifest caching at all.** The
+  refusal is whole-project, because a manifest assembled from mixed sources would put
+  compiled SQL and DAG out of step. Projects that generate SQL from data — common in
+  the environment this targets — therefore keep paying the base compile.
 - **Deferral and the production-manifest backend are measured on a project small
   enough not to need either.** Both savings are real and reproduced above, but 28
   objects to 12 is not evidence about a run whose closure is four hundred models and

@@ -23,6 +23,15 @@
 - **Stage 3 — Execute.** Both revisions built and diffed on real data, with
   `--defer-state` to resolve unchanged upstreams to an existing build instead of
   rebuilding the ancestor closure twice.
+- **Manifest cache.** Compiled manifests are content-addressed by git revision, so the
+  base compile a review repeats every time is paid once — and refused outright for
+  projects whose SQL is built from query results, where a revision does not determine
+  the output.
+- **Capability-scoped workers.** Each worker declares what it may do. `execute` is off
+  by default and is the only capability that reaches a warehouse with write access, so
+  the analysis fleet holds no credentials to misuse. Enforced when claiming work and
+  again at execution, because a guard living only in the scheduler is one a scheduling
+  bug removes.
 - **Warehouse clients.** DuckDB and **Trino**, both tested against a live engine.
 - **Report.** Ranked Markdown, macro attribution, measured deltas where present.
 - **Demo project.** A financial dbt project on DuckDB — general ledger, FX conversion,
