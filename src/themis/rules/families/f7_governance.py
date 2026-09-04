@@ -67,15 +67,36 @@ class SensitiveColumnExposedRule(Rule):
         if not any(folder in path for folder in _WIDE_AUDIENCE):
             return []
 
-        from themis.rules.families.f6_contracts import _output_columns
+        from themis.rules.families.f6_contracts import _output_columns, _resolved_outputs
 
         after_sql = ctx.after.analysable_sql
         if after_sql is None:
             return []
+        # A star hides what the projection exposes, which for this rule is the
+        # interesting case: a sensitive column can arrive through one. Column lineage
+        # resolves the star against the project schema and can see it; the AST cannot.
         after_columns = _output_columns(after_sql, ctx.dialect)
-        before_columns: set[str] = set()
-        if ctx.before is not None and ctx.before.analysable_sql is not None:
-            before_columns = _output_columns(ctx.before.analysable_sql, ctx.dialect)
+        if after_columns is None:
+            after_columns = _resolved_outputs(ctx, before=False)
+        if after_columns is None:
+            return []
+
+        if ctx.before is None:
+            # A new model: every column it emits is newly exposed.
+            before_columns: set[str] = set()
+        else:
+            before_sql = ctx.before.analysable_sql
+            if before_sql is None:
+                return []
+            resolved = _output_columns(before_sql, ctx.dialect)
+            if resolved is None:
+                resolved = _resolved_outputs(ctx, before=True)
+            if resolved is None:
+                # Unknowable which columns are new. Treating the previous projection as
+                # empty would report every sensitive column the model has ever carried
+                # as freshly exposed.
+                return []
+            before_columns = resolved
 
         added = {c for c in after_columns - before_columns if _is_sensitive(c)}
         if not added:

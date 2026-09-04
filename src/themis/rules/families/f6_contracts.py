@@ -37,32 +37,52 @@ def _severity_for(ctx: RuleContext, base: Severity) -> Severity:
     return base
 
 
-def _output_columns(sql: str, dialect: str) -> set[str]:
-    """Column names a model exposes.
+def _output_columns(sql: str, dialect: str) -> set[str] | None:
+    """Column names a model exposes, or None when the AST alone cannot say.
 
-    ``SELECT *`` returns an empty set rather than a guess: claiming a column was
-    removed when the projection is a star would be a confident false positive.
+    ``SELECT *`` returns **None**, not an empty set. The distinction is the whole
+    rule: an empty set is a claim that the model emits nothing, and subtracting it
+    from the previous column list reports every column as removed. That is exactly
+    the confident false positive this guard was written to prevent — it was simply
+    applied on one side of the subtraction and not the other, so adding a star to a
+    projection produced six critical findings about columns that had not moved.
     """
     try:
         tree = parse_sql(sql, dialect=dialect)
     except ParseError:
-        return set()
+        return None
 
     select = tree if isinstance(tree, exp.Select) else tree.find(exp.Select)
     if not isinstance(select, exp.Select):
-        return set()
+        return None
 
     names: set[str] = set()
     for projection in select.expressions:
         if isinstance(projection, exp.Star):
-            return set()
+            return None
         if isinstance(projection, exp.Column) and isinstance(projection.this, exp.Star):
-            return set()
+            return None
         if isinstance(projection, exp.Alias):
             names.add(projection.alias)
         elif isinstance(projection, exp.Column):
             names.add(projection.name)
     return names
+
+
+def _resolved_outputs(ctx: RuleContext, *, before: bool) -> set[str] | None:
+    """A model's real column list, with stars expanded against the project schema.
+
+    Consulted only when the AST could not answer, because building the graph costs a
+    project-wide pass and a star in a final projection is uncommon. When it can answer,
+    it answers better than the AST ever could: it knows what `select *` actually
+    resolves to.
+    """
+    index = ctx.lineage
+    if index is None:
+        return None
+    graph = index.before if before else index.after
+    columns = graph.outputs.get(ctx.model_name)
+    return set(columns) if columns else None
 
 
 def _name_search(ctx: RuleContext, column: str, candidates: tuple[str, ...]) -> tuple[str, ...]:
@@ -127,7 +147,21 @@ class ColumnRemovedWithConsumersRule(Rule):
         if before_sql is None or after_sql is None:
             return []
 
-        removed = _output_columns(before_sql, ctx.dialect) - _output_columns(after_sql, ctx.dialect)
+        before_columns = _output_columns(before_sql, ctx.dialect)
+        after_columns = _output_columns(after_sql, ctx.dialect)
+        # A star on either side means the AST cannot name the columns. Column lineage
+        # can, because it derives each model's schema in dependency order — so ask it
+        # before giving up, and give up rather than guess if it cannot say either.
+        if before_columns is None:
+            before_columns = _resolved_outputs(ctx, before=True)
+        if after_columns is None:
+            after_columns = _resolved_outputs(ctx, before=False)
+        if before_columns is None or after_columns is None:
+            # Reported by F6004, which flags the star itself, so the reviewer is not
+            # left with silence here.
+            return []
+
+        removed = before_columns - after_columns
         if not removed:
             return []
 

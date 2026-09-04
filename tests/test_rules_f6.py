@@ -83,3 +83,54 @@ def test_the_name_search_alone_reports_the_unrelated_column() -> None:
     findings = ColumnRemovedWithConsumersRule().check(_ctx(MART_UNRELATED, with_lineage=False))
     assert len(findings) == 1
     assert findings[0].confidence is Confidence.LIKELY
+
+
+# --- the star, in both directions -----------------------------------------------
+
+STG_STAR = "select * from raw_entries"
+
+
+def _star_ctx(before_sql: str, after_sql: str, *, with_lineage: bool = False) -> RuleContext:
+    before = _snapshot(before_sql, MART_STAR)
+    after = _snapshot(after_sql, MART_STAR)
+    lineage = LineageIndex(before_snapshot=before, after_snapshot=after) if with_lineage else None
+    return RuleContext(
+        model_name="stg",
+        before=before.models["stg"],
+        after=after.models["stg"],
+        before_snapshot=before,
+        after_snapshot=after,
+        grains={},
+        lineage=lineage,
+    )
+
+
+def test_adding_a_star_does_not_report_every_column_as_removed() -> None:
+    """The change adds a projection; it removes nothing.
+
+    Reading an unresolvable projection as an empty column set made the subtraction
+    report every column in the model as gone — six confident HIGH findings on a change
+    that deleted nothing. The corpus scored it as caught, because the family that was
+    supposed to fire did.
+    """
+    findings = ColumnRemovedWithConsumersRule().check(_star_ctx(STG_BEFORE, STG_STAR))
+    assert findings == []
+
+
+def test_a_star_in_the_previous_version_does_not_invent_removals() -> None:
+    """The other side of the same subtraction."""
+    findings = ColumnRemovedWithConsumersRule().check(_star_ctx(STG_STAR, STG_BEFORE))
+    assert findings == []
+
+
+def test_a_real_removal_is_still_reported_when_neither_side_is_a_star() -> None:
+    """The guard must not have been bought by giving the rule up.
+
+    Lineage is on, because the consumer here reads through a star and the name search
+    cannot see it — that case has its own test above.
+    """
+    findings = ColumnRemovedWithConsumersRule().check(
+        _star_ctx(STG_BEFORE, STG_AFTER, with_lineage=True)
+    )
+    assert len(findings) == 1
+    assert "currency" in findings[0].title
