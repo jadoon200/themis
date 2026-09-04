@@ -121,6 +121,37 @@ def _compile_snapshot(
         return None
 
 
+def seed_partial_parse(source_project: Path, worktree_project: Path) -> bool:
+    """Copy dbt's parse cache into a fresh worktree before compiling it.
+
+    dbt keeps its parsed project in ``target/partial_parse.msgpack`` and, when it finds
+    one, reparses only the files that changed since. A detached worktree never has one,
+    which is why dbt's own documentation notes that partial parsing does not help a new
+    branch or pull request — every base compile reparses the entire project from cold.
+
+    Handing it the cache from the working copy fixes that: same project, a handful of
+    files different, so dbt reparses those and reuses the rest. It is the only saving
+    available to a project whose manifest cannot be cached at all — parsing is
+    unaffected by compile-time queries, because it happens before any of them run.
+
+    Failure is not an error. A missing or unreadable cache costs a full parse, which is
+    what would have happened anyway, and a corrupt one is dbt's to detect: it validates
+    the cache against the project and falls back on its own.
+    """
+    source = source_project / "target" / "partial_parse.msgpack"
+    if not source.exists():
+        return False
+    destination = worktree_project / "target" / "partial_parse.msgpack"
+    try:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(source.read_bytes())
+    except OSError as exc:
+        log.debug("acquire.partial_parse_not_seeded", error=str(exc)[:200])
+        return False
+    log.debug("acquire.partial_parse_seeded", path=str(destination))
+    return True
+
+
 def manifest_file(given: Path) -> Path:
     """Resolve a manifest reference that may name the file or its directory.
 
@@ -261,6 +292,9 @@ def acquire(
                 log.warning("acquire.cached_manifest_unusable", error=str(exc)[:200])
         if before is None:
             with git.worktree_at(repo, base_sha) as tree:
+                # Only worth doing for a project the manifest cache refuses; for any
+                # other the compile is skipped entirely on the second review.
+                seed_partial_parse(project_dir, tree / relative)
                 before = _compile_snapshot(
                     tree / relative,
                     revision=base_sha,
