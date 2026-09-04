@@ -521,6 +521,7 @@ _ALL_INJECTED: tuple[Mutation, ...] = (
 DEFECTS: tuple[Mutation, ...] = tuple(m for m in _ALL_INJECTED if m.kind is Kind.DEFECT)
 LATENT: tuple[Mutation, ...] = tuple(m for m in _ALL_INJECTED if m.kind is Kind.LATENT)
 UNRULED: tuple[Mutation, ...] = tuple(m for m in _ALL_INJECTED if m.kind is Kind.UNRULED)
+BENIGN: tuple[Mutation, ...] = tuple(m for m in _ALL_INJECTED if m.kind is Kind.BENIGN)
 
 
 CONTROLS: tuple[Mutation, ...] = (
@@ -622,7 +623,7 @@ rates as (select * from fx),""",
 )
 
 
-ALL: tuple[Mutation, ...] = DEFECTS + LATENT + UNRULED + CONTROLS
+ALL: tuple[Mutation, ...] = DEFECTS + LATENT + UNRULED + BENIGN + CONTROLS
 
 
 def select(name: str) -> tuple[Mutation, ...]:
