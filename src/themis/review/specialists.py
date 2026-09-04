@@ -105,7 +105,15 @@ Work it out in this order:
 The stated grains are a starting point, not the answer. "structural" and "measured"
 are reliable; "heuristic" is a guess from column naming and proves nothing — do not
 treat a heuristic grain as evidence the join is safe, and do not stop at "the grain is
-unproven" if the SQL in front of you shows what the real key is.""",
+unproven" if the SQL in front of you shows what the real key is.
+
+There is a third answer and it is often the correct one. Some tables are unique on a
+key because of what the data happens to contain, not because anything in the SQL makes
+them so: a dimension selecting straight from a staging model has no GROUP BY, no
+DISTINCT and no dedup, so nothing in front of you decides it either way. That is
+"uncertain". Do not confirm on the grounds that uniqueness is unproven — unproven is
+why you were asked, not an answer — and do not refute on the grounds that it looks
+like a dimension. Say that the SQL cannot settle it and that measuring would.""",
 )
 
 MONEY = Specialist(
@@ -126,7 +134,7 @@ actually holds money.""",
 FILTERS = Specialist(
     name="filters",
     families=frozenset({"F2"}),
-    needs=frozenset({Section.RELATED_SQL, Section.TAGS}),
+    needs=frozenset({Section.RELATED_SQL, Section.GRAIN, Section.TAGS}),
     question="""You judge whether a change to a predicate alters which rows are counted.
 
 A filter decides the population. Adding a condition removes rows from every total
@@ -146,7 +154,12 @@ Work it out in this order:
    error.
 
 A boundary moved by a small amount is still a population change — say so rather than
-treating it as cosmetic.""",
+treating it as cosmetic.
+
+One case does settle cleanly: a filter excluding NULLs of a column that the stated
+grain proves cannot be NULL removes no rows at all. Refute that one — but only when the
+grain is "structural", "measured", "config" or "declared_test". A "heuristic" grain is a
+guess from the column's name and settles nothing, so that case is "uncertain".""",
 )
 
 INCREMENTAL = Specialist(
