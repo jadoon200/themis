@@ -89,6 +89,7 @@ _INT_CONVERTED = "models/intermediate/int_gl_entries_converted.sql"
 _INT_REVENUE = "models/intermediate/int_revenue_recognized.sql"
 _MART_SUMMARY = "models/marts/fct_regulatory_summary.sql"
 _STG_ENTRIES = "models/staging/stg_gl_entries.sql"
+_STG_FX = "models/staging/stg_fx_rates.sql"
 _MACRO_MONEY = "macros/money.sql"
 _INCREMENTAL = "models/marts/fct_revenue_incremental.sql"
 _MART_REVENUE = "models/marts/fct_revenue.sql"
@@ -232,6 +233,15 @@ _ALL_INJECTED: tuple[Mutation, ...] = (
         description="currency_code dropped from fct_revenue while downstream still selects it",
         relative_path=_MART_REVENUE,
         find="    currency_code,\n",
+        replace="",
+    ),
+    Mutation(
+        id="join_key_column_removed",
+        kind=Kind.DEFECT,
+        expects_family="F6",
+        description="rate_date dropped from stg_fx_rates while the FX join still keys on it",
+        relative_path=_STG_FX,
+        find="    cast(rate_date as date) as rate_date,\n",
         replace="",
     ),
     Mutation(
