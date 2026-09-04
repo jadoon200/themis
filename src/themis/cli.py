@@ -101,6 +101,13 @@ def review(
             help="Also write a SARIF 2.1.0 log here, for inline annotations in CI.",
         ),
     ] = None,
+    json_out: Annotated[
+        Path | None,
+        typer.Option(
+            "--json",
+            help="Also write the full run as JSON: findings, deltas, grains, and skips.",
+        ),
+    ] = None,
     prod_manifest: ProdManifestOpt = None,
     defer_state: DeferStateOpt = None,
     no_manifest_cache: Annotated[
@@ -183,6 +190,25 @@ def review(
             sarif_report.render(result.findings, governed_models=result.governed_models)
         )
         log.info("review.sarif_written", path=str(sarif), findings=len(result.findings))
+
+    if json_out is not None:
+        from themis.report import json_out as json_report
+
+        json_out.parent.mkdir(parents=True, exist_ok=True)
+        json_out.write_text(
+            json_report.render(
+                result.findings,
+                skipped=result.skipped,
+                grains=result.grains,
+                deltas=result.execution.deltas if result.execution else None,
+                models_reviewed=result.models_reviewed,
+                executed=result.executed,
+                degraded_reason=result.degraded_reason,
+                governed_models=result.governed_models,
+                untested_grains=result.untested_grains,
+            )
+        )
+        log.info("review.json_written", path=str(json_out), findings=len(result.findings))
 
     if save:
         _persist(result, project=str(project), base=base, head=head, execute=execute)
