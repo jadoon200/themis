@@ -31,6 +31,12 @@ class Settings(BaseSettings):
     # a decision for the eval to make, not an assumption to ship.
     llm_supervisor_model: str = "qwen3:8b"
     llm_timeout_s: float = 120.0
+    # Sampling. Zero by default because a verdict is not a creative task and two runs
+    # of one review should agree; exposed so that claim can be measured rather than
+    # assumed. `num_predict` caps the reply — too low truncates a quote mid-token and
+    # the self-check then rejects a sound answer for looking fabricated.
+    llm_temperature: float = 0.0
+    llm_max_output_tokens: int = 400
     # Context packs are kept small on purpose; the LLM never sees a whole file.
     llm_max_context_tokens: int = 2000
 

@@ -468,6 +468,16 @@ def lineage(
         if model is None:
             typer.echo("--column needs --model: a column name alone is ambiguous.", err=True)
             raise typer.Exit(code=2)
+        if model not in snapshot.models:
+            # A typo must not read as an answer. Printing "feeds — / joined on —" for
+            # a name the project has never heard of tells a reviewer the column is
+            # safe to remove, which is the worst sentence this command can produce.
+            typer.echo(
+                f"No model named {model!r} in {project}. "
+                "Run `themis lineage` with no arguments to list what there is.",
+                err=True,
+            )
+            raise typer.Exit(code=2)
         if not graph.is_traced(model):
             reason = graph.unresolved.get(model, "not traced")
             typer.echo(f"{model}: lineage unresolved ({reason}). Treat as unknown.", err=True)
@@ -481,6 +491,9 @@ def lineage(
         typer.echo(f"  joined on  : {', '.join(referenced) or '—'}")
         raise typer.Exit(code=0)
 
+    if model is not None and model not in snapshot.models:
+        typer.echo(f"No model named {model!r} in {project}.", err=True)
+        raise typer.Exit(code=2)
     names = [model] if model else sorted(graph.outputs)
     for name in names:
         if not graph.is_traced(name):

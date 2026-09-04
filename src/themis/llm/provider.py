@@ -77,6 +77,8 @@ class OllamaProvider:
     def __init__(self, settings: Settings) -> None:
         self._base = settings.llm_base_url.rstrip("/")
         self._timeout = settings.llm_timeout_s
+        self._temperature = settings.llm_temperature
+        self._max_output_tokens = settings.llm_max_output_tokens
 
     def complete(self, *, system: str, prompt: str, schema: dict[str, Any], model: str) -> Response:
         started = time.monotonic()
@@ -90,7 +92,10 @@ class OllamaProvider:
             # aloud in any case.
             "think": False,
             "format": schema,
-            "options": {"temperature": 0, "num_predict": 400},
+            "options": {
+                "temperature": self._temperature,
+                "num_predict": self._max_output_tokens,
+            },
         }
         try:
             response = httpx.post(f"{self._base}/api/generate", json=body, timeout=self._timeout)

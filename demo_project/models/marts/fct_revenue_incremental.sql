@@ -1,9 +1,19 @@
+{#
+    Hive and Iceberg understand `partitioned_by`; Trino's memory connector rejects an
+    unknown table property outright, and DuckDB ignores it. Sent only where it means
+    something, so the project still builds on every target it claims to support — the
+    manifest a review reads is compiled against dev, which is where it is present.
+
+    `none`, not `{}`: dbt-trino emits a WITH clause whenever properties is a dict, and
+    an empty one compiles to `WITH ()`, which Trino rejects as a syntax error.
+#}
+{% set partition_properties = none if target.type == 'trino' else {'partitioned_by': "ARRAY['period_month']"} %}
 {{ config(
     materialized='incremental',
     unique_key='entry_id',
     incremental_strategy='delete+insert',
     on_schema_change='fail',
-    properties={'partitioned_by': "ARRAY['period_month']"},
+    properties=partition_properties,
     pre_hook="{{ partition_overwrite_hook() }}",
     tags=['recon']
 ) }}
