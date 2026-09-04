@@ -166,11 +166,13 @@ def render(
         ]
 
     if degraded_reason:
-        lines += [
-            f"**Grounding is degraded:** {degraded_reason}. "
-            "Some checks below could not run — see the end of this report.",
-            "",
-        ]
+        # Only claim checks were skipped when some were. Not every degradation costs a
+        # check -- a base read from a different place than asked for costs none -- and
+        # sending the reader to an empty list at the end reads as the tool guessing.
+        pointer = ""
+        if skipped:
+            pointer = " Some checks below could not run — see the end of this report."
+        lines += [f"**Grounding is degraded:** {degraded_reason}.{pointer}", ""]
 
     if not ranked:
         lines += [

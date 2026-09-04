@@ -209,6 +209,10 @@ def acquire(
         base=base_sha[:8],
         head=head_sha[:8],
         changed_files=len(changed),
-        backend=after.backend.value,
+        # Both, because only the base varies. The head is always compiled from the
+        # working tree, so logging its backend alone reports "manifest" whichever
+        # grounding the base actually got — including the one the caller asked for.
+        head_backend=after.backend.value,
+        base_backend=before.backend.value,
     )
     return AcquireResult(before=before, after=after, changed=changed, degraded_reason=degraded)
