@@ -62,6 +62,12 @@ class MutationOutcome:
 
     @property
     def is_true_defect(self) -> bool:
+        # A benign change is safe by construction, whatever the oracle can see. Without
+        # this it would count as a defect in a no-execute run and a flag on it would
+        # score as a true positive — turning the cases that exist to expose false
+        # positives into evidence of correctness.
+        if self.mutation.kind is Kind.BENIGN:
+            return False
         if not self.oracle_available:
             return self.mutation.kind is not Kind.CONTROL
         return self.changed_results
@@ -274,6 +280,16 @@ class EvalReport:
             for o in self.usable
             if o.mutation.kind not in (Kind.LATENT, Kind.UNRULED, Kind.GENERATED)
         ]
+
+    @property
+    def benign(self) -> list[MutationOutcome]:
+        """Safe changes a rule flags anyway — where an adjudicator has work to do.
+
+        Every other mutation is one where flagging is right, so a reviewer above the
+        rules can only agree with them. These are the cases that ask whether anything
+        downstream can tell a correct flag from a consequential one.
+        """
+        return [o for o in self.usable if o.mutation.kind is Kind.BENIGN]
 
     @property
     def latent(self) -> list[MutationOutcome]:

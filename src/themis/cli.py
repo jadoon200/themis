@@ -724,6 +724,24 @@ def eval_cmd(
             typer.echo(f"  {mark:7s} {outcome.mutation.id}")
         typer.echo("")
 
+    if report.benign:
+        suppressed = sum(o.llm_suppressed for o in report.benign)
+        benign_flagged = sum(1 for o in report.benign if o.detected)
+        typer.echo(
+            f"benign changes (safe, and a rule flags them anyway — recall-first "
+            f"working as designed): {benign_flagged}/{len(report.benign)} flagged"
+        )
+        for outcome in report.benign:
+            mark = "flagged" if outcome.detected else "silent"
+            typer.echo(f"  {mark:8s} {outcome.mutation.id}: {outcome.mutation.description}")
+        if use_llm:
+            typer.echo(
+                f"  the model layer suppressed {suppressed} of them. This is the only "
+                "part of the corpus where it can show anything: everywhere else the "
+                "rules are right, so agreeing with them changes nothing."
+            )
+        typer.echo("")
+
     if report.latent:
         detected = report.latent_detected
         typer.echo(

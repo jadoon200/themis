@@ -51,6 +51,20 @@ class Kind(StrEnum):
     rules will always win on them. An unruled defect tests the safety net instead —
     whether a measured change nobody anticipated is still reported rather than passing
     as a clean review.
+
+    BENIGN is the case this corpus was missing entirely, and its absence was why the
+    model layer could never be shown to be worth anything. Every other mutation is a
+    change where flagging is correct, so an adjudicator has nothing to do but agree. A
+    benign mutation trips a rule *and is safe* — a join onto a key that really is
+    unique, a cast on a column that only looks monetary. Recall-first means these are
+    supposed to be flagged; the question is whether anything downstream can settle
+    them, and until now nothing in the corpus asked it.
+
+    They are counted as false positives by the execution oracle, which is correct and
+    is the point: the rules-only false-positive rate reported as 0% was measured on a
+    corpus containing no case where a rule could be wrong. An industry study of static
+    analysis at Tencent found 328 of 433 real alarms were false positives — three in
+    four. A corpus with none of them is not measuring the same thing practitioners are.
     """
 
     DEFECT = "defect"
@@ -58,6 +72,7 @@ class Kind(StrEnum):
     LATENT = "latent"
     UNRULED = "unruled"
     GENERATED = "generated"
+    BENIGN = "benign"
 
 
 @dataclass(frozen=True)
@@ -441,6 +456,38 @@ _ALL_INJECTED: tuple[Mutation, ...] = (
         relative_path=_DIM_ENTITIES,
         find="select distinct\n    entity_code,",
         replace="select distinct\n    upper(entity_code) as entity_code,",
+    ),
+    # --- benign: a rule fires, correctly, and the change is safe ------------------
+    #
+    # These score as false positives, which is exactly right. The 0% rate reported
+    # before they existed was measured on a corpus in which no rule could be wrong.
+    Mutation(
+        id="benign_join_to_a_unique_dimension",
+        kind=Kind.BENIGN,
+        expects_family="F1",
+        description=(
+            "A join onto a dimension that really is one row per key. Flagging it is "
+            "correct — the grain is not *proven* — but the join multiplies nothing"
+        ),
+        relative_path=_MART_REVENUE,
+        find="from {{ ref('int_revenue_recognized') }}",
+        replace=(
+            "from {{ ref('int_revenue_recognized') }} as base\n"
+            "left join {{ ref('dim_accounts') }} as dim\n"
+            "    on dim.account_id = base.account_id"
+        ),
+    ),
+    Mutation(
+        id="benign_not_null_guard_on_a_key",
+        kind=Kind.BENIGN,
+        expects_family="F2",
+        description=(
+            "A defensive null check on the model's own key, which is never null. A "
+            "population change on paper and none in fact"
+        ),
+        relative_path=_MART_REVENUE,
+        find="from {{ ref('int_revenue_recognized') }}",
+        replace="from {{ ref('int_revenue_recognized') }}\nwhere entry_id is not null",
     ),
     Mutation(
         id="unruled_fx_inverted",
