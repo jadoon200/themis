@@ -46,6 +46,12 @@ rather than assumed safe.
 sites and diffs the compiled SQL of every affected model, so the review reflects the
 real blast radius rather than the one-file diff.
 
+**Over-flagging is paid for in ranking, never in silence.** The rules are written for
+recall, so a triage stage demotes a finding that a more specific rule already covers —
+"a predicate changed" beneath "the `is_incremental()` guard was removed" — with the
+relationship named and nothing deleted. The score behind the ranking prints its own
+components, because an opaque number gating a merge is not a reviewable statement.
+
 **The derived grain is handed back as tests.** Because THEMIS works out each model's
 key without being told, it can emit the assertions the project never wrote — and it
 refuses to emit any it cannot stand behind, so a suggested test does not turn red on
@@ -74,6 +80,12 @@ make env && conda activate themis
 make install
 make demo-build          # seeds and builds the demo project on DuckDB
 make review              # review the working tree against main
+```
+
+Findings land on the diff, not only in the log:
+
+```bash
+themis review --base main --head HEAD --sarif themis.sarif
 ```
 
 Stage 3 builds both revisions to measure what actually moved. On a project whose

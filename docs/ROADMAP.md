@@ -57,12 +57,26 @@ pass for measured changes no rule accounts for. The deliverable was a number and
 **M5 — follow-up.** Built. Persisted runs and grounded Q&A, including "why was this not
 flagged?", answered from persisted absence. An unanswerable question gets a refusal.
 
-**M6 — cost.** Triage rubric, feature extraction, SARIF output. Token accounting is
-done; the rest is not.
+**M6 — cost.** Built, minus the classifier. Triage ranks and demotes with an
+explicit, printed rubric; SARIF carries the same triage so the annotation view and the
+report agree; token accounting was already done. The machine-learning lane is
+**closed** rather than pending — see below.
 
 **Next.** Deferral and the dual-manifest backend measured against a project large
 enough for the saving to show as time rather than as object counts — that number has to
 come from a real warehouse. A tuned dbt-bouncer ingest for the governance family.
+
+## Closed, with the reason
+
+**The classifier lane.** The plan kept a logistic-regression router as a side lane. It
+should not be built. There are 38 labelled mutations and roughly 30 candidate features:
+any model fitted on that reports its own training set back. SQLMesh already does this
+classification deterministically from AST diff and lineage with no learning at all, and
+the rubric that shipped is transparent, explainable and needs no labels. A number that
+looks like evidence and is not is worse here than no number.
+
+If it is ever revisited, the precondition is real labels — approve, revert and hotfix
+history from an actual repository — not more synthetic mutations.
 
 ## Deferred
 

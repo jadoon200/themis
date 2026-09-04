@@ -623,6 +623,64 @@ The capabilities are part of the worker identity recorded against every run, so 
 machine that produced this review could not reach the warehouse" is legible from the
 record rather than reconstructed from deployment configuration.
 
+## What counting findings per change found
+
+The score could not see either of the two worst bugs in this project, and both were
+found within an hour of printing how many findings each change produced.
+
+Precision read 100% and both mutations scored *caught*, because in each case the family
+meant to fire did fire. What was wrong was everything else the report said.
+
+**`select_star_introduced` produced seven findings, six of them false.** The mutation
+adds a star to a projection; it removes nothing. `F6001` subtracted the after column
+list from the before one, and a star projection returned an *empty set* — so every
+column read as removed. The guard against exactly this was written in the function's
+own docstring and applied to one side of the subtraction only. An empty set is a claim
+that a model emits nothing; not knowing is a different fact, and the two were sharing a
+representation.
+
+**`period_boundary_shifted` produced seven findings, six of them redundant.**
+Truncating a date to the year moves no row count and no total in the staging model —
+the column is not monetary — while every figure beneath it shifts. `X0001` treated a
+model as an origin only if it had moved materially itself, so six descendants were
+ownerless and each got its own critical. The finding that named the cause ranked
+seventh.
+
+| | before | after |
+|---|---|---|
+| worst case, findings for one change | 7 | **3** |
+| median findings per flagged change | 1 | 1 |
+| recall / precision / FP rate | 100 / 100 / 0 | 100 / 100 / 0 |
+
+The scores are identical either side, which is the point. A headline rate computed
+over "did the right family fire" was measuring something narrower than it sounded.
+
+## Stage 4, and why the noise existed
+
+The rules are written for recall on the argument that a triage step costs less than a
+missed fan-out. That bargain was only half-built: nothing was doing the triage, so the
+reviewer got the over-flagging and none of the suppression. Both bugs above are
+symptoms of the missing stage rather than of the rules that produced them.
+
+Triage demotes, never deletes. `F2001` says a predicate changed, which is equally true
+of a removed `is_incremental()` guard, a narrowed lookback, a `current_date` filter and
+a partition column wrapped in a function — and in each case a specific rule already
+says *which* predicate and why it matters. The general finding is not wrong; it is the
+same fact with less information. It moves beneath the finding that subsumes it, with
+the relationship named, and stays in the report because *"why didn't you flag X"* is a
+question the follow-up lane has to be able to answer.
+
+On the corpus, five of the eleven changes reported by more than one family are exactly
+this shape.
+
+Scoring is a transparent weighted sum whose components are printed beside it. The
+number is not the point — being able to see which part produced it is. There is
+deliberately no model in it: an opaque score gating a merge is not a reviewable
+statement, and "the ranker put it seventh" is not an answer to an auditor.
+
+Writing the test for diminishing returns on reach caught the weights doing the
+opposite of what the comment above them claimed.
+
 ## Known limitations
 
 Kept current. Several entries here were closed and are gone rather than left standing —
