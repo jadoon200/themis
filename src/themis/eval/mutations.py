@@ -60,6 +60,15 @@ class Kind(StrEnum):
     supposed to be flagged; the question is whether anything downstream can settle
     them, and until now nothing in the corpus asked it.
 
+    What a benign mutation can be is bounded by what the oracle can recognise. It asks
+    whether rows, totals or the column set moved, so a benign change has to leave all
+    three alone — a join relaxed where every row already matches, a filter that excludes
+    nothing, a window widened. A hashed identifier tripping the sensitive-column match
+    is the commonest false positive in real PII tooling and cannot be represented here,
+    because adding the column is itself a schema change and the oracle rightly says so.
+    Declaring it benign anyway would be overriding a measurement with a label, which is
+    the failure this corpus exists to prevent.
+
     They are counted as false positives by the execution oracle, which is correct and
     is the point: the rules-only false-positive rate reported as 0% was measured on a
     corpus containing no case where a rule could be wrong. An industry study of static
@@ -514,22 +523,6 @@ _ALL_INJECTED: tuple[Mutation, ...] = (
         relative_path=_INCREMENTAL,
         find="- interval '3' day",
         replace="- interval '30' day",
-    ),
-    Mutation(
-        id="benign_hashed_identifier",
-        kind=Kind.BENIGN,
-        expects_family="F7",
-        description=(
-            "A pseudonymised identifier whose name trips the sensitive-column match. "
-            "A hash of an identifier is not the identifier, and name matching cannot "
-            "tell the difference — the commonest false positive class in PII tooling"
-        ),
-        relative_path=_MART_REVENUE,
-        find="    amount_txn_ccy,\n    amount_usd",
-        replace=(
-            "    amount_txn_ccy,\n    amount_usd,\n"
-            "    md5(cast(customer_id as varchar)) as customer_email_hash"
-        ),
     ),
     Mutation(
         id="unruled_fx_inverted",
