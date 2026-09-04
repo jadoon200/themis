@@ -805,6 +805,12 @@ Kept current. Several entries here were closed and are gone rather than left sta
 a limitations list that lags the code is worse than none, because it teaches the reader
 to discount the rest of it.
 
+- **The Trino demo build is only idempotent under `--full-refresh`.** All eighteen
+  models build on Trino from cold, which is what CI does — a fresh service container
+  every run. A *second* incremental run of the same table fails: the memory connector
+  cannot `DELETE`, and `delete+insert` needs to. That is a property of the connector
+  chosen to avoid needing an object store, not of dbt-trino or of THEMIS, but it means
+  the Trino claim holds for a cold warehouse and has to say so.
 - **Trino coverage is single-catalog.** The demo project builds on Trino as well as
   DuckDB, so the rules read Trino-compiled SQL. But Trino's memory connector is one
   catalog, so the federated-join case is exercised on DuckDB's attached catalog rather
