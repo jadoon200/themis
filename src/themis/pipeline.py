@@ -45,6 +45,9 @@ class ReviewResult:
     executed: bool = False
     execution: ExecutionResult | None = None
     llm: ReviewSummary | None = None
+    # Models tagged for reconciliation or reporting. Triage weights a finding that
+    # lands in one, and the tag is the project's own statement about what it feeds.
+    governed_models: frozenset[str] = frozenset()
     # Reviewed models whose grain THEMIS derived and nothing in the project asserts.
     # Reported as one line rather than a finding each: on a project with no test
     # coverage a per-model finding would fire on everything and bury the real ones.
@@ -523,6 +526,11 @@ def review(
         findings=findings,
         skipped=skipped,
         grains=grains,
+        governed_models=frozenset(
+            name
+            for name, model in acquired.after.models.items()
+            if {"regulatory", "recon", "control"} & set(model.tags)
+        ),
         untested_grains=untested,
         models_reviewed=tuple(c.model_name for c in contexts),
         macro_affected=macro_affected,

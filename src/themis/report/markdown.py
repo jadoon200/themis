@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from themis.models import Confidence, Finding, Severity, sum_moved
 from themis.rules.base import SkippedRule
+from themis.triage.rubric import triage
 
 _SEVERITY_ORDER = {
     Severity.CRITICAL: 0,
@@ -141,9 +142,16 @@ def render(
     degraded_reason: str | None = None,
     # Models reviewed here whose grain is derivable and which nothing asserts.
     untested_grains: tuple[str, ...] = (),
+    # Models tagged for reconciliation or reporting, so triage can weight what lands
+    # in one. Empty means the caller did not say, not that none exist.
+    governed_models: frozenset[str] = frozenset(),
 ) -> str:
     """Render the full report."""
-    ranked = sorted(findings, key=rank_key)
+    # Stage 4. Recall-first rules over-flag on purpose; this is the half that pays for
+    # it, by ranking rather than by silence. A demoted finding is still in the report.
+    triaged = triage(findings, governed_models=governed_models)
+    ranked = [t.finding for t in triaged if not t.demoted]
+    demoted = [t for t in triaged if t.demoted]
     counts = {severity: 0 for severity in Severity}
     for finding in ranked:
         counts[finding.severity] += 1
@@ -205,6 +213,24 @@ def render(
             "_Findings above are inferred from the SQL. Re-run with `--execute` to "
             "build both revisions and measure the actual row-count and total impact._",
         ]
+
+    if demoted:
+        lines += [
+            "",
+            "<details><summary>",
+            f"{len(demoted)} finding(s) a more specific check already covers",
+            "</summary>",
+            "",
+            "_Not dismissed — the same fact, stated with less information than the "
+            "finding named beside it. Kept so nothing the rules saw is lost._",
+            "",
+        ]
+        for item in demoted:
+            lines.append(
+                f"- `{item.finding.rule_id}` on `{item.finding.evidence.model_name}`: "
+                f"{item.finding.title} — covered by `{item.subsumed_by}`"
+            )
+        lines += ["", "</details>"]
 
     if untested_grains:
         # One line, not a finding per model. On a project with no test coverage a

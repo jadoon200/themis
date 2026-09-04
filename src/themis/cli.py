@@ -94,6 +94,13 @@ def review(
     target: Annotated[
         str, typer.Option("--target", help="dbt target to compile and build against.")
     ] = "dev",
+    sarif: Annotated[
+        Path | None,
+        typer.Option(
+            "--sarif",
+            help="Also write a SARIF 2.1.0 log here, for inline annotations in CI.",
+        ),
+    ] = None,
     prod_manifest: ProdManifestOpt = None,
     defer_state: DeferStateOpt = None,
     no_manifest_cache: Annotated[
@@ -164,8 +171,16 @@ def review(
             macro_affected=result.macro_affected,
             degraded_reason=result.degraded_reason,
             untested_grains=result.untested_grains,
+            governed_models=result.governed_models,
         )
     )
+
+    if sarif is not None:
+        from themis.report import sarif as sarif_report
+
+        sarif.parent.mkdir(parents=True, exist_ok=True)
+        sarif.write_text(sarif_report.render(result.findings))
+        log.info("review.sarif_written", path=str(sarif), findings=len(result.findings))
 
     if save:
         _persist(result, project=str(project), base=base, head=head, execute=execute)
