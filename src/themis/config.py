@@ -53,6 +53,13 @@ class Settings(BaseSettings):
         "local",
     )
 
+    # --- manifest cache ------------------------------------------------------
+    # Compiled manifests are content-addressed by git revision, so the base compile a
+    # review repeats every time is paid once. Refused automatically for projects whose
+    # compiled SQL is built from query results, where the revision does not determine
+    # the output. Lives under `.themis/`, which is gitignored.
+    manifest_cache_enabled: bool = True
+
     # --- gate ----------------------------------------------------------------
     # Advisory by default. Blocking is opt-in, per severity.
     fail_on_severity: str | None = None

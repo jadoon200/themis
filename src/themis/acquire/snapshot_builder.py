@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from themis.acquire import git
+from themis.acquire.cache import CacheKey, ManifestCache
 from themis.acquire.dbt_runner import DbtError, compile_project
 from themis.acquire.manifest import ManifestError, load_manifest
 from themis.logging import get_logger
@@ -67,16 +68,32 @@ def _compile_snapshot(
     allowed_targets: tuple[str, ...],
     timeout_s: float,
     anchor_dir: Path | None = None,
+    cache: ManifestCache | None = None,
+    cache_key: CacheKey | None = None,
 ) -> ProjectSnapshot | None:
     """Compile a project revision into a snapshot, or None if it cannot be compiled.
 
     ``anchor_dir`` points relative database paths at the real project. Without it a
     base revision compiled in a worktree addresses an empty database beside itself,
     and any macro that queries at compile time fails.
+
+    ``cache`` short-circuits the compile when this exact revision has been compiled
+    before. Only callers that can honestly name the revision pass one — a working tree
+    with uncommitted edits is described by no SHA, so it has no key.
     """
     import tempfile
 
     from themis.execute.profiles import ProfileError, write_anchored_profile
+
+    if cache is not None and cache_key is not None:
+        cached = cache.get(cache_key)
+        if cached is not None:
+            try:
+                return load_manifest(cached, revision=revision, backend=Backend.MANIFEST)
+            except ManifestError as exc:
+                # A cached manifest that will not load is a cache problem, not a
+                # project problem. Fall through and compile it properly.
+                log.warning("acquire.cached_manifest_unusable", error=str(exc)[:200])
 
     try:
         profiles_dir: Path | None = None
@@ -95,7 +112,10 @@ def _compile_snapshot(
                 timeout_s=timeout_s,
                 profiles_dir=profiles_dir,
             )
-            return load_manifest(manifest_path, revision=revision, backend=Backend.MANIFEST)
+            snapshot = load_manifest(manifest_path, revision=revision, backend=Backend.MANIFEST)
+            if cache is not None and cache_key is not None:
+                cache.put(cache_key, manifest_path, snapshot)
+            return snapshot
     except (DbtError, ManifestError) as exc:
         log.warning("acquire.compile_failed", revision=revision[:8], error=str(exc)[:400])
         return None
@@ -121,6 +141,8 @@ def acquire(
     timeout_s: float = 900.0,
     prod_manifest: Path | None = None,
     data_anchor: Path | None = None,
+    cache_dir: Path | None = None,
+    use_cache: bool = True,
 ) -> AcquireResult:
     """Produce the snapshot pair for a review.
 
@@ -138,7 +160,17 @@ def acquire(
     base_sha = git.resolve_revision(repo, base)
     head_sha = git.resolve_revision(repo, head)
     changed = git.changed_files(repo, base, head)
+    relative = project_dir.resolve().relative_to(repo.resolve())
 
+    cache = ManifestCache(cache_dir or repo / ".themis", enabled=use_cache)
+
+    def key_for(revision: str) -> CacheKey:
+        return CacheKey(revision=revision, target=target, project=str(relative))
+
+    # The head is normally the working tree, and a working tree with uncommitted edits
+    # is not described by its SHA — caching it would serve one reviewer's unsaved work
+    # to the next run of that revision. Only a clean checkout gets a key.
+    head_key = key_for(head_sha) if git.is_clean(repo, project_dir) else None
     after = _compile_snapshot(
         project_dir,
         revision=head_sha,
@@ -146,6 +178,8 @@ def acquire(
         allowed_targets=allowed_targets,
         timeout_s=timeout_s,
         anchor_dir=data_anchor,
+        cache=cache,
+        cache_key=head_key,
     )
 
     # Backend A: a production manifest removes the need to rebuild the base at all.
@@ -167,19 +201,30 @@ def acquire(
             log.warning("acquire.prod_manifest_unusable", error=prod_backend_failed[:300])
 
     if before is None:
-        # Backend B: rebuild the base in a throwaway worktree.
-        relative = project_dir.resolve().relative_to(repo.resolve())
-        with git.worktree_at(repo, base_sha) as tree:
-            before = _compile_snapshot(
-                tree / relative,
-                revision=base_sha,
-                target=target,
-                allowed_targets=allowed_targets,
-                timeout_s=timeout_s,
-                # Anchor to the real project so a compile-time query reaches the
-                # actual database rather than an empty one in the worktree.
-                anchor_dir=data_anchor or project_dir,
-            )
+        # Backend B: rebuild the base in a throwaway worktree. This is the compile the
+        # cache exists for — a detached worktree at a SHA is exactly the content the
+        # SHA names, and the base rarely moves between reviews of the same branch.
+        base_key = key_for(base_sha)
+        cached_base = cache.get(base_key)
+        if cached_base is not None:
+            try:
+                before = load_manifest(cached_base, revision=base_sha, backend=Backend.MANIFEST)
+            except ManifestError as exc:
+                log.warning("acquire.cached_manifest_unusable", error=str(exc)[:200])
+        if before is None:
+            with git.worktree_at(repo, base_sha) as tree:
+                before = _compile_snapshot(
+                    tree / relative,
+                    revision=base_sha,
+                    target=target,
+                    allowed_targets=allowed_targets,
+                    timeout_s=timeout_s,
+                    # Anchor to the real project so a compile-time query reaches the
+                    # actual database rather than an empty one in the worktree.
+                    anchor_dir=data_anchor or project_dir,
+                    cache=cache,
+                    cache_key=base_key,
+                )
 
     if after is None:
         raise DbtError(

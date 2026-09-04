@@ -348,6 +348,7 @@ def review(
     # A directory holding a manifest from an existing build. Passing it makes Stage 3
     # defer unselected upstreams to those relations instead of rebuilding them.
     defer_state: Path | None = None,
+    use_manifest_cache: bool | None = None,
     run_execution: bool = False,
     run_llm: bool = False,
     pr_description: str | None = None,
@@ -368,6 +369,9 @@ def review(
         timeout_s=settings.execute_timeout_s,
         prod_manifest=prod_manifest,
         data_anchor=data_anchor,
+        use_cache=(
+            settings.manifest_cache_enabled if use_manifest_cache is None else use_manifest_cache
+        ),
     )
 
     grains = infer_grains(acquired.after, dialect=settings.dialect)

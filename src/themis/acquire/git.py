@@ -116,3 +116,20 @@ def worktree_at(repo: Path, revision: str) -> Iterator[Path]:
 def repo_root(start: Path) -> Path:
     """The git repository containing a path."""
     return Path(_git(start, "rev-parse", "--show-toplevel").strip())
+
+
+def is_clean(repo: Path, path: Path | None = None) -> bool:
+    """Whether a path has no uncommitted changes.
+
+    The question behind this is whether a checkout is *described* by its SHA. A dirty
+    tree is not: two runs at the same revision can compile to different SQL, so
+    anything keyed on the revision would serve one for the other.
+    """
+    args = ["status", "--porcelain"]
+    if path is not None:
+        args += ["--", str(path)]
+    try:
+        return not _git(repo, *args).strip()
+    except GitError:
+        # Cannot establish cleanliness, so it must not be assumed.
+        return False

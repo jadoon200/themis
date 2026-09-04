@@ -96,6 +96,10 @@ def review(
     ] = "dev",
     prod_manifest: ProdManifestOpt = None,
     defer_state: DeferStateOpt = None,
+    no_manifest_cache: Annotated[
+        bool,
+        typer.Option("--no-manifest-cache", help="Recompile every revision, ignoring .themis/."),
+    ] = False,
     verbose: VerboseOpt = False,
 ) -> None:
     """Review the dbt model changes between two revisions.
@@ -121,6 +125,7 @@ def review(
         pr_description=pr_description,
         prod_manifest=prod_manifest,
         defer_state=defer_state,
+        use_manifest_cache=not no_manifest_cache,
     )
 
     if result.execution is not None and not result.execution.ran:
@@ -353,6 +358,39 @@ def suggest_tests_cmd(
         "or an `--execute` run to measure it."
     )
     typer.echo("Re-run with --yaml for a schema.yml fragment.")
+    raise typer.Exit(code=0)
+
+
+@app.command()
+def cache(
+    project: ProjectOpt = Path("demo_project"),
+    clear: Annotated[bool, typer.Option("--clear", help="Delete every cached manifest.")] = False,
+    verbose: VerboseOpt = False,
+) -> None:
+    """Inspect or clear the compiled-manifest cache.
+
+    dbt writes its manifest into `target/`, which every project gitignores, so a
+    manifest is never something a review finds — it is something THEMIS compiles. The
+    cache means it compiles each revision once instead of once per review.
+    """
+    from themis.acquire import git
+    from themis.acquire.cache import ManifestCache
+
+    configure_logging(verbose=verbose)
+    root = git.repo_root(project) / ".themis"
+    store = ManifestCache(root)
+
+    if clear:
+        removed = store.clear()
+        typer.echo(f"Cleared {removed} cached manifest(s) from {root / 'manifests'}.")
+        raise typer.Exit(code=0)
+
+    entries = sorted((root / "manifests").glob("*.json")) if root.exists() else []
+    for entry in entries:
+        size_mb = entry.stat().st_size / 1_000_000
+        typer.echo(f"{entry.name:48s} {size_mb:6.1f} MB")
+    total = sum(e.stat().st_size for e in entries) / 1_000_000
+    typer.echo(f"\n{len(entries)} cached manifest(s), {total:.1f} MB, in {root / 'manifests'}.")
     raise typer.Exit(code=0)
 
 
