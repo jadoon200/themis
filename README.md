@@ -87,10 +87,12 @@ make demo-build          # seeds and builds the demo project on DuckDB
 make review              # review the working tree against main
 ```
 
-Findings land on the diff, not only in the log:
+Findings land on the diff, not only in the log — and in a form a gate or a dashboard
+can read, including the measured deltas, the derived grain, and the checks that could
+not run:
 
 ```bash
-themis review --base main --head HEAD --sarif themis.sarif
+themis review --base main --head HEAD --sarif themis.sarif --json themis.json
 ```
 
 Stage 3 builds both revisions to measure what actually moved. On a project whose

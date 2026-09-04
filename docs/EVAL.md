@@ -799,6 +799,71 @@ sound beats asking a model to second-guess it — and the cases left over, where
 evidence genuinely cannot settle the question, are the ones a specialist should mark
 `uncertain` and escalate rather than decide.
 
+## Exercising every component, and what that alone found
+
+The unit suite had 300 tests and all of them passed. Running the components — the real
+CLI, a real Trino, a real Postgres, the real HTTP app — found four defects in an
+afternoon, and every one of them was invisible to a test by construction.
+
+| defect | why no test could see it |
+|---|---|
+| Trino rejects the `partitioned_by` property | needs a real engine; DuckDB ignores unknown properties |
+| `themis lineage --model` answered for models that do not exist | needs the CLI, not the library underneath it |
+| the Trino build only works once | needs a *second* run against the same warehouse |
+| `F1002` never reached a specialist | needs timing that does not add up |
+
+The third and fourth are worth spelling out.
+
+**The Trino build is a cold-warehouse claim.** All eighteen models build from cold,
+which is what CI does — a fresh service container every run. The second incremental run
+fails, because the memory connector cannot `DELETE` and `delete+insert` needs to. The
+claim was true and narrower than it sounded.
+
+**`F1002` emitted `PROVEN`**, and the model layer routes on confidence, so a
+`LEFT`-to-`INNER` flip was never once put in front of a reviewer. That a join type
+changed is provable; that rows are lost depends on whether the sides match, which is a
+fact about the data. This is the **third** rule with that confusion after `F2001` and
+the propagated-grain case, and the pattern is now named: a rule knows an edit happened
+and reaches for `PROVEN`, when confidence has to answer whether the edit is a *problem*.
+
+Component coverage after the fixes, all exercised for real with expected exit codes
+declared so that "correctly refused" counts as a pass rather than an accident:
+
+**29 of 29.** Analysis, every review path, Stage 3 with and without deferral, the
+production-target guard, the manifest cache and its refusal, SQLite and Postgres
+persistence, the queue and a worker claiming from it, the HTTP API, capability
+enforcement, the follow-up lane answering and refusing, a live Trino, and SARIF.
+
+## The model sweep: no configuration changes the answer
+
+Three models, three parameter settings, four cases — the three benign changes where a
+refutation would be the layer earning its place, and one real defect where a refutation
+would be active harm.
+
+| model | mean per case | refutations | wrongly refuted the real defect |
+|---|---|---|---|
+| `qwen3:8b` | 12.5s | 0 | 0 |
+| `qwen3:14b` | 17.0s | 0 | 0 |
+| `qwen2.5-coder:7b` | 11.5s | 0 | 0 |
+
+**36 runs, 0 refutations, 0 self-check rejections.** Temperature 0 against 0.3 changed
+nothing; a 400-token output cap against 1200 changed nothing; a model nearly twice the
+size changed nothing except being 36% slower, and a coding-specialised model changed
+nothing except being marginally faster.
+
+The safety property holds — nothing refuted the genuine fan-out — but the value
+property does not appear at any setting. Taken with the grain-propagation result, where
+the one benign case that *could* be settled was settled by fixing an inference rather
+than by asking a model, the conclusion is not that a bigger model is needed. It is that
+the adjudication seat sits in a gap: execution settles what it can before the model is
+asked, and what is left usually cannot be settled from the code by anyone.
+
+The first version of this sweep produced the same headline and was worthless: it ran
+while the demo project was being rebuilt for Trino, so some runs measured a
+partially-compiled manifest. The tell was arithmetic — six runs finishing in seven
+seconds cannot contain two model calls. It was re-run against a verified-quiescent
+project, which is also how `F1002` was found.
+
 ## Known limitations
 
 Kept current. Several entries here were closed and are gone rather than left standing —

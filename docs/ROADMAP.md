@@ -37,7 +37,9 @@
   again at execution, because a guard living only in the scheduler is one a scheduling
   bug removes.
 - **Warehouse clients.** DuckDB and **Trino**, both tested against a live engine.
-- **Report.** Ranked Markdown, macro attribution, measured deltas where present.
+- **Report.** Ranked Markdown, macro attribution, measured deltas where present; SARIF
+  for inline annotations, carrying the same triage; and JSON for anything that is not a
+  person — the measured deltas, the derived grain, and the checks that could not run.
 - **Demo project.** A financial dbt project on DuckDB — general ledger, FX conversion,
   revenue recognition, regulatory mart. Macro-using and, deliberately, test-free.
 
@@ -69,6 +71,32 @@ report agree; token accounting was already done. The machine-learning lane is
 **Next.** Deferral and the dual-manifest backend measured against a project large
 enough for the saving to show as time rather than as object counts — that number has to
 come from a real warehouse. A tuned dbt-bouncer ingest for the governance family.
+
+## Measured and left alone
+
+**Model choice and sampling.** Three models (`qwen3:8b`, `qwen3:14b`,
+`qwen2.5-coder:7b`) across three parameter settings and four cases: 36 runs, **zero**
+refutations of a benign finding and zero wrong refutations of a real defect. A larger
+model was 36% slower and no better; a coding-specialised one was marginally faster and
+no better. There is no configuration to reach for here, which is why the direction is
+to make inferences sound rather than to ask a model to second-guess them.
+
+**Agent frameworks — LangChain and LangGraph — not adopted.** The batch pipeline is a
+static DAG with no cycles and no dynamic planning, and every model call in it is a
+single-shot, JSON-schema'd completion: 10 to 11 of them per corpus run, none using
+tools, none multi-turn. LangGraph's value is cycles, checkpointing and human-in-the-loop
+interrupts; durability here is Postgres and the persisted run artifact, which already
+exists. LangChain's provider abstraction duplicates a 129-line file, and its structured
+output is weaker than Ollama's native constrained decoding, which the provider already
+uses. Against that, the two pull tens of transitive dependencies into a project that
+has 17 — every one of them a supply-chain review in a bank — and their observability
+story is a hosted service, which would send the SQL under review off the machine and
+break the constraint that made local inference the default in the first place.
+
+The one genuine gap either would have filled is retry and fallback on a failed
+completion, which the provider does not do. That is worth about twenty lines, not a
+framework. If the follow-up lane ever grows real multi-step tool use, revisit — and
+even then a plain tool-runner loop is around a hundred lines.
 
 ## Closed, with the reason
 
