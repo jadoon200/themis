@@ -387,12 +387,12 @@ _ALL_INJECTED: tuple[Mutation, ...] = (
             "A filter against current_date, so the same code and the same data "
             "produce a different figure tomorrow"
         ),
-        relative_path=_INCREMENTAL,
-        find="    select * from {{ ref('int_revenue_recognized') }}",
-        replace=(
-            "    select * from {{ ref('int_revenue_recognized') }}\n"
-            "    where posting_date <= current_date"
-        ),
+        # Deliberately not the incremental model: a filter inserted above its
+        # `is_incremental()` block compiles to two WHERE clauses, and the review then
+        # reports unparseable SQL rather than the rule this case exists to exercise.
+        relative_path=_MART_REVENUE,
+        find="from {{ ref('int_revenue_recognized') }}",
+        replace="from {{ ref('int_revenue_recognized') }}\nwhere posting_date <= current_date",
     ),
     Mutation(
         id="materialization_incremental_to_table",
