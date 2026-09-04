@@ -341,11 +341,25 @@ def _propagate(model: ModelNode, grains: dict[str, Grain], dialect: str) -> Grai
     if list(tree.find_all(exp.Join)):
         return None
 
+    # The key must still be emitted. A pass-through that projects a subset can drop
+    # part of the parent's key, and the rows are then no longer unique on what is
+    # left — inheriting it anyway would assert uniqueness the data does not have.
+    # The structural path has always checked this; propagation did not, which is the
+    # difference between a grain that can be trusted and one that merely usually holds.
+    select = tree if isinstance(tree, exp.Select) else tree.find(exp.Select)
+    if not isinstance(select, exp.Select):
+        return None
+    if not _projection_covers(select, parent.columns):
+        return None
+
     return Grain(
         model_name=model.name,
         columns=parent.columns,
         source=GrainSource.PROPAGATED,
-        note=f"passes through {parent.model_name} unchanged (single upstream, no join)",
+        note=(
+            f"passes through {parent.model_name} unchanged (single upstream, no join), "
+            f"whose key is {parent.source.value}"
+        ),
     )
 
 

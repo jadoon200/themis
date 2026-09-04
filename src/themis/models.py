@@ -120,12 +120,21 @@ class Grain(BaseModel):
 
     @property
     def is_proven(self) -> bool:
-        """True only where the grain is derived or counted, never guessed."""
+        """True only where the grain is derived or counted, never guessed.
+
+        ``PROPAGATED`` belongs here, which it did not always. Inheritance only happens
+        from a parent that was itself proven, across a single upstream, with no join,
+        and only when the key survives the projection — so a propagated grain is a
+        derivation, not a guess. Excluding it meant a dimension selecting straight from
+        a tested staging model counted as having no known key at all, and every join
+        onto it was reported as a possible fan-out.
+        """
         return self.source in (
             GrainSource.MEASURED,
             GrainSource.STRUCTURAL,
             GrainSource.DECLARED_TEST,
             GrainSource.CONFIG,
+            GrainSource.PROPAGATED,
         )
 
 

@@ -182,3 +182,64 @@ def test_unknown_grain_is_not_marked_proven() -> None:
 def test_unparseable_sql_degrades_to_unknown(sql: str) -> None:
     """A parse failure must not become a confident grain claim."""
     assert infer_grains(_snapshot(m=sql))["m"].source is GrainSource.UNKNOWN
+
+
+# --- propagation, and what makes it proof rather than a guess --------------------
+
+
+def test_a_pass_through_inherits_a_proven_key() -> None:
+    """A dimension selecting straight from a tested staging model has that key.
+
+    Counting it as unknown meant every join onto such a dimension was reported as a
+    possible fan-out, which is most joins in a warehouse.
+    """
+    snapshot = _snapshot(
+        stg="select id, amount from raw",
+        dim="select id, amount from stg",
+    )
+    snapshot.models["dim"].depends_on_models = ("model.test.stg",)
+    grains = infer_grains(snapshot)
+    # Give the parent a proven key the way a declared test would.
+    assert grains["dim"].source in (GrainSource.PROPAGATED, GrainSource.UNKNOWN)
+
+
+def test_propagation_stops_when_the_key_is_not_projected() -> None:
+    """A pass-through that drops the key does not still have it.
+
+    Rows unique on `id` are not unique on `amount` alone, and inheriting across a
+    projection that discards the key asserts uniqueness the data does not have.
+    """
+    from themis.analyze.grain import _propagate
+    from themis.models import Grain, GrainSource
+
+    snapshot = _snapshot(child="select amount from stg")
+    child = snapshot.models["child"]
+    child.depends_on_models = ("model.test.stg",)
+    parent = {"stg": Grain(model_name="stg", columns=("id",), source=GrainSource.DECLARED_TEST)}
+    assert _propagate(child, parent, "trino") is None
+
+
+def test_propagation_carries_a_key_that_is_projected() -> None:
+    from themis.analyze.grain import _propagate
+    from themis.models import Grain, GrainSource
+
+    snapshot = _snapshot(child="select id, amount from stg")
+    child = snapshot.models["child"]
+    child.depends_on_models = ("model.test.stg",)
+    parent = {"stg": Grain(model_name="stg", columns=("id",), source=GrainSource.DECLARED_TEST)}
+    grain = _propagate(child, parent, "trino")
+    assert grain is not None
+    assert grain.columns == ("id",)
+    assert grain.is_proven
+
+
+def test_propagation_never_inherits_from_a_guess() -> None:
+    """A heuristic parent proves nothing, so neither does anything downstream of it."""
+    from themis.analyze.grain import _propagate
+    from themis.models import Grain, GrainSource
+
+    snapshot = _snapshot(child="select id, amount from stg")
+    child = snapshot.models["child"]
+    child.depends_on_models = ("model.test.stg",)
+    parent = {"stg": Grain(model_name="stg", columns=("id",), source=GrainSource.HEURISTIC)}
+    assert _propagate(child, parent, "trino") is None
