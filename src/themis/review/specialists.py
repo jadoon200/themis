@@ -21,7 +21,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from themis.llm.context_pack import ContextPack
+from themis.llm.context_pack import ContextPack, Section
 from themis.llm.provider import LLMError, Provider, Usage
 from themis.logging import get_logger
 
@@ -73,11 +73,12 @@ Rules you must follow:
 
 @dataclass(frozen=True)
 class Specialist:
-    """One reviewer: a name, the families it handles, and its question."""
+    """One reviewer: a name, the families it handles, its question, and its evidence."""
 
     name: str
     families: frozenset[str]
     question: str
+    needs: frozenset[Section] = frozenset()
 
     @property
     def system_prompt(self) -> str:
@@ -86,7 +87,8 @@ class Specialist:
 
 GRAIN = Specialist(
     name="grain",
-    families=frozenset({"F1", "F8"}),
+    families=frozenset({"F1"}),
+    needs=frozenset({Section.RELATED_SQL, Section.GRAIN, Section.UPSTREAM_GRAINS}),
     question="""You judge whether a flagged change actually duplicates or drops rows.
 
 A join multiplies rows when the joined table has more than one row per join key.
@@ -109,6 +111,7 @@ unproven" if the SQL in front of you shows what the real key is.""",
 MONEY = Specialist(
     name="money",
     families=frozenset({"F3", "F4"}),
+    needs=frozenset({Section.COLUMN_TYPES, Section.TAGS}),
     question="""You judge whether a flagged change corrupts monetary values.
 
 Money must be an exact decimal type. Binary floating point cannot represent 0.01, so
@@ -123,6 +126,7 @@ actually holds money.""",
 FILTERS = Specialist(
     name="filters",
     families=frozenset({"F2"}),
+    needs=frozenset({Section.RELATED_SQL, Section.TAGS}),
     question="""You judge whether a change to a predicate alters which rows are counted.
 
 A filter decides the population. Adding a condition removes rows from every total
@@ -148,6 +152,7 @@ treating it as cosmetic.""",
 INCREMENTAL = Specialist(
     name="incremental",
     families=frozenset({"F5"}),
+    needs=frozenset({Section.CONFIG, Section.GRAIN, Section.TAGS}),
     question="""You judge whether a flagged change breaks incremental loading.
 
 Incremental models fail quietly: the run succeeds and rows are missing or duplicated.
@@ -161,20 +166,73 @@ still counts as confirmed — say so in the rationale.""",
 
 CONTRACTS = Specialist(
     name="contracts",
-    families=frozenset({"F6", "F7"}),
+    families=frozenset({"F6"}),
+    needs=frozenset({Section.COLUMN_CONSUMERS, Section.BLAST_RADIUS, Section.TAGS}),
     question="""You judge whether a flagged change breaks something downstream.
 
-A removed column breaks the models that select it. A literal table name in place of
+A removed column breaks the models that read it. A literal table name in place of
 ref() still runs but leaves the DAG, so build order is no longer guaranteed and a
-development run can read production. A sensitive column reaching a published model
-widens who can see it.
+development run can read production. Narrowing a type under an enforced contract
+breaks the promise the contract makes.
 
-Weigh the number of downstream models and any regulatory or reconciliation tags.""",
+You are told which downstream columns actually read the one that changed, traced
+through the SQL rather than found by searching for its name. Use that list, and note
+that a model can depend on a column without carrying it forward — one that joins on it
+or filters by it breaks just as surely while producing no column of its own.
+
+An empty consumer list from lineage means nothing reads it. A model listed as
+unresolved means nobody knows; treat that as a reason for caution, not for comfort.""",
+)
+
+
+ENGINE = Specialist(
+    name="engine",
+    families=frozenset({"F8"}),
+    needs=frozenset({Section.ENGINE_SHAPE, Section.RELATED_SQL, Section.BLAST_RADIUS}),
+    question="""You judge whether a flagged change makes a query behave badly on Trino.
+
+This is about how the engine runs the query, not about whether the numbers are wrong.
+
+- A join across two catalogs cannot be pushed down: both sides are read in full and
+  joined on the coordinator. On a large table that is the difference between a query
+  and an outage.
+- A filter that wraps the partition column in a function stops the engine pruning
+  partitions, so it scans everything.
+- A join condition that is always true pairs every row with every row.
+- `LIMIT` without `ORDER BY` returns an arbitrary subset, which differs between runs.
+- `approx_distinct` and `approx_percentile` are estimates. In a regulatory figure that
+  is wrong even when it is close.
+
+Say which of these the change does. If it does none of them, refute. Cost alone, with
+no correctness or reproducibility consequence, is a real finding but a low-severity
+one — say so rather than inflating it.""",
+)
+
+
+GOVERNANCE = Specialist(
+    name="governance",
+    families=frozenset({"F7"}),
+    needs=frozenset({Section.TAGS, Section.BLAST_RADIUS, Section.COLUMN_CONSUMERS}),
+    question="""You judge whether a flagged change widens who can see something, or
+weakens what can be proven about a reported figure.
+
+- A personal or counterparty column — an email, a name, an account identifier — reaching
+  a model with a wider audience than the one it came from is an exposure, whether or not
+  anyone has queried it yet.
+- A model tagged `regulatory`, `recon` or `control` feeds something someone signs. A
+  change to one carries more weight than the same change elsewhere, and the tags you
+  are given are the evidence for that, not a guess.
+- A model whose grain cannot be established means every duplication check involving it
+  is unproven — including the ones that came back clean.
+
+Judge exposure and provability, not arithmetic. If the change is a correctness problem
+rather than a governance one, refute and say which — another reviewer has that.""",
 )
 
 INTENT = Specialist(
     name="intent",
     families=frozenset(),
+    needs=frozenset(),
     question="""You compare what a change does against what its author said it does.
 
 You are given the author's description, the models affected, and what the automated
@@ -192,6 +250,8 @@ ALL_SPECIALISTS: tuple[Specialist, ...] = (
     MONEY,
     INCREMENTAL,
     CONTRACTS,
+    ENGINE,
+    GOVERNANCE,
 )
 
 

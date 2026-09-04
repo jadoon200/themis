@@ -146,6 +146,7 @@ class ColumnRemovedWithConsumersRule(Rule):
                     evidence=Evidence(
                         model_name=ctx.model_name,
                         file_path=ctx.after.file_path,
+                        column_name=column,
                         note=impact.note(column),
                     ),
                     consequence=(

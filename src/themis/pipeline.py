@@ -431,6 +431,11 @@ def review(
         else:
             log.warning("execute.skipped", reason=execution.skipped_reason)
 
+    # Every context shares one lazily-built index, so reading it off the first is the
+    # same object the rules used — and asking for `.before` is what builds it, only if
+    # a specialist that needs column lineage is actually reached.
+    column_lineage = contexts[0].lineage.before if contexts and contexts[0].lineage else None
+
     llm_summary: ReviewSummary | None = None
     if run_llm and findings:
         # Runs last on purpose. Execution settles what it can first, so the model is
@@ -452,6 +457,9 @@ def review(
                 changed_models=tuple(c.model_name for c in contexts),
                 pr_description=pr_description,
                 before_snapshot=acquired.before,
+                # The before graph: a column that was removed still exists there, which
+                # is the only revision in which "what reads it" has an answer.
+                lineage=column_lineage,
             )
             findings = llm_summary.findings
         except LLMError as exc:

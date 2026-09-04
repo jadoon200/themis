@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from themis.analyze.lineage import ColumnGraph
 from themis.config import Settings
 from themis.llm.context_pack import ContextPack, build_intent_pack, build_pack
 from themis.llm.provider import Provider, Usage
@@ -126,6 +127,9 @@ def review(
     changed_models: tuple[str, ...] = (),
     pr_description: str | None = None,
     before_snapshot: ProjectSnapshot | None = None,
+    # Column lineage, so a specialist judging a removed column is told what reads it
+    # rather than being handed a model-granular blast radius and left to guess.
+    lineage: ColumnGraph | None = None,
 ) -> ReviewSummary:
     """Adjudicate the findings that warrant it, and run the intent pass."""
     summary = ReviewSummary()
@@ -159,7 +163,16 @@ def review(
             reviewed.append(finding)
             continue
 
-        pack = build_pack(finding, snapshot=snapshot, grains=grains, pr_description=pr_description)
+        pack = build_pack(
+            finding,
+            snapshot=snapshot,
+            grains=grains,
+            pr_description=pr_description,
+            # Each reviewer reads only what its question turns on. A shared pack has to
+            # carry everything anyone might need, and then nobody's evidence is narrow.
+            needs=specialist.needs,
+            lineage=lineage,
+        )
         raw = adjudicate(provider, specialist, pack, model=settings.llm_specialist_model)
         if raw is not None:
             summary.usage.add(raw.usage)

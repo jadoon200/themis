@@ -91,6 +91,9 @@ class SensitiveColumnExposedRule(Rule):
                 evidence=Evidence(
                     model_name=ctx.model_name,
                     file_path=ctx.after.file_path,
+                    # The first, so lineage can be asked where this one ends up. A
+                    # finding naming several columns still points at a real one.
+                    column_name=sorted(added)[0],
                     note=f"newly selected: {', '.join(sorted(added))}",
                 ),
                 consequence=(

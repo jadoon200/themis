@@ -100,6 +100,10 @@ class Evidence(BaseModel):
     # SQL is what actually decides the question, so the context packer needs to know
     # which model to include rather than guessing from prose.
     related_model: str | None = None
+    # The column the finding is about, where it is about one. Named structurally
+    # rather than left in the prose note, because column lineage has to be asked a
+    # column and parsing one back out of a sentence would be a guess.
+    column_name: str | None = None
 
 
 class Grain(BaseModel):
