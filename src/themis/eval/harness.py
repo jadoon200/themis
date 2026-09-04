@@ -18,6 +18,9 @@ import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
+
+import yaml
 
 from themis.acquire import git
 from themis.config import Settings
@@ -100,19 +103,50 @@ class MutationOutcome:
 
 
 def _apply_variant(project: Path, variant: str) -> Path | None:
-    """Copy a variant's schema YAML into the project, or None if there is no such variant.
+    """Merge a variant's declared tests into the project's schema, or None if absent.
 
-    The tested variant exists to answer one question the default project cannot: how
-    much of what THEMIS derives it would simply be told, if the project declared its
-    keys. Grain read from a declared test is `proven`, and several things downstream —
-    whether a fan-out rule fires at all, whether a reviewer has anything to reason
-    from — turn on that word.
+    The tested variant answers the one question the default project cannot: how much of
+    what THEMIS derives it would simply be told, if the project declared its keys. Grain
+    read from a declared test is `proven`, and a good deal turns on that word — whether
+    a fan-out rule fires at all, and whether a reviewer above it has anything to reason
+    from rather than a guess to decline.
+
+    Merged rather than copied alongside, because dbt refuses two schema entries for one
+    resource, and merged rather than substituted, because `schema.yml` also carries the
+    descriptions the governance family reads and the enforced contract `F6003` exists
+    for. Swapping the file would quietly delete a rule's only test case.
     """
     source = project / "variants" / variant / "schema_tests.yml"
-    if not source.exists():
+    destination = project / "models" / "schema.yml"
+    if not source.exists() or not destination.exists():
         return None
-    destination = project / "models" / f"variant_{variant}.yml"
-    destination.write_text(source.read_text())
+
+    declared = yaml.safe_load(source.read_text()) or {}
+    schema = yaml.safe_load(destination.read_text()) or {}
+    existing: dict[str, dict[str, Any]] = {
+        entry["name"]: entry for entry in schema.get("models", []) if isinstance(entry, dict)
+    }
+
+    for entry in declared.get("models", []):
+        if not isinstance(entry, dict):
+            continue
+        target = existing.get(entry["name"])
+        if target is None:
+            schema.setdefault("models", []).append(entry)
+            continue
+        if entry.get("tests"):
+            target.setdefault("tests", []).extend(entry["tests"])
+        columns = {c["name"]: c for c in target.get("columns", []) if isinstance(c, dict)}
+        for column in entry.get("columns", []):
+            if not isinstance(column, dict):
+                continue
+            found = columns.get(column["name"])
+            if found is None:
+                target.setdefault("columns", []).append(column)
+            elif column.get("tests"):
+                found.setdefault("tests", []).extend(column["tests"])
+
+    destination.write_text(yaml.safe_dump(schema, sort_keys=False))
     return destination
 
 
