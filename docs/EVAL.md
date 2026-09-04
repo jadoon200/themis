@@ -272,7 +272,7 @@ complete.** Three reasons to discount it:
    booked in one currency, and every revenue entry had a contract. The rules were right
    and the oracle could not tell.
 
-### Every rule now fires on something
+### Closing six rules that had no case
 
 Six rules had no corpus case at all: `F6003`, `F6004`, `F6005`, `F8001`, `F8003`,
 `F8004`. That is precisely where every dead-rule bug had hidden — `F1003`, `F4001` and
@@ -282,9 +282,11 @@ Two demo additions made the untestable cases testable: **a second attached catal
 a cross-catalog join is built and measured rather than reasoned about, and **a model
 under an enforced contract**, so there is a promise to break.
 
-All six fire. This is the second family probe in a row to come back healthy, which is
-weak evidence that the earlier dead rules were a phase rather than a pattern — but the
-only reason to believe it is that the cases now exist.
+All six fire. At the time this read as weak evidence that dead rules were a phase
+rather than a pattern. That reading was wrong: hunting them by hand found six and
+missed two more, and only [per-rule coverage reporting](#every-rule-now-fires-on-a-real-case)
+found those. The lesson is that the check has to be mechanical, not that the rules
+turned out fine.
 
 ### What harder data exposed
 
@@ -512,6 +514,64 @@ per revision that were not rebuilt, which is what scales.
 Both revisions defer to the *same* state, which is what keeps the comparison honest:
 identical upstream data on either side, code the only difference left.
 
+The same production artifacts also stand in for the base. `--prod-manifest` reads it
+from the manifest instead of recompiling it from git, and takes the same directory:
+
+| Review of one fan-out change | Wall clock | Objects built | Findings |
+|---|---|---|---|
+| Plain (`--execute`) | 17.1s | 28 | 3, all measured |
+| `--prod-manifest` + `--defer-state` | 15.2s | 12 | 3, all measured |
+
+Analysis-only, where the base compile is the whole cost rather than a share of it,
+the same change goes from 5.9s to 2.8s. Neither figure is the interesting one — the
+demo project is fourteen models and dbt's own startup dominates both. What scales is
+the base compile that did not happen and the sixteen objects that were not built.
+
+A production manifest that is missing or unreadable does not quietly fall back. It is
+named in the report and the base is rebuilt from git, because a reviewer reading a
+base-versus-head report while believing it is production-versus-head is answering a
+different question than the one they asked.
+
+## Every rule now fires on a real case
+
+The corpus reports per-rule coverage, not just per-family. A family can look well
+served while three of its rules have never fired on anything — which has happened here
+three times, to rules whose unit tests were all green.
+
+Adding the report immediately found two more, and neither was the kind of gap a
+family-level count would have shown:
+
+- **`F4002` was masked by a neighbour.** The `current_date` case was scored as caught
+  while the rule that exists for it never ran. The mutation had inserted a filter above
+  an `is_incremental()` block, so the model compiled to two `WHERE` clauses; the review
+  reported unparseable SQL and the corpus counted a detection. A bad case, scoring as a
+  pass, for months.
+- **`F5007` could not fire at all.** It asks whether a model overwrites whole partitions
+  on write and answered by matching the hook text — but dbt records hooks *unrendered*,
+  so a project that keeps write semantics in a macro stores
+  `{{ partition_overwrite_hook() }}` and nothing else. In a macro-heavy project that is
+  every hook, which is precisely the environment this tool is for. Hook text now
+  resolves through the macro table before being matched.
+
+With five cases added (`not_in_nullable_subquery`, `current_date_introduced`,
+`materialization_incremental_to_table`, `partition_spec_changed`,
+`partition_overwrite_hook_removed`) and the demo project grown a partitioned
+incremental model whose write behaviour comes from a macro:
+
+| | |
+|---|---|
+| Rules firing on at least one case | **29 / 29** |
+| True positives | 17 |
+| False negatives | 0 |
+| False positives | 0 |
+| True negatives | 6 |
+| Latent defects detected | 14 / 14 |
+| Unruled defects detected | 1 / 1 |
+
+Coverage is not correctness — a rule that fires once has been shown to be reachable,
+not to be right. But a rule that never fires has been shown to be nothing at all, and
+until this report existed there was no way to tell the two apart.
+
 ## Known limitations
 
 Kept current. Several entries here were closed and are gone rather than left standing —
@@ -535,7 +595,8 @@ to discount the rest of it.
   fall back to the name search. On the demo project this never happens; on a project
   with undeclared sources it would, which is why unresolved is reported rather than
   quietly treated as clean.
-- **Deferral is measured on a project small enough not to need it.** The saving is
-  real and reproduced below, but 28 objects to 12 is not evidence about a run where
-  the closure is four hundred models and the state manifest is a nightly production
-  build. That number has to come from the office.
+- **Deferral and the production-manifest backend are measured on a project small
+  enough not to need either.** Both savings are real and reproduced above, but 28
+  objects to 12 is not evidence about a run whose closure is four hundred models and
+  whose state manifest is a nightly production build. That number has to come from a
+  real warehouse.
