@@ -340,6 +340,9 @@ def review(
     settings: Settings,
     target: str = "dev",
     prod_manifest: Path | None = None,
+    # A directory holding a manifest from an existing build. Passing it makes Stage 3
+    # defer unselected upstreams to those relations instead of rebuilding them.
+    defer_state: Path | None = None,
     run_execution: bool = False,
     run_llm: bool = False,
     pr_description: str | None = None,
@@ -400,6 +403,7 @@ def review(
             target=target,
             grain_candidates=grains,
             incremental_models=incremental_models,
+            defer_state=defer_state,
         )
         if execution.ran:
             findings = attach_execution(findings, execution)

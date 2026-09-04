@@ -32,6 +32,16 @@ ProjectOpt = Annotated[
 BaseOpt = Annotated[str, typer.Option("--base", help="Base git revision to compare from.")]
 HeadOpt = Annotated[str, typer.Option("--head", help="Head git revision to compare to.")]
 VerboseOpt = Annotated[bool, typer.Option("--verbose", "-v", help="Debug logging.")]
+DeferStateOpt = Annotated[
+    Path | None,
+    typer.Option(
+        "--defer-state",
+        help=(
+            "Directory holding a manifest.json from an existing build. Unselected "
+            "upstreams resolve there instead of being rebuilt."
+        ),
+    ),
+]
 
 
 @app.callback()
@@ -74,6 +84,7 @@ def review(
     target: Annotated[
         str, typer.Option("--target", help="dbt target to compile and build against.")
     ] = "dev",
+    defer_state: DeferStateOpt = None,
     verbose: VerboseOpt = False,
 ) -> None:
     """Review the dbt model changes between two revisions."""
@@ -92,6 +103,7 @@ def review(
         run_execution=execute or settings.execute_enabled,
         run_llm=not no_llm,
         pr_description=pr_description,
+        defer_state=defer_state,
     )
 
     if result.execution is not None and not result.execution.ran:
@@ -143,6 +155,7 @@ def execute(
     project: ProjectOpt = Path("demo_project"),
     base: BaseOpt = "main",
     head: HeadOpt = "HEAD",
+    defer_state: DeferStateOpt = None,
     explain: Annotated[
         bool, typer.Option("--explain", help="Show per-model deltas, not just the summary.")
     ] = False,
@@ -155,7 +168,14 @@ def execute(
     settings = load_settings()
     log.info("execute.start", project=str(project), base=base, head=head)
 
-    result = run_review(project, base=base, head=head, settings=settings, run_execution=True)
+    result = run_review(
+        project,
+        base=base,
+        head=head,
+        settings=settings,
+        run_execution=True,
+        defer_state=defer_state,
+    )
     run = result.execution
     if run is None or not run.ran:
         reason = run.skipped_reason if run else "execution did not run"

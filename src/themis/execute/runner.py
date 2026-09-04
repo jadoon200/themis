@@ -59,6 +59,7 @@ def _build(
     anchor_dir: Path,
     label: str,
     incremental_models: tuple[str, ...] = (),
+    defer_state: Path | None = None,
 ) -> str | None:
     """Build a selection into a schema. Returns an error string, or None on success.
 
@@ -92,16 +93,28 @@ def _build(
     # exact — and it is also the correct comparison semantics, since the whole subgraph
     # feeding a model must come from the same revision as the model itself.
     #
-    # This rebuilds more than strictly changed. At scale the dbt-native answer is
-    # --defer against a production manifest, resolving unchanged upstreams to prod
-    # rather than rebuilding them; that needs the dual-manifest backend.
-    #
     # `dbt build` rather than `run`: seeds must be loaded into this schema too, or the
     # models have nothing to read and the comparison runs against an empty database.
-    selection = [arg for model in models for arg in ("--select", f"+{model}")]
+    #
+    # Deferral replaces all of that. With a state manifest, everything not selected
+    # resolves to the relation that manifest recorded, so only the models being
+    # measured get built and the ancestor closure — seeds included — is read where it
+    # already is. On a project where the closure is hundreds of models that is the
+    # difference between a review that fits in CI and one that does not.
+    #
+    # `--favor-state` is deliberate. Without it dbt prefers a relation that happens to
+    # exist in the target schema, so a leftover table from an earlier run would be
+    # silently preferred over the state one, and two runs of the same code could
+    # measure differently.
+    defer_args: list[str] = []
+    if defer_state is not None:
+        defer_args = ["--defer", "--favor-state", "--state", str(defer_state)]
+        selection = [arg for model in models for arg in ("--select", model)]
+    else:
+        selection = [arg for model in models for arg in ("--select", f"+{model}")]
     result = run_dbt(
         project_dir,
-        ["build", "--full-refresh", *selection],
+        ["build", "--full-refresh", *selection, *defer_args],
         target=target,
         allowed_targets=settings.execute_allowed_targets,
         profiles_dir=profiles_dir,
@@ -114,7 +127,7 @@ def _build(
         second = [arg for model in incremental_models for arg in ("--select", model)]
         result = run_dbt(
             project_dir,
-            ["build", *second],
+            ["build", *second, *defer_args],
             target=target,
             allowed_targets=settings.execute_allowed_targets,
             profiles_dir=profiles_dir,
@@ -163,15 +176,38 @@ def execute(
     target: str = "dev",
     grain_candidates: dict[str, Grain] | None = None,
     incremental_models: tuple[str, ...] = (),
+    defer_state: Path | None = None,
 ) -> ExecutionResult:
     """Build base and head side by side, then diff the results.
 
     The base revision is built inside a temporary git worktree so the working tree is
     never touched, and both builds are pointed at the same database via a generated
     profile so the only difference between them is the code.
+
+    ``defer_state`` points at a directory holding a manifest from an existing build —
+    production, or a nightly. Unselected models resolve to the relations that manifest
+    names instead of being rebuilt, which is how this stage stays affordable on a
+    project whose ancestor closure is hundreds of models. Both revisions defer to the
+    *same* state, so the upstream data is identical on either side and the only
+    difference left between the two builds is the code being reviewed.
+
+    It also means the build reads whatever that manifest points at. That is a read, and
+    the target guard still governs every write, but it is a deliberate choice rather
+    than a default: nothing turns deferral on implicitly.
     """
     if not models:
         return ExecutionResult(skipped_reason="no changed models to build")
+
+    if defer_state is not None:
+        if not (defer_state / "manifest.json").exists():
+            return ExecutionResult(
+                skipped_reason=(
+                    f"--defer-state {defer_state} holds no manifest.json. Deferral needs "
+                    "a manifest from an existing build; without one every ref() to an "
+                    "unbuilt model would resolve to nothing."
+                )
+            )
+        defer_state = defer_state.resolve()
 
     try:
         assert_target_allowed(target, settings.execute_allowed_targets)
@@ -200,6 +236,7 @@ def execute(
             anchor_dir=project_dir,
             label="head",
             incremental_models=incremental_models,
+            defer_state=defer_state,
         )
 
         base_error: str | None
@@ -215,6 +252,7 @@ def execute(
                 anchor_dir=project_dir,
                 label="base",
                 incremental_models=incremental_models,
+                defer_state=defer_state,
             )
 
     client = client_for_profile(profile, project_dir)
