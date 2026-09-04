@@ -407,6 +407,30 @@ _ALL_INJECTED: tuple[Mutation, ...] = (
         replace="    materialized='table',",
     ),
     Mutation(
+        id="partition_spec_changed",
+        kind=Kind.LATENT,
+        expects_family="F5",
+        description=(
+            "The partition column changed, so rows already written keep the old "
+            "layout while new writes use the new one"
+        ),
+        relative_path=_INCREMENTAL,
+        find="    properties={'partitioned_by': \"ARRAY['period_month']\"},",
+        replace="    properties={'partitioned_by': \"ARRAY['posting_date']\"},",
+    ),
+    Mutation(
+        id="partition_overwrite_hook_removed",
+        kind=Kind.LATENT,
+        expects_family="F5",
+        description=(
+            "The hook that made writes replace whole partitions is gone, so "
+            "re-processing a period appends a second copy instead of replacing the first"
+        ),
+        relative_path=_INCREMENTAL,
+        find='    pre_hook="{{ partition_overwrite_hook() }}",\n',
+        replace="",
+    ),
+    Mutation(
         id="generated_sql_model_touched",
         kind=Kind.LATENT,
         expects_family="F6",

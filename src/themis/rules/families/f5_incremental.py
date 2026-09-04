@@ -118,7 +118,7 @@ class IncrementalStrategyChangedRule(Rule):
             return []
 
         extra = ""
-        if ctx.after.overwrites_partitions:
+        if ctx.after_snapshot.overwrites_partitions(ctx.after):
             extra = (
                 " Note that this model overwrites whole partitions on write, so the "
                 "strategy name does not fully describe what happens: rows are replaced "
@@ -375,7 +375,7 @@ class PartitioningChangedRule(Rule):
                 "either side of it."
             )
 
-        if ctx.after.overwrites_partitions:
+        if ctx.after_snapshot.overwrites_partitions(ctx.after):
             consequence += (
                 " This model replaces whole partitions on write, so the change also "
                 "moves the boundary of what each run overwrites."
@@ -415,7 +415,9 @@ class PartitionOverwriteRemovedRule(Rule):
     def check(self, ctx: RuleContext) -> list[Finding]:
         if ctx.before is None or ctx.after is None:
             return []
-        if not ctx.before.overwrites_partitions or ctx.after.overwrites_partitions:
+        before_overwrites = ctx.before_snapshot.overwrites_partitions(ctx.before)
+        after_overwrites = ctx.after_snapshot.overwrites_partitions(ctx.after)
+        if not before_overwrites or after_overwrites:
             return []
         if ctx.after.materialization != "incremental":
             return []

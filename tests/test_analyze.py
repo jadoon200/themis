@@ -243,3 +243,70 @@ def test_models_not_using_a_generator_are_unaffected() -> None:
 
 def test_a_project_without_generators_reports_nothing() -> None:
     assert _snapshot_with_macros().data_dependent_models() == {}
+
+
+# --- hooks, and the macro call sites that hide what they do ---------------------
+
+
+def _snapshot_with_hook(hook: str, *, macro_body: str | None = None) -> ProjectSnapshot:
+    macros = {}
+    if macro_body is not None:
+        macros["partition_overwrite_hook"] = MacroNode(
+            name="partition_overwrite_hook",
+            unique_id="macro.d.partition_overwrite_hook",
+            file_path="macros/partitions.sql",
+            raw_sql=macro_body,
+        )
+    return ProjectSnapshot(
+        revision="r",
+        backend=Backend.MANIFEST,
+        macros=macros,
+        models={
+            "m": ModelNode(
+                name="m",
+                unique_id="model.d.m",
+                file_path="models/m.sql",
+                compiled_sql="select 1",
+                materialization="incremental",
+                pre_hooks=(hook,),
+            )
+        },
+    )
+
+
+_OVERWRITE = (
+    "{% macro partition_overwrite_hook() %}set session "
+    "hive.insert_existing_partitions_behavior = 'OVERWRITE'{% endmacro %}"
+)
+
+
+def test_a_literal_hook_is_read_directly() -> None:
+    snapshot = _snapshot_with_hook(
+        "set session hive.insert_existing_partitions_behavior = 'OVERWRITE'"
+    )
+    assert snapshot.overwrites_partitions(snapshot.models["m"])
+
+
+def test_a_hook_behind_a_macro_call_is_resolved() -> None:
+    """dbt records hooks unrendered, so the manifest holds the call, not the setting.
+
+    A macro-heavy project keeps write semantics in exactly one macro rather than
+    repeating a session setting in forty configs — so a rule matching the hook text
+    directly would read every one of those models as having no hook at all.
+    """
+    snapshot = _snapshot_with_hook("{{ partition_overwrite_hook() }}", macro_body=_OVERWRITE)
+    assert snapshot.overwrites_partitions(snapshot.models["m"])
+
+
+def test_a_macro_call_naming_nothing_leaves_the_hook_alone() -> None:
+    snapshot = _snapshot_with_hook("{{ some_macro_from_a_package() }}")
+    assert not snapshot.overwrites_partitions(snapshot.models["m"])
+    assert "some_macro_from_a_package" in snapshot.hook_text(snapshot.models["m"])
+
+
+def test_an_unrelated_hook_does_not_read_as_partition_overwrite() -> None:
+    snapshot = _snapshot_with_hook(
+        "{{ audit_log() }}",
+        macro_body="{% macro audit_log() %}insert into audit select 1{% endmacro %}",
+    )
+    assert not snapshot.overwrites_partitions(snapshot.models["m"])

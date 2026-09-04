@@ -8,6 +8,8 @@ whether it may rely on it. The alternative — rules silently reasoning over abs
 
 from __future__ import annotations
 
+import re
+
 from pydantic import BaseModel, Field
 
 from themis.models import Backend
@@ -15,6 +17,11 @@ from themis.models import Backend
 
 def _normalise_path(path: str) -> str:
     return path.replace("\\", "/").lstrip("./")
+
+
+# `{{ some_macro(...) }}` or `{{ some_macro }}` — the call site a hook records instead
+# of the SQL it stands for.
+_MACRO_CALL = re.compile(r"\{\{-?\s*([a-zA-Z_][\w]*)\s*(?:\([^}]*\))?\s*-?\}\}")
 
 
 def _same_file(a: str, b: str) -> bool:
@@ -88,17 +95,6 @@ class ModelNode(BaseModel):
             if key.strip().lower().replace("_", "") in ("partitionedby", "partitionby"):
                 return value
         return None
-
-    @property
-    def overwrites_partitions(self) -> bool:
-        """Whether a hook switches the engine to partition-overwrite writes.
-
-        This changes what an incremental run *means*: rows are replaced a partition at
-        a time rather than appended, so advice about append duplicating rows is simply
-        wrong for such a model.
-        """
-        hooks = " ".join((*self.pre_hooks, *self.post_hooks)).lower()
-        return "insert_existing_partitions_behavior" in hooks and "overwrite" in hooks
 
     depends_on_models: tuple[str, ...] = ()
     depends_on_macros: tuple[str, ...] = ()
@@ -203,6 +199,40 @@ class ProjectSnapshot(BaseModel):
                 break
             frontier = nxt
         return tuple(sorted(seen))
+
+    def hook_text(self, model: ModelNode, *, depth: int = 3) -> str:
+        """A model's hook SQL with macro calls replaced by the macros' bodies.
+
+        dbt records hooks unrendered, so a project that wraps its write semantics in a
+        macro — which a macro-heavy project does with everything — stores
+        ``{{ partition_overwrite_hook() }}`` and nothing else. A rule matching the hook
+        text directly reads that as "no hook of interest" and stays silent forever.
+
+        Substitution is textual and bounded. The goal is not to render Jinja, only to
+        bring the macro's own text into view so a rule can see what the hook does.
+        """
+        text = " ".join((*model.pre_hooks, *model.post_hooks))
+        for _ in range(depth):
+            expanded = _MACRO_CALL.sub(lambda m: self._macro_body(m.group(1), m.group(0)), text)
+            if expanded == text:
+                break
+            text = expanded
+        return text
+
+    def _macro_body(self, name: str, original: str) -> str:
+        """A macro's source, or the call site unchanged when it names nothing here."""
+        macro = self.macros.get(name)
+        return f"{original} {macro.raw_sql}" if macro else original
+
+    def overwrites_partitions(self, model: ModelNode) -> bool:
+        """Whether a hook switches the engine to partition-overwrite writes.
+
+        This changes what an incremental run *means*: rows are replaced a partition at
+        a time rather than appended, so advice about append duplicating rows is simply
+        wrong for such a model.
+        """
+        hooks = self.hook_text(model).lower()
+        return "insert_existing_partitions_behavior" in hooks and "overwrite" in hooks
 
     def macro_closure(self, macro_name: str, *, depth: int = 10) -> set[str]:
         """A macro plus every macro that transitively calls it.

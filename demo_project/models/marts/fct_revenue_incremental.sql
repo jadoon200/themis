@@ -3,6 +3,8 @@
     unique_key='entry_id',
     incremental_strategy='delete+insert',
     on_schema_change='fail',
+    properties={'partitioned_by': "ARRAY['period_month']"},
+    pre_hook="{{ partition_overwrite_hook() }}",
     tags=['recon']
 ) }}
 
