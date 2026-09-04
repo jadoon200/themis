@@ -99,6 +99,44 @@ class MutationOutcome:
         return "false_positive" if self.detected else "true_negative"
 
 
+def _apply_variant(project: Path, variant: str) -> Path | None:
+    """Copy a variant's schema YAML into the project, or None if there is no such variant.
+
+    The tested variant exists to answer one question the default project cannot: how
+    much of what THEMIS derives it would simply be told, if the project declared its
+    keys. Grain read from a declared test is `proven`, and several things downstream —
+    whether a fan-out rule fires at all, whether a reviewer has anything to reason
+    from — turn on that word.
+    """
+    source = project / "variants" / variant / "schema_tests.yml"
+    if not source.exists():
+        return None
+    destination = project / "models" / f"variant_{variant}.yml"
+    destination.write_text(source.read_text())
+    return destination
+
+
+def _commit(tree: Path, message: str) -> None:
+    """Commit inside the worktree, on a detached HEAD.
+
+    Identity and signing are set per invocation so the harness never depends on, or
+    disturbs, whatever the caller has configured.
+    """
+    _git(
+        tree,
+        "-c",
+        "user.email=eval@themis.invalid",
+        "-c",
+        "user.name=themis-eval",
+        "-c",
+        "commit.gpgsign=false",
+        "commit",
+        "-q",
+        "-m",
+        message,
+    )
+
+
 def _git(repo: Path, *args: str) -> str:
     result = subprocess.run(
         ["git", "-C", str(repo), *args], capture_output=True, text=True, check=False
@@ -139,6 +177,7 @@ def run_mutation(
     base_ref: str,
     use_llm: bool = False,
     use_execution: bool = True,
+    variant: str | None = None,
 ) -> MutationOutcome:
     """Apply one mutation in an isolated worktree, review it, and discard the worktree.
 
@@ -161,6 +200,28 @@ def run_mutation(
         _git(repo, "worktree", "add", "--detach", "--quiet", str(tree), base_sha)
         try:
             mutated_project = tree / relative
+
+            # The variant is committed *before* the mutation and becomes the base, so
+            # both revisions carry it and the only difference between them is still
+            # the mutation. Declaring the tests in the head alone would show up as a
+            # change of its own and contaminate every result.
+            if variant is not None:
+                applied = _apply_variant(mutated_project, variant)
+                if applied is None:
+                    return MutationOutcome(
+                        mutation=mutation,
+                        applied=False,
+                        changed_results=False,
+                        detected=False,
+                        families_fired=(),
+                        expected_family_fired=False,
+                        finding_count=0,
+                        error=f"no variant named {variant!r} in the demo project",
+                    )
+                _git(tree, "add", "--", str(applied.resolve()))
+                _commit(tree, f"eval: variant {variant}")
+                base_sha = _git(tree, "rev-parse", "HEAD").strip()
+
             if not mutation.apply(mutated_project):
                 return MutationOutcome(
                     mutation=mutation,
@@ -176,19 +237,7 @@ def run_mutation(
             # Commit inside the worktree, on a detached HEAD. Nothing here can reach
             # the caller's checkout.
             _git(tree, "add", "--", str((mutated_project / mutation.relative_path).resolve()))
-            _git(
-                tree,
-                "-c",
-                "user.email=eval@themis.invalid",
-                "-c",
-                "user.name=themis-eval",
-                "-c",
-                "commit.gpgsign=false",
-                "commit",
-                "-q",
-                "-m",
-                f"eval: {mutation.id}",
-            )
+            _commit(tree, f"eval: {mutation.id}")
 
             result = run_review(
                 mutated_project,
@@ -441,6 +490,7 @@ def run_corpus(
     allow_dirty: bool = False,
     use_llm: bool = False,
     use_execution: bool = True,
+    variant: str | None = None,
 ) -> EvalReport:
     if not allow_dirty:
         assert_clean(git.repo_root(project_dir))
@@ -455,6 +505,7 @@ def run_corpus(
                 base_ref=base_ref,
                 use_llm=use_llm,
                 use_execution=use_execution,
+                variant=variant,
             )
         )
     return EvalReport(outcomes=outcomes)

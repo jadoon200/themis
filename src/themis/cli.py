@@ -571,6 +571,16 @@ def eval_cmd(
     mutations: Annotated[
         str, typer.Option("--mutations", help="all, defects, controls, or a mutation id.")
     ] = "all",
+    variant: Annotated[
+        str | None,
+        typer.Option(
+            "--variant",
+            help=(
+                "Run against a variant of the demo project, e.g. 'tested' — the same "
+                "models with their keys declared, to measure what derivation costs."
+            ),
+        ),
+    ] = None,
     base: BaseOpt = "main",
     use_llm: Annotated[
         bool,
@@ -645,6 +655,7 @@ def eval_cmd(
             use_llm=use_llm,
             use_execution=execute,
             allow_dirty=allow_dirty,
+            variant=variant,
         )
     except DirtyRepositoryError as exc:
         typer.echo(str(exc), err=True)
