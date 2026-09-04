@@ -144,6 +144,11 @@ def verified(
         log.warning(
             "selfcheck.rejected",
             specialist=adjudication.specialist,
+            # Which verdict was thrown away matters more than that one was. Discarding
+            # a confirmation costs nothing — the deterministic finding stands either
+            # way — while discarding a refutation is the layer's only useful output
+            # being lost to punctuation, and the two are indistinguishable without it.
+            verdict=adjudication.verdict,
             reason=result.reason,
             # Logged nearly in full. At 160 characters a rejected quote was cut
             # mid-identifier, which reads exactly like the model having fabricated a
