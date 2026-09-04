@@ -461,6 +461,36 @@ A model whose lineage cannot be resolved is recorded as unresolved and reported 
 unknown, and the rule falls back to the name search for exactly those models at lower
 confidence. Silence from a lineage tool is how a breaking change gets approved.
 
+## Suggested tests, and how many of them hold
+
+THEMIS derives grain because nothing declares it. The same derivation, emitted as
+`schema.yml`, is the project's missing test coverage — but only if the tests pass. A
+suggestion that fails on first run is worse than silence, so the refusal policy is the
+part worth measuring.
+
+On the demo project (18 nodes, 14 SQL models, 4 seeds, zero declared tests):
+
+| | |
+|---|---|
+| Tests suggested | 5 |
+| Suggested tests that pass when run | **5** |
+| SQL models offered nothing | 9 |
+
+The five were checked by counting `count(*)` against `count(distinct key)` on the
+built tables, which is what the test would assert. Two of the nine refusals are worth
+naming, because they are the cases that would have produced a red test:
+
+- **A heuristic grain is never offered.** `stg_gl_entries` looks unique on `entry_id`
+  by naming alone. Naming raises a question; asserting an answer to it would be a
+  guess with a `unique` test's authority behind it.
+- **A measured multiplier above 1.0 disqualifies outright.** Once counting has settled
+  that a key does not identify a row, emitting the assertion would be asserting
+  something already known to be false.
+
+Nine models getting nothing is the honest result, not a shortfall to be engineered
+away. Those keys need either a human to state them or an `--execute` run to measure
+them, and both answers are better than a confident guess.
+
 ## Deferral, measured
 
 Execution built each measured model's full ancestor closure, once per revision. With

@@ -46,6 +46,15 @@ rather than assumed safe.
 sites and diffs the compiled SQL of every affected model, so the review reflects the
 real blast radius rather than the one-file diff.
 
+**The derived grain is handed back as tests.** Because THEMIS works out each model's
+key without being told, it can emit the assertions the project never wrote — and it
+refuses to emit any it cannot stand behind, so a suggested test does not turn red on
+first run. On the demo project it offers five and all five pass.
+
+```bash
+themis suggest-tests --project demo_project --yaml
+```
+
 **Impact is answered per column, not per model.** "Fourteen models are downstream"
 over-states almost every change, because thirteen of them never touch the column that
 moved. THEMIS derives each model's real column list — expanding `select *` against the

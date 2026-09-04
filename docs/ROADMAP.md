@@ -11,6 +11,8 @@
   output column traced back through CTEs and renames to the relations it reads.
   Join keys and filter predicates are collected alongside, because a column can break
   a model while contributing nothing to its output.
+- **Suggested tests.** The derived grain emitted as `schema.yml` assertions, with a
+  refusal policy strict enough that a suggestion does not fail on first run.
 - **Stage 2 — Rules.** 29 rules across eight families: grain and fan-out, filters and
   NULL semantics, money precision, periods, incremental and materialization, contracts
   and lineage, governance, and Trino engine behaviour. Plus `X0001`, the safety net
@@ -27,9 +29,9 @@
 ## Next
 
 **M2 — grounding depth.** Built. Column-level lineage, the grain lattice, macro and
-YAML routing, and rule families F2 through F8. Still open: the dual-manifest backend
-is loadable but not exercised, missing-test suggestions derived from the grain lattice
-are not emitted, and the dbt-bouncer ingest is untuned.
+YAML routing, missing-test suggestions derived from the grain, and rule families F2
+through F8. Still open: the dual-manifest backend is loadable but not exercised, and
+the dbt-bouncer ingest is untuned.
 
 **M3 — execution.** Built. Base and head built side by side and diffed on real data:
 row counts, monetary sums, column sets, null rates. It turned inference into
@@ -47,10 +49,9 @@ flagged?", answered from persisted absence. An unanswerable question gets a refu
 **M6 — cost.** Triage rubric, feature extraction, SARIF output. Token accounting is
 done; the rest is not.
 
-**Next.** Missing-test suggestions from the derived grain — on a project with no test
-coverage, emitting the assertions THEMIS already proved is arguably worth as much as
-the review. Corpus coverage for F4 and F8, which still have more rules than cases.
-Deferral measured against a closure large enough for the saving to matter.
+**Next.** Corpus coverage for F4 and F8, which still have more rules than cases. The
+dual-manifest backend exercised rather than merely loadable. Deferral measured against
+a closure large enough for the saving to show as time rather than as object counts.
 
 ## Deferred
 
