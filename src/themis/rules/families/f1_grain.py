@@ -226,7 +226,12 @@ class JoinTypeChangedRule(Rule):
                     family=self.family,
                     title=f"Join to {relation} changed from {before_kind} to {after_kind}",
                     severity=_severity_for(ctx, self.severity),
-                    confidence=Confidence.PROVEN,
+                    # That the join type changed is provable; that rows are lost or
+                    # NULLs injected is not — it depends on whether the sides match,
+                    # which is a fact about the data. Confidence answers the second
+                    # question, and it also routes the model layer, so calling this
+                    # proven meant a join-type flip never reached a reviewer at all.
+                    confidence=Confidence.LIKELY,
                     evidence=Evidence(
                         model_name=ctx.model_name,
                         file_path=ctx.after.file_path,

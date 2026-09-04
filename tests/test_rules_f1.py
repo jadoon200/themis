@@ -116,12 +116,19 @@ def test_unknown_grain_is_flagged_as_possible_not_certain() -> None:
     assert "could not be derived" in (findings[0].evidence.note or "")
 
 
-def test_left_to_inner_flip_is_proven_and_names_row_loss() -> None:
+def test_left_to_inner_flip_names_row_loss_without_claiming_proof() -> None:
+    """The flip is provable; the row loss is not.
+
+    Whether rows actually disappear depends on whether the sides match, which is a
+    fact about the data. Confidence answers that question rather than whether the edit
+    happened — and it routes the model layer, so calling this proven meant a join-type
+    flip was never once put in front of a reviewer.
+    """
     before = "select 1 from a left join b on a.id = b.id"
     after = "select 1 from a inner join b on a.id = b.id"
     findings = JoinTypeChangedRule().check(_ctx(before, after, {}))
     assert len(findings) == 1
-    assert findings[0].confidence is Confidence.PROVEN
+    assert findings[0].confidence is Confidence.LIKELY
     assert "dropped" in findings[0].consequence
 
 
