@@ -81,3 +81,50 @@ def test_an_unusable_production_manifest_is_reported_not_swallowed(tmp_path: Pat
     (tmp_path / "manifest.json").write_text("not json at all")
     with pytest.raises(ManifestError):
         load_manifest(manifest_file(tmp_path), revision="abc", backend=Backend.DUAL_MANIFEST)
+
+
+def test_a_dirty_working_tree_is_not_described_by_its_revision(tmp_path: Path) -> None:
+    """The cleanliness check the head-caching decision rests on.
+
+    A checkout with uncommitted edits compiles to something no SHA names, so caching
+    it would serve one reviewer's unsaved work to the next run of that revision.
+    """
+    import subprocess
+
+    from themis.acquire import git
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    run = lambda *a: subprocess.run(["git", *a], cwd=repo, check=True, capture_output=True)  # noqa: E731
+    run("init", "-q")
+    run("config", "user.email", "t@example.com")
+    run("config", "user.name", "t")
+    (repo / "a.sql").write_text("select 1")
+    run("add", "-A")
+    run("commit", "-q", "-m", "first")
+    assert git.is_clean(repo)
+
+    (repo / "a.sql").write_text("select 2")
+    assert not git.is_clean(repo)
+
+
+def test_cleanliness_can_be_asked_about_one_path(tmp_path: Path) -> None:
+    """A change elsewhere in the repo does not make this project's revision a lie."""
+    import subprocess
+
+    from themis.acquire import git
+
+    repo = tmp_path / "repo"
+    (repo / "proj").mkdir(parents=True)
+    run = lambda *a: subprocess.run(["git", *a], cwd=repo, check=True, capture_output=True)  # noqa: E731
+    run("init", "-q")
+    run("config", "user.email", "t@example.com")
+    run("config", "user.name", "t")
+    (repo / "proj" / "a.sql").write_text("select 1")
+    (repo / "elsewhere.md").write_text("notes")
+    run("add", "-A")
+    run("commit", "-q", "-m", "first")
+
+    (repo / "elsewhere.md").write_text("edited")
+    assert not git.is_clean(repo)
+    assert git.is_clean(repo, repo / "proj")
