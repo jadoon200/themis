@@ -68,6 +68,15 @@ class ManifestCache:
     def path_for(self, key: CacheKey) -> Path:
         return self._root / key.filename()
 
+    def contains(self, key: CacheKey) -> bool:
+        """Whether an entry exists, without recording a hit.
+
+        Administration is not consumption. A `--warm` run checking its own write, or
+        asking whether there is anything to do, must not show up in the hit counts a
+        reader would use to judge whether the cache is earning its place.
+        """
+        return self.path_for(key).exists()
+
     def get(self, key: CacheKey) -> Path | None:
         """The cached manifest for a revision, or None.
 

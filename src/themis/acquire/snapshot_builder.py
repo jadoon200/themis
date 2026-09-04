@@ -131,6 +131,54 @@ def manifest_file(given: Path) -> Path:
     return given / "manifest.json" if given.is_dir() else given
 
 
+def warm_cache(
+    project_dir: Path,
+    *,
+    revision: str,
+    target: str = "dev",
+    allowed_targets: tuple[str, ...] = ("dev", "ci", "duckdb", "test", "local"),
+    timeout_s: float = 900.0,
+    cache_dir: Path | None = None,
+) -> tuple[bool, str]:
+    """Compile a revision into the cache ahead of time.
+
+    The base compile is the one cost every review of a branch pays, and it is the same
+    work every time. A cheap scheduled job that warms `main` whenever it moves means no
+    reviewer ever waits for it — which is the difference between a compile budget spent
+    once a day and one spent once a pull request.
+
+    Returns whether the revision is now cached, and why not when it is not.
+    """
+    repo = git.repo_root(project_dir)
+    sha = git.resolve_revision(repo, revision)
+    relative = project_dir.resolve().relative_to(repo.resolve())
+    cache = ManifestCache(cache_dir or repo / ".themis")
+    key = CacheKey(revision=sha, target=target, project=str(relative))
+
+    if cache.contains(key):
+        return True, f"already cached ({sha[:12]})"
+
+    with git.worktree_at(repo, sha) as tree:
+        snapshot = _compile_snapshot(
+            tree / relative,
+            revision=sha,
+            target=target,
+            allowed_targets=allowed_targets,
+            timeout_s=timeout_s,
+            anchor_dir=project_dir,
+            cache=cache,
+            cache_key=key,
+        )
+    if snapshot is None:
+        return False, f"{sha[:12]} could not be compiled"
+    if not cache.contains(key):
+        return False, (
+            f"{sha[:12]} compiled but was not cached — this project builds SQL from "
+            "query results, so a revision does not determine the manifest"
+        )
+    return True, f"cached {sha[:12]}"
+
+
 def acquire(
     project_dir: Path,
     *,

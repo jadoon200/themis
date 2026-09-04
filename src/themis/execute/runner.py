@@ -17,6 +17,7 @@ from pathlib import Path
 
 from themis.acquire import git
 from themis.acquire.dbt_runner import assert_target_allowed, run_dbt
+from themis.capabilities import Capability, CapabilityError, require
 from themis.config import Settings
 from themis.execute.differ import diff_tables, measure_grain
 from themis.execute.profiles import ProfileError, read_profile, write_profile_for_schema
@@ -177,6 +178,7 @@ def execute(
     grain_candidates: dict[str, Grain] | None = None,
     incremental_models: tuple[str, ...] = (),
     defer_state: Path | None = None,
+    capabilities: frozenset[Capability] | None = None,
 ) -> ExecutionResult:
     """Build base and head side by side, then diff the results.
 
@@ -197,6 +199,15 @@ def execute(
     """
     if not models:
         return ExecutionResult(skipped_reason="no changed models to build")
+
+    # Enforced here as well as at claim time. A guard that lives only in the scheduler
+    # is one that a scheduling bug removes, and this is the stage that runs code
+    # against a warehouse.
+    if capabilities is not None:
+        try:
+            require(capabilities, Capability.EXECUTE, what="Stage 3 execution")
+        except CapabilityError as exc:
+            return ExecutionResult(skipped_reason=str(exc))
 
     if defer_state is not None:
         if not (defer_state / "manifest.json").exists():

@@ -365,6 +365,11 @@ def suggest_tests_cmd(
 def cache(
     project: ProjectOpt = Path("demo_project"),
     clear: Annotated[bool, typer.Option("--clear", help="Delete every cached manifest.")] = False,
+    warm: Annotated[
+        str | None,
+        typer.Option("--warm", help="Compile this revision into the cache ahead of a review."),
+    ] = None,
+    target: Annotated[str, typer.Option("--target", help="dbt target to compile against.")] = "dev",
     verbose: VerboseOpt = False,
 ) -> None:
     """Inspect or clear the compiled-manifest cache.
@@ -384,6 +389,20 @@ def cache(
         removed = store.clear()
         typer.echo(f"Cleared {removed} cached manifest(s) from {root / 'manifests'}.")
         raise typer.Exit(code=0)
+
+    if warm is not None:
+        from themis.acquire.snapshot_builder import warm_cache
+
+        settings = load_settings()
+        ok, detail = warm_cache(
+            project,
+            revision=warm,
+            target=target,
+            allowed_targets=settings.execute_allowed_targets,
+            timeout_s=settings.execute_timeout_s,
+        )
+        typer.echo(detail)
+        raise typer.Exit(code=0 if ok else 1)
 
     entries = sorted((root / "manifests").glob("*.json")) if root.exists() else []
     for entry in entries:

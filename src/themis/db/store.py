@@ -71,27 +71,34 @@ def enqueue_run(
     return run
 
 
-def claim_next_run(session: Session, *, worker_id: str, timeout_s: float) -> ReviewRun | None:
+def claim_next_run(
+    session: Session,
+    *,
+    worker_id: str,
+    timeout_s: float,
+    can_execute: bool = True,
+) -> ReviewRun | None:
     """Claim one queued run, or reclaim one whose worker stopped reporting.
 
     ``SKIP LOCKED`` is what makes this safe to run from several workers at once: a row
     another transaction already holds is passed over rather than waited on, so workers
     never serialise behind each other.
+
+    ``can_execute`` is the scheduling half of the capability model. A worker without
+    warehouse access does not claim a run that asked for execution — it leaves it for
+    one that can, rather than taking it and returning a review quietly missing its
+    strongest evidence.
     """
     stale_before = datetime.now(UTC) - timedelta(seconds=timeout_s)
 
-    statement = (
-        select(ReviewRun)
-        .where(
-            (ReviewRun.status == RunStatus.QUEUED)
-            | (
-                (ReviewRun.status == RunStatus.RUNNING)
-                & (ReviewRun.heartbeat_at.is_(None) | (ReviewRun.heartbeat_at < stale_before))
-            )
-        )
-        .order_by(ReviewRun.created_at)
-        .limit(1)
+    claimable = (ReviewRun.status == RunStatus.QUEUED) | (
+        (ReviewRun.status == RunStatus.RUNNING)
+        & (ReviewRun.heartbeat_at.is_(None) | (ReviewRun.heartbeat_at < stale_before))
     )
+    if not can_execute:
+        claimable = claimable & (ReviewRun.execute_requested.is_(False))
+
+    statement = select(ReviewRun).where(claimable).order_by(ReviewRun.created_at).limit(1)
     # SQLite has no row locking; the tests run single-worker, so skipping the clause
     # there is correct rather than merely convenient.
     if session.bind is not None and session.bind.dialect.name != "sqlite":

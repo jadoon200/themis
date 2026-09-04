@@ -13,6 +13,7 @@ from themis.acquire.snapshot_builder import AcquireResult, acquire
 from themis.analyze.grain import infer_grains
 from themis.analyze.lineage import LineageIndex
 from themis.analyze.suggest import suggest_tests
+from themis.capabilities import Capability
 from themis.config import Settings
 from themis.execute.runner import ExecutionResult, execute
 from themis.logging import get_logger
@@ -349,6 +350,10 @@ def review(
     # defer unselected upstreams to those relations instead of rebuilding them.
     defer_state: Path | None = None,
     use_manifest_cache: bool | None = None,
+    # What the caller is permitted to do. None means an unrestricted local run — the
+    # CLI on a developer's machine, where the person already has every access the tool
+    # would use. Workers pass their own, and a worker without EXECUTE cannot build.
+    capabilities: frozenset[Capability] | None = None,
     run_execution: bool = False,
     run_llm: bool = False,
     pr_description: str | None = None,
@@ -413,6 +418,7 @@ def review(
             grain_candidates=grains,
             incremental_models=incremental_models,
             defer_state=defer_state,
+            capabilities=capabilities,
         )
         if execution.ran:
             findings = attach_execution(findings, execution)
