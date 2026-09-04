@@ -1,4 +1,4 @@
-.PHONY: env install lint format typecheck test check demo-build review execute grain eval clean up down migrate api worker record-cassette
+.PHONY: env install lint format typecheck test check demo-build review execute grain lineage eval clean up down migrate api worker record-cassette
 
 # One-time: create the conda env, then `conda activate themis`
 env:
@@ -42,6 +42,10 @@ execute:
 # Show the derived grain for every model and which source produced it.
 grain:
 	PYTHONPATH=src python -m themis.cli grain --project demo_project --explain
+
+# Column-level lineage coverage: how much of the project resolved, and how much did not.
+lineage:
+	PYTHONPATH=src python -m themis.cli lineage --project demo_project
 
 # Mutation eval: per-family precision/recall against the execution oracle.
 eval:

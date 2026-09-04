@@ -6,12 +6,19 @@
   fail-closed target allowlist; manifest loader; three grounding backends, with the
   compiled manifest as the primary target.
 - **Stage 1 — Analyze.** Trino parsing, semantic AST diff (reformatting yields nothing),
-  the grain lattice, transitive macro impact, blast radius.
-- **Stage 2 — Rules.** 26 rules across eight families: grain and fan-out, filters and
+  the grain lattice, transitive macro impact, blast radius, and **column-level
+  lineage** — schemas derived in dependency order so `select *` resolves, then every
+  output column traced back through CTEs and renames to the relations it reads.
+  Join keys and filter predicates are collected alongside, because a column can break
+  a model while contributing nothing to its output.
+- **Stage 2 — Rules.** 29 rules across eight families: grain and fan-out, filters and
   NULL semantics, money precision, periods, incremental and materialization, contracts
   and lineage, governance, and Trino engine behaviour. Plus `X0001`, the safety net
   that reports a measured change no rule accounts for. Skipped checks are reported
   rather than hidden.
+- **Stage 3 — Execute.** Both revisions built and diffed on real data, with
+  `--defer-state` to resolve unchanged upstreams to an existing build instead of
+  rebuilding the ancestor closure twice.
 - **Warehouse clients.** DuckDB and **Trino**, both tested against a live engine.
 - **Report.** Ranked Markdown, macro attribution, measured deltas where present.
 - **Demo project.** A financial dbt project on DuckDB — general ledger, FX conversion,
@@ -19,16 +26,16 @@
 
 ## Next
 
-**M2 — grounding depth.** Column-level lineage; dual-manifest backend; missing-test
-suggestions derived from the grain lattice; tuned dbt-bouncer ingest. Rule families F2
-(NULL semantics), F4 (periods and point-in-time), F5 (incremental), F6 (contracts),
-F8 (Trino cost).
+**M2 — grounding depth.** Built. Column-level lineage, the grain lattice, macro and
+YAML routing, and rule families F2 through F8. Still open: the dual-manifest backend
+is loadable but not exercised, missing-test suggestions derived from the grain lattice
+are not emitted, and the dbt-bouncer ingest is untuned.
 
-**M3 — execution.** Build base and head, then diff the real results: row counts,
-monetary sums, column sets, null rates. The largest remaining jump in usefulness — it
-turns inference into measurement, and settles the grain question that
-[EVAL](EVAL.md) shows inference alone cannot. The mutation harness and the first
-precision and recall figures build on the same machinery.
+**M3 — execution.** Built. Base and head built side by side and diffed on real data:
+row counts, monetary sums, column sets, null rates. It turned inference into
+measurement and settled the grain question [EVAL](EVAL.md) shows inference alone
+cannot. The mutation harness and the precision and recall figures run on the same
+machinery.
 
 **M4 — review.** Built. Four specialists, an intent pass, self-check, and an explain
 pass for measured changes no rule accounts for. The deliverable was a number and
@@ -40,9 +47,10 @@ flagged?", answered from persisted absence. An unanswerable question gets a refu
 **M6 — cost.** Triage rubric, feature extraction, SARIF output. Token accounting is
 done; the rest is not.
 
-**Next.** Recorded cassettes so the model path is covered in CI; Postgres in CI so the
-`SKIP LOCKED` queue is guarded; corpus coverage for F4, F6 and F8, which have more
-rules than cases; `themis review` persisting to the store.
+**Next.** Missing-test suggestions from the derived grain — on a project with no test
+coverage, emitting the assertions THEMIS already proved is arguably worth as much as
+the review. Corpus coverage for F4 and F8, which still have more rules than cases.
+Deferral measured against a closure large enough for the saving to matter.
 
 ## Deferred
 

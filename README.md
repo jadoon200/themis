@@ -46,6 +46,18 @@ rather than assumed safe.
 sites and diffs the compiled SQL of every affected model, so the review reflects the
 real blast radius rather than the one-file diff.
 
+**Impact is answered per column, not per model.** "Fourteen models are downstream"
+over-states almost every change, because thirteen of them never touch the column that
+moved. THEMIS derives each model's real column list — expanding `select *` against the
+schema it built from the models above — then traces every column back through CTEs and
+renames to what it actually reads. So `revenue_usd` in the regulatory mart is known to
+be `fct_revenue.amount_usd` under another name, four hops from where it started. A
+model whose lineage cannot be resolved is reported as unknown, never as clean.
+
+```bash
+themis lineage --project demo_project --model stg_fx_rates --column rate
+```
+
 ## Quick start
 
 ```bash
@@ -53,6 +65,14 @@ make env && conda activate themis
 make install
 make demo-build          # seeds and builds the demo project on DuckDB
 make review              # review the working tree against main
+```
+
+Stage 3 builds both revisions to measure what actually moved. On a project whose
+ancestor closure is large, point it at a manifest from an existing build and the
+unchanged upstreams are read where they already are instead of being rebuilt twice:
+
+```bash
+themis execute --base main --head HEAD --defer-state path/to/prod/target
 ```
 
 Everything runs locally and costs nothing: DuckDB as the warehouse, Ollama for the

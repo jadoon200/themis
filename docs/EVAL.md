@@ -422,6 +422,66 @@ builds a `CASE` expression from its rows means the compiled SQL changes when the
 changes, not only the code. THEMIS would report that as a large semantic diff with no
 code change behind it. Not yet handled, and recorded below.
 
+## Column lineage, and what it changes
+
+Impact analysis used to be model-granular, and "who reads this column" was a word
+search over downstream SQL. Both halves of that are wrong often enough to matter, so
+the two methods were compared over **every column of every model** in the demo project
+rather than on the cases that motivated the change.
+
+| | |
+|---|---|
+| Columns compared | 101 |
+| Same answer | 97 |
+| Different answer | 4 |
+
+Every disagreement is the search being wrong, in one of two ways:
+
+- **Three name matches that were never dependencies.** `stg_fx_rates.currency_code`
+  appears in four downstream models. None of them read it: their `currency_code` comes
+  from the ledger, not from the rates table. Same for `stg_accounts.account_id` and
+  `stg_contracts.contract_id` — the join keys are named identically on both sides, and
+  the mart takes the other one.
+- **One dependency the search could not see at all.** `stg_fx_rates.rate` feeds five
+  models, under the name `amount_usd` in four of them and `total_amount_usd` in the
+  fifth. The word `rate` appears in none of their SQL.
+
+**Projection lineage alone was not enough, and measuring caught it before shipping.**
+A join key contributes no column to the output, so tracing projections found no
+consumers for one — and a removed join key would have gone from correctly flagged to
+silent, which is the worst place in this family to go quiet. References are now
+collected separately, from every column a model names anywhere, with star-derived ones
+excluded: a column pulled in by `select *` and never mentioned is not a dependency,
+because deleting it upstream just produces one column fewer.
+
+The corpus gained `join_key_column_removed` to hold that: 16 true positives, 0 false
+negatives, 0 false positives, 6 true negatives — unchanged rates on a larger corpus.
+
+A model whose lineage cannot be resolved is recorded as unresolved and reported as
+unknown, and the rule falls back to the name search for exactly those models at lower
+confidence. Silence from a lineage tool is how a breaking change gets approved.
+
+## Deferral, measured
+
+Execution built each measured model's full ancestor closure, once per revision. With
+`--defer-state` pointing at a manifest from an existing build, unselected models
+resolve to the relations that manifest names instead.
+
+Same change (`inner` → `left` on the FX join), same demo project, both ways:
+
+| | Objects built per revision | Models measured | Deltas |
+|---|---|---|---|
+| Without `--defer-state` | 14 | 6 | — |
+| With `--defer-state` | 6 | 6 | identical |
+
+Every row count and every `SUM` matched exactly, so the saving costs no evidence. Wall
+clock did not move (17s either way) because on a project this small the closure is
+cheap and dbt's own startup dominates; the number that matters is the eight objects
+per revision that were not rebuilt, which is what scales.
+
+Both revisions defer to the *same* state, which is what keeps the comparison honest:
+identical upstream data on either side, code the only difference left.
+
 ## Known limitations
 
 Kept current. Several entries here were closed and are gone rather than left standing —
@@ -435,15 +495,17 @@ to discount the rest of it.
 - **DuckDB is not Trino.** The demo project stays inside the dialects' intersection, so
   Trino-specific behaviour (decimal overflow at precision 38, connector MERGE support,
   federated pushdown) is reasoned about and never executed.
-- **Execution rebuilds more than strictly changed.** Redirecting output into a fresh
-  schema means every `ref()` resolves there, so the full ancestor closure of each
-  measured model must be built. At scale the dbt-native answer is `--defer` against a
-  production manifest; that needs the dual-manifest backend, which is loadable but
-  never exercised.
 - **The corpus is fitted**, though generated mutations offset this in part. The
   generator only applies transformations someone wrote down; it reaches cases nobody
   chose, not cases nobody could imagine.
 - **The generator only applies transformations someone wrote down.** It reaches cases
   nobody chose, which is the point, but not cases nobody could imagine.
-- **No column-level lineage.** Impact analysis is model-granular, so "this column is
-  removed and four models read it" is answered by text search rather than by lineage.
+- **Column lineage stops at the project boundary.** A column read from a `source()`
+  whose columns nothing declares leaves that model unresolved, and unresolved models
+  fall back to the name search. On the demo project this never happens; on a project
+  with undeclared sources it would, which is why unresolved is reported rather than
+  quietly treated as clean.
+- **Deferral is measured on a project small enough not to need it.** The saving is
+  real and reproduced below, but 28 objects to 12 is not evidence about a run where
+  the closure is four hundred models and the state manifest is a nightly production
+  build. That number has to come from the office.
