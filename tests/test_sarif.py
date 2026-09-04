@@ -92,3 +92,28 @@ def test_a_location_always_carries_a_positive_line() -> None:
 def test_an_empty_review_renders_an_empty_run_not_an_error() -> None:
     log = _log()
     assert log["runs"][0]["results"] == []
+
+
+def test_a_demoted_finding_is_suppressed_in_sarif_too() -> None:
+    """The annotation view must not show noise the Markdown report just suppressed.
+
+    They describe the same review, and a reviewer looking at the diff in an IDE is
+    entitled to the same triage as one reading the report.
+    """
+    log = _log(_finding("F2001", severity=Severity.HIGH), _finding("F5001"))
+    by_rule = {r["ruleId"]: r for r in log["runs"][0]["results"]}
+    assert "suppressions" in by_rule["F2001"]
+    assert "F5001" in by_rule["F2001"]["suppressions"][0]["justification"]
+    assert "suppressions" not in by_rule["F5001"]
+
+
+def test_both_reasons_for_suppression_survive_together() -> None:
+    """A finding can be refuted by a specialist and demoted by triage."""
+    log = _log(
+        _finding("F2001", severity=Severity.HIGH, suppressed="refuted by the filters reviewer"),
+        _finding("F5001"),
+    )
+    result = next(r for r in log["runs"][0]["results"] if r["ruleId"] == "F2001")
+    reasons = [s["justification"] for s in result["suppressions"]]
+    assert any("refuted" in r for r in reasons)
+    assert any("F5001" in r for r in reasons)

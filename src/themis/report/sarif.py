@@ -22,6 +22,7 @@ import json
 from typing import Any
 
 from themis.models import Finding, Severity
+from themis.triage.rubric import triage
 
 SCHEMA = (
     "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/schemas/sarif-schema-2.1.0.json"
@@ -52,7 +53,7 @@ def _rule_descriptor(finding: Finding) -> dict[str, Any]:
     }
 
 
-def _result(finding: Finding) -> dict[str, Any]:
+def _result(finding: Finding, *, demoted_by: str | None = None) -> dict[str, Any]:
     evidence = finding.evidence
     message = f"{finding.title}. {finding.consequence}"
     if finding.suggestion:
@@ -70,10 +71,20 @@ def _result(finding: Finding) -> dict[str, Any]:
             "blastRadius": list(finding.blast_radius),
         },
     }
+    # SARIF models suppression natively, so a finding travels as suppressed rather than
+    # being dropped — the viewer decides whether to show it. Both reasons land here: a
+    # specialist refuting it, and triage finding that a more specific rule already said
+    # the same thing. Without the second, the annotation view would show the noise the
+    # Markdown report just suppressed, and the two would disagree about the change.
+    justifications: list[str] = []
     if finding.suppressed_reason:
-        # SARIF models this natively, so a suppressed finding travels as suppressed
-        # rather than being dropped — the viewer decides whether to show it.
-        result["suppressions"] = [{"kind": "external", "justification": finding.suppressed_reason}]
+        justifications.append(finding.suppressed_reason)
+    if demoted_by:
+        justifications.append(f"covered more precisely by {demoted_by}")
+    if justifications:
+        result["suppressions"] = [
+            {"kind": "external", "justification": reason} for reason in justifications
+        ]
 
     if evidence.file_path:
         location: dict[str, Any] = {
@@ -89,11 +100,18 @@ def _result(finding: Finding) -> dict[str, Any]:
     return result
 
 
-def render(findings: list[Finding], *, tool_version: str = "0.1.0") -> str:
-    """A SARIF 2.1.0 log for one review."""
+def render(
+    findings: list[Finding],
+    *,
+    governed_models: frozenset[str] = frozenset(),
+    tool_version: str = "0.1.0",
+) -> str:
+    """A SARIF 2.1.0 log for one review, carrying the same triage the report shows."""
+    triaged = triage(findings, governed_models=governed_models)
+
     seen: dict[str, dict[str, Any]] = {}
-    for finding in findings:
-        seen.setdefault(finding.rule_id, _rule_descriptor(finding))
+    for item in triaged:
+        seen.setdefault(item.finding.rule_id, _rule_descriptor(item.finding))
 
     log: dict[str, Any] = {
         "$schema": SCHEMA,
@@ -108,7 +126,7 @@ def render(findings: list[Finding], *, tool_version: str = "0.1.0") -> str:
                         "rules": [seen[key] for key in sorted(seen)],
                     }
                 },
-                "results": [_result(finding) for finding in findings],
+                "results": [_result(item.finding, demoted_by=item.subsumed_by) for item in triaged],
             }
         ],
     }

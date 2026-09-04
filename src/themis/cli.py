@@ -179,7 +179,9 @@ def review(
         from themis.report import sarif as sarif_report
 
         sarif.parent.mkdir(parents=True, exist_ok=True)
-        sarif.write_text(sarif_report.render(result.findings))
+        sarif.write_text(
+            sarif_report.render(result.findings, governed_models=result.governed_models)
+        )
         log.info("review.sarif_written", path=str(sarif), findings=len(result.findings))
 
     if save:
