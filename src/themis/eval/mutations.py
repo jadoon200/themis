@@ -362,6 +362,51 @@ _ALL_INJECTED: tuple[Mutation, ...] = (
         replace="    where date_trunc('day', posting_date) >= (",
     ),
     Mutation(
+        id="not_in_nullable_subquery",
+        kind=Kind.DEFECT,
+        expects_family="F2",
+        description=(
+            "Contracts excluded with NOT IN over a nullable column, which returns "
+            "nothing at all the moment the subquery yields one NULL"
+        ),
+        relative_path=_INT_REVENUE,
+        find="    left join contracts\n        on converted.contract_id = contracts.contract_id",
+        replace=(
+            "    left join contracts\n"
+            "        on converted.contract_id = contracts.contract_id\n"
+            "        and converted.contract_id not in (\n"
+            "            select customer_id from contracts\n"
+            "        )"
+        ),
+    ),
+    Mutation(
+        id="current_date_introduced",
+        kind=Kind.LATENT,
+        expects_family="F4",
+        description=(
+            "A filter against current_date, so the same code and the same data "
+            "produce a different figure tomorrow"
+        ),
+        relative_path=_INCREMENTAL,
+        find="    select * from {{ ref('int_revenue_recognized') }}",
+        replace=(
+            "    select * from {{ ref('int_revenue_recognized') }}\n"
+            "    where posting_date <= current_date"
+        ),
+    ),
+    Mutation(
+        id="materialization_incremental_to_table",
+        kind=Kind.LATENT,
+        expects_family="F5",
+        description=(
+            "An incremental model switched to a full table, so every run rebuilds the "
+            "whole history and the lookback window stops applying"
+        ),
+        relative_path=_INCREMENTAL,
+        find="    materialized='incremental',",
+        replace="    materialized='table',",
+    ),
+    Mutation(
         id="generated_sql_model_touched",
         kind=Kind.LATENT,
         expects_family="F6",
