@@ -141,6 +141,7 @@ def review(
             executed=result.executed,
             macro_affected=result.macro_affected,
             degraded_reason=result.degraded_reason,
+            untested_grains=result.untested_grains,
         )
     )
 
@@ -269,6 +270,72 @@ def grain(
             "Unknown grain escalates rather than being assumed safe. "
             "Run with --execute to measure it instead of inferring."
         )
+    raise typer.Exit(code=0)
+
+
+@app.command(name="suggest-tests")
+def suggest_tests_cmd(
+    project: ProjectOpt = Path("demo_project"),
+    emit_yaml: Annotated[
+        bool, typer.Option("--yaml", help="Print a schema.yml fragment instead of a summary.")
+    ] = False,
+    verbose: VerboseOpt = False,
+) -> None:
+    """Emit the uniqueness tests the project never declared.
+
+    THEMIS derives grain because nothing asserts it; this hands the derivation back as
+    something the project can adopt. Only proven grains are offered — a suggested test
+    that fails on first run teaches the reader that these are guesses.
+    """
+    from themis.analyze.grain import infer_grains
+    from themis.analyze.lineage import build_column_graph
+    from themis.analyze.suggest import render_yaml, suggest_tests
+
+    configure_logging(verbose=verbose)
+    settings = load_settings()
+
+    manifest_path = project / "target" / "manifest.json"
+    if not manifest_path.exists():
+        typer.echo(
+            f"No manifest at {manifest_path}. Run `dbt compile` in {project} first — "
+            "`dbt parse` is not enough, it leaves Jinja unexpanded.",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
+    snapshot = load_manifest(manifest_path, revision="HEAD", backend=Backend.MANIFEST)
+    grains = infer_grains(snapshot, dialect=settings.dialect)
+    # Column lineage supplies each model's real output columns, so a key naming
+    # something the final SELECT never projects is dropped rather than printed.
+    graph = build_column_graph(snapshot, dialect=settings.dialect)
+    suggestions = suggest_tests(snapshot, grains, outputs=graph.outputs)
+
+    if not suggestions:
+        typer.echo("Nothing to suggest: every derivable grain is already asserted.")
+        raise typer.Exit(code=0)
+
+    if emit_yaml:
+        typer.echo(render_yaml(suggestions))
+        raise typer.Exit(code=0)
+
+    for suggestion in suggestions:
+        columns = ", ".join(suggestion.columns)
+        typer.echo(f"{suggestion.model_name:32s} {suggestion.test_name}({columns})")
+        typer.echo(f"{'':32s} {suggestion.evidence}")
+
+    # Seeds are excluded from the denominator: their grain can only be measured, never
+    # derived, so counting them as failures of derivation overstates the gap.
+    unproven = sum(
+        1
+        for name, grain in grains.items()
+        if not grain.is_proven and name in snapshot.models and not snapshot.models[name].is_seed
+    )
+    typer.echo(
+        f"\n{len(suggestions)} test(s) suggested; {unproven} SQL model(s) have no "
+        "derivable grain and get nothing — those need a human to say what the key is, "
+        "or an `--execute` run to measure it."
+    )
+    typer.echo("Re-run with --yaml for a schema.yml fragment.")
     raise typer.Exit(code=0)
 
 

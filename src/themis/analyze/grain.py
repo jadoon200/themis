@@ -292,19 +292,27 @@ def infer_model_grain(
         model_name=model.name,
         columns=(),
         source=GrainSource.UNKNOWN,
-        note=_unknown_reason(model),
+        note=_unknown_reason(model, snapshot),
     )
 
 
-def _unknown_reason(model: ModelNode) -> str:
+def _unknown_reason(model: ModelNode, snapshot: ProjectSnapshot) -> str:
     """Say precisely why a grain could not be derived.
 
-    The three cases need different actions from the reader, so collapsing them into
-    one message would send people to fix the wrong thing.
+    The cases need different actions from the reader, so collapsing them into one
+    message would send people to fix the wrong thing. The partial-build case is the
+    one that misleads hardest: a manifest left behind by `dbt build --select ...` has
+    compiled SQL for the selected nodes only, and telling someone to run `dbt compile`
+    when they already did reads as the tool being broken.
     """
     if model.is_seed:
         return "seed data, not SQL — grain cannot be derived, only measured"
     if model.analysable_sql is None:
+        if snapshot.has_compiled_sql:
+            return (
+                "no compiled SQL for this model, though others have it — this manifest "
+                "came from a selected build; recompile the whole project"
+            )
         return "no compiled SQL available — run `dbt compile`, not `dbt parse`"
     return "no GROUP BY, DISTINCT, dedup pattern, unique_key or test to derive from"
 

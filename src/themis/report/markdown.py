@@ -139,6 +139,8 @@ def render(
     executed: bool = False,
     macro_affected: dict[str, tuple[str, ...]] | None = None,
     degraded_reason: str | None = None,
+    # Models reviewed here whose grain is derivable and which nothing asserts.
+    untested_grains: tuple[str, ...] = (),
 ) -> str:
     """Render the full report."""
     ranked = sorted(findings, key=rank_key)
@@ -200,6 +202,18 @@ def render(
             "",
             "_Findings above are inferred from the SQL. Re-run with `--execute` to "
             "build both revisions and measure the actual row-count and total impact._",
+        ]
+
+    if untested_grains:
+        # One line, not a finding per model. On a project with no test coverage a
+        # per-model finding would fire on everything and bury the real ones.
+        shown = ", ".join(f"`{m}`" for m in untested_grains[:8])
+        more = f" and {len(untested_grains) - 8} more" if len(untested_grains) > 8 else ""
+        lines += [
+            "",
+            f"_{len(untested_grains)} model(s) reviewed here have a grain THEMIS can "
+            f"derive and nothing asserts: {shown}{more}. "
+            "`themis suggest-tests --yaml` prints the assertions._",
         ]
 
     if skipped:

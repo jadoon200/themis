@@ -250,7 +250,12 @@ def build_column_graph(
             # Seeds are CSV, and a parse-only manifest has no compiled SQL. Both are
             # legitimate roots; neither is a failure worth reporting as one.
             if not model.is_seed:
-                graph.unresolved[name] = "no compiled SQL"
+                graph.unresolved[name] = (
+                    "no compiled SQL for this model, though others have it — a "
+                    "selected build's manifest; recompile the whole project"
+                    if snapshot.has_compiled_sql
+                    else "no compiled SQL — run `dbt compile`, not `dbt parse`"
+                )
             continue
         try:
             tree = parse_sql(sql, dialect=dialect)

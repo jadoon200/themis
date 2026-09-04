@@ -12,6 +12,7 @@ from pathlib import Path
 from themis.acquire.snapshot_builder import AcquireResult, acquire
 from themis.analyze.grain import infer_grains
 from themis.analyze.lineage import LineageIndex
+from themis.analyze.suggest import suggest_tests
 from themis.config import Settings
 from themis.execute.runner import ExecutionResult, execute
 from themis.logging import get_logger
@@ -43,6 +44,10 @@ class ReviewResult:
     executed: bool = False
     execution: ExecutionResult | None = None
     llm: ReviewSummary | None = None
+    # Reviewed models whose grain THEMIS derived and nothing in the project asserts.
+    # Reported as one line rather than a finding each: on a project with no test
+    # coverage a per-model finding would fire on everything and bury the real ones.
+    untested_grains: tuple[str, ...] = ()
 
 
 def build_contexts(
@@ -452,10 +457,18 @@ def review(
         executed=bool(execution and execution.ran),
         llm=bool(llm_summary),
     )
+    reviewed = {c.model_name for c in contexts}
+    untested = tuple(
+        suggestion.model_name
+        for suggestion in suggest_tests(acquired.after, grains)
+        if suggestion.model_name in reviewed
+    )
+
     return ReviewResult(
         findings=findings,
         skipped=skipped,
         grains=grains,
+        untested_grains=untested,
         models_reviewed=tuple(c.model_name for c in contexts),
         macro_affected=macro_affected,
         degraded_reason=acquired.degraded_reason,
