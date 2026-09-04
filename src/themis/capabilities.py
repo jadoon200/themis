@@ -30,8 +30,15 @@ class Capability(StrEnum):
     # Parse, diff, derive grain, trace lineage, run the rules. Pure CPU: no warehouse,
     # no credentials, no model. The bulk of the value, and the cheapest to run.
     ANALYSE = "analyse"
-    # Run `dbt compile` to produce a manifest. Needs the project and dbt, and reaches
-    # the warehouse only for macros that query at compile time — read-only.
+    # Run `dbt compile` to produce a manifest. Needs the project, dbt, and warehouse
+    # credentials.
+    #
+    # Not read-only, despite the name of the command. `run_query` executes during
+    # compilation, and dbt-core issue 12447 records pre-hooks running their SQL under
+    # `dbt compile` even when guarded by `{% if execute %}` — a hook containing a
+    # DELETE will run. The target allowlist is what keeps that away from production;
+    # the capability itself does not, and describing it as read-only would be a
+    # security claim this cannot support.
     COMPILE = "compile"
     # Stage 3. Builds both revisions against a warehouse. The only capability that
     # writes anything anywhere, and the only one that needs credentials.

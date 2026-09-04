@@ -780,11 +780,16 @@ def eval_cmd(
         shown = ", ".join(f"{levels[k]} {k}" for k in sorted(levels) if levels[k])
         typer.echo(f"severity mix across {total_findings} finding(s): {shown}")
         critical_share = levels.get("critical", 0) / total_findings
-        if critical_share > 0.15:
-            typer.echo(
-                f"  {critical_share:.0%} are critical — a level most findings reach "
-                "stops saying which one to open first."
-            )
+        # Stated, not warned about. This corpus is roughly half injected defects, so a
+        # high critical share is what a working calibration looks like here — the
+        # number worth watching is the one from real reviews, where most changes are
+        # fine. Warning on it every run would be this tool doing the thing it exists
+        # to stop: raising an alarm that is always on and therefore says nothing.
+        typer.echo(
+            f"  {critical_share:.0%} critical. Expect that to be high on a corpus of "
+            "injected defects; on real pull requests it is the number to watch, and "
+            "critical is capped at findings execution demonstrated."
+        )
         typer.echo("")
 
     fired, never = report.rule_coverage()

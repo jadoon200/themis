@@ -119,8 +119,10 @@ executes SQL during analysis.
 ## Status
 
 Early. See `docs/ROADMAP.md` for what is built and what is next, and `docs/EVAL.md`
-for measured precision and recall — including the cases where THEMIS does worse than
-it looks like it should.
+for measured precision and recall — 100% recall, **89% precision, 25% false-positive
+rate** — including the cases where THEMIS does worse than it looks like it should. The
+false-positive rate read 0% until the corpus gained cases in which a rule could be
+wrong; it was a property of the questions, not the answers.
 
 ## Licence
 

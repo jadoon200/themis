@@ -610,7 +610,7 @@ all — and it is now the only one that can get them.
 | Capability | Needs | Default |
 |---|---|---|
 | `analyse` | nothing but CPU | on |
-| `compile` | the project and dbt; warehouse read-only, and only for compile-time macros | on |
+| `compile` | the project, dbt, and warehouse credentials — **not** read-only, see below | on |
 | `execute` | warehouse credentials with write access | **off** |
 | `review` | a model endpoint | on |
 
@@ -622,6 +622,15 @@ scheduler cannot route around the first gate. Both paths have a test.
 The capabilities are part of the worker identity recorded against every run, so "the
 machine that produced this review could not reach the warehouse" is legible from the
 record rather than reconstructed from deployment configuration.
+
+**A correction, because the first version of this table was wrong.** `compile` was
+described here as warehouse read-only. It is not. `run_query` executes during
+compilation, and [dbt-core #12447](https://github.com/dbt-labs/dbt-core/issues/12447)
+records pre-hooks running their SQL under `dbt compile` even when guarded by
+`{% if execute %}` — a hook containing a `DELETE` will run. What keeps that away from
+production is the target allowlist, which applies to compile as it does to execution.
+The capability does not, and saying it did was a security claim this design cannot
+support.
 
 ## What counting findings per change found
 
@@ -680,6 +689,54 @@ statement, and "the ranker put it seventh" is not an answer to an auditor.
 
 Writing the test for diminishing returns on reach caught the weights doing the
 opposite of what the comment above them claimed.
+
+## The honest headline
+
+Adding two benign mutations — safe changes that trip a rule — changed the numbers the
+project had been reporting since the corpus existed:
+
+| | before | after |
+|---|---|---|
+| recall | 100% | 100% |
+| **precision** | 100% | **89%** |
+| **false-positive rate** | 0% | **25%** |
+| true positives | 17 | 17 |
+| **false positives** | **0** | **2** |
+
+Nothing regressed. The corpus simply contained no case in which a rule could be wrong,
+so the zero was a property of the questions being asked rather than of the answers. A
+static-analysis study at Tencent found 328 of 433 real production alarms were false
+positives; a corpus with none of them is not measuring what practitioners measure.
+
+## What the benign cases showed about the model layer
+
+They were built to give the adjudicator the only job it can actually do — telling a
+correct flag from a consequential one — and it suppressed neither. Three separate
+causes, and only the first is a straightforward bug:
+
+**A specialist was unreachable.** `F2001` emitted `PROVEN`, and the model layer routes
+on confidence, so a filter finding never once reached the filters reviewer written for
+it. The label conflated two questions: that a predicate changed is provable, that the
+population changed with it is not.
+
+**The evidence to refute did not exist.** `dim_accounts` has no `GROUP BY`, no
+`DISTINCT` and no dedup, so nothing in its SQL makes it one row per `account_id` — that
+is a property of the data. The correct verdict was never *refute*; it was *uncertain*,
+which escalates to a human. The prompt had been tuned toward confirming and had
+over-corrected into treating unproven grain as evidence of a fan-out. Its own rationale
+was uncertain prose carrying a confirm verdict.
+
+**And that is structural, not incidental.** Where execution runs, measurement settles a
+finding before the model is asked. Where it does not, the evidence usually is not there
+for anyone to decide — which is this project's own premise, no declared tests, arriving
+back where it started. The model layer's demonstrated value sits either side of that
+gap: explaining a measured change no rule accounts for, which works, and the intent
+pass, which needs a pull-request description the corpus does not supply.
+
+The test that would settle it is the `variants/tested` project, where declared tests
+make grain `proven` and refutation becomes possible at all. That is also the compounding
+claim `themis suggest-tests` makes: accept the suggested tests and the adjudicator gains
+something to reason from. Not yet run.
 
 ## Known limitations
 
