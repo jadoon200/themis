@@ -642,6 +642,18 @@ def eval_cmd(
             mark = "caught" if outcome.detected else "MISSED"
             typer.echo(f"  {mark:7s} {outcome.mutation.id}")
         typer.echo("")
+    fired, never = report.rule_coverage()
+    typer.echo(
+        f"rule coverage: {len(fired)}/{len(fired) + len(never)} rules fired on at least one case"
+    )
+    if never:
+        typer.echo(
+            "  never fired: "
+            + ", ".join(never)
+            + " — unproven regardless of unit tests; a rule that cannot fire looks "
+            "exactly like one that found nothing."
+        )
+    typer.echo("")
     typer.echo(
         f"true positives {counts['true_positive']}   "
         f"false negatives {counts['false_negative']}   "

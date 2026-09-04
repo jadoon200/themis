@@ -40,6 +40,10 @@ class MutationOutcome:
     families_fired: tuple[str, ...]
     expected_family_fired: bool
     finding_count: int
+    # Individual rule ids, not just families. A family can look well covered while
+    # three of its rules have never fired on a real case -- which has happened here,
+    # to rules whose unit tests all passed.
+    rules_fired: tuple[str, ...] = ()
     row_delta: int | None = None
     error: str | None = None
     # Populated only when the model layer ran, so its contribution can be separated
@@ -217,6 +221,7 @@ def run_mutation(
         execution and execution.ran and any(d.is_material for d in execution.deltas.values())
     )
     families = tuple(sorted({f.family for f in result.findings}))
+    rules = tuple(sorted({f.rule_id for f in result.findings}))
     row_delta = None
     if execution and execution.ran:
         deltas = [d.row_delta for d in execution.deltas.values() if d.row_delta]
@@ -230,6 +235,7 @@ def run_mutation(
         changed_results=changed,
         detected=bool(result.findings),
         families_fired=families,
+        rules_fired=rules,
         expected_family_fired=mutation.expects_family in families,
         finding_count=len(result.findings),
         row_delta=row_delta,
@@ -290,6 +296,23 @@ class EvalReport:
     @property
     def stale(self) -> list[MutationOutcome]:
         return [o for o in self.outcomes if not o.applied or o.error is not None]
+
+    def rule_coverage(self) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        """Which rules the corpus actually exercised, and which it never did.
+
+        A rule that has never fired on a real case is unproven no matter how green its
+        unit test is. Three rules here passed their tests and could not fire at all --
+        one read the outermost SELECT when dbt puts the GROUP BY in a CTE, one matched
+        a node type Trino never produces, one was written against SQL the macro does
+        not compile to. Only the corpus found them, so the corpus reports this.
+        """
+        from themis.rules.registry import ALL_RULES
+
+        fired: set[str] = set()
+        for outcome in self.usable:
+            fired.update(outcome.rules_fired)
+        known = {rule.rule_id for rule in ALL_RULES}
+        return tuple(sorted(fired & known)), tuple(sorted(known - fired))
 
     def counts(self) -> dict[str, int]:
         tally = {"true_positive": 0, "false_negative": 0, "false_positive": 0, "true_negative": 0}
