@@ -172,35 +172,56 @@ def unexplained_change_findings(
     if not moved:
         return []
 
-    # Roots are computed over everything that moved, including models a rule already
-    # explains. Excluding those left their descendants ownerless, so a single flagged
-    # fan-out produced an "unexplained" critical for every model beneath it — three of
-    # them, each describing the consequence of a finding sitting directly above it.
-    roots: set[str] = set()
-    for name in moved:
+    # An origin is any model whose own SQL changed — whether or not its own output
+    # moved. That distinction is the whole of this: a model can change in a way its
+    # own totals do not show while every model beneath it moves. Truncating a date to
+    # the year alters no row count and no monetary sum in the staging model itself,
+    # and shifts every figure below it. Requiring an origin to have moved left those
+    # six descendants ownerless, so one explained change produced six criticals.
+    origins: set[str] = set()
+    for name in set(before.models) | set(after.models):
         before_sql = before.models[name].analysable_sql if name in before.models else None
         after_sql = after.models[name].analysable_sql if name in after.models else None
         if before_sql != after_sql:
-            roots.add(name)
+            origins.add(name)
 
-    attributed: dict[str, list[str]] = {root: [] for root in roots}
+    attributed: dict[str, list[str]] = {origin: [] for origin in origins}
+    roots = moved & origins
     unattributed: set[str] = set()
     for name in sorted(moved - roots):
-        owner = next((root for root in sorted(roots) if name in after.downstream_of(root)), None)
+        owner = next(
+            (origin for origin in sorted(origins) if name in after.downstream_of(origin)), None
+        )
         if owner is not None:
-            attributed[owner].append(name)
+            attributed.setdefault(owner, []).append(name)
         else:
             # Moved, own SQL unchanged, and downstream of nothing that changed. That is
             # genuinely unexplained and must not be folded into someone else's finding.
             unattributed.add(name)
 
     # Only report what no rule has already accounted for. A root a rule explains needs
-    # no second finding, and neither does anything downstream of it.
-    reportable = {name for name in (roots | unattributed) if name not in explained}
+    # no second finding, and neither does anything downstream of it. A model attributed
+    # to an origin is never reported: the origin is where a reviewer should look, and
+    # the descendant can only say that its own SQL is unchanged.
+    #
+    # An origin is reportable even when its own results did not move, provided
+    # something beneath it did. Requiring it to have moved silences the case entirely:
+    # a staging edit that shifts every figure downstream while its own totals sit
+    # still would produce no finding anywhere, which is the exact silence this net
+    # exists to break.
+    reportable = {
+        name
+        for name in (origins | unattributed)
+        if name not in explained
+        and not _explained_upstream(name, origins, explained, after)
+        and (name in moved or attributed.get(name))
+    }
 
     out: list[Finding] = []
     for name in sorted(reportable):
-        delta = result.deltas[name]
+        # An origin that did not move itself has no delta of its own; the movement
+        # being reported is its descendants'.
+        delta = result.deltas.get(name) or ExecutionDelta(model_name=name)
         consequences = tuple(sorted(attributed.get(name, [])))
         out.append(
             _unexplained_finding(
@@ -212,6 +233,22 @@ def unexplained_change_findings(
             )
         )
     return out
+
+
+def _explained_upstream(
+    name: str, origins: set[str], explained: set[str], after: ProjectSnapshot
+) -> bool:
+    """Whether some origin above this model already carries a finding.
+
+    A rule that fired on a staging model accounts for every figure that moved beneath
+    it. Repeating the movement as an unexplained critical for each descendant tells a
+    reviewer six times about one thing, and buries the finding that actually names it.
+    """
+    return any(
+        origin in explained and name in after.downstream_of(origin)
+        for origin in origins
+        if origin != name
+    )
 
 
 def _unexplained_finding(
