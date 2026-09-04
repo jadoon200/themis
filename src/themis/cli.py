@@ -635,7 +635,8 @@ def eval_cmd(
 
     typer.echo("")
     header = (
-        f"{'mutation':34s} {'truth':10s} {'flagged':8s} {'families':12s} {'why':10s} {'result':15s}"
+        f"{'mutation':34s} {'truth':10s} {'flagged':8s} {'n':4s} "
+        f"{'families':12s} {'why':10s} {'result':15s}"
     )
     typer.echo(header)
     typer.echo("-" * len(header))
@@ -663,7 +664,7 @@ def eval_cmd(
         else:
             why = "incidental"
         typer.echo(
-            f"{outcome.mutation.id:34s} {truth:10s} {flagged:8s} "
+            f"{outcome.mutation.id:34s} {truth:10s} {flagged:8s} {outcome.finding_count:<4d} "
             f"{families:12s} {why:10s} {outcome.classification:15s}"
         )
 
@@ -716,6 +717,25 @@ def eval_cmd(
             mark = "caught" if outcome.detected else "MISSED"
             typer.echo(f"  {mark:7s} {outcome.mutation.id}")
         typer.echo("")
+    # How much a reviewer is asked to read per change. Recall-first means over-flagging
+    # is deliberate, but it is only tunable if it is visible: a defect reported once is
+    # a finding, and the same defect reported four times is four things to dismiss.
+    reported = [o for o in report.usable if o.detected]
+    if reported:
+        counts_per = sorted(o.finding_count for o in reported)
+        median = counts_per[len(counts_per) // 2]
+        worst = max(reported, key=lambda o: o.finding_count)
+        typer.echo(
+            f"findings per flagged change: median {median}, worst {worst.finding_count} "
+            f"({worst.mutation.id})"
+        )
+        # A change reported by families beyond the one that owns it is the shape noise
+        # takes here: a generic rule restating what a specific one already said.
+        extra = [o for o in reported if o.mutation.expects_family and len(o.families_fired) > 1]
+        if extra:
+            typer.echo(f"  {len(extra)} of {len(reported)} were reported by more than one family")
+        typer.echo("")
+
     fired, never = report.rule_coverage()
     typer.echo(
         f"rule coverage: {len(fired)}/{len(fired) + len(never)} rules fired on at least one case"
