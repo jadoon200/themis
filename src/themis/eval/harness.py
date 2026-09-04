@@ -419,7 +419,11 @@ class EvalReport:
             for o in self.scored
             # Meaningless without an oracle: nothing was measured, so every defect
             # trivially "did not change results" and the whole list is noise.
-            if o.oracle_available and (o.mutation.kind is Kind.DEFECT) != o.changed_results
+            if o.oracle_available
+            # A benign mutation is declared safe and measuring it as safe is agreement,
+            # not a mislabelling. Without this every one of them reports as a bad test.
+            and o.mutation.kind is not Kind.BENIGN
+            and (o.mutation.kind is Kind.DEFECT) != o.changed_results
         ]
 
 
