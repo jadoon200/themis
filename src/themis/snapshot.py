@@ -53,6 +53,10 @@ class ModelNode(BaseModel):
     unique_id: str
     file_path: str
     resource_type: str = "model"
+    # The physical relation compiled SQL addresses this model by, catalog and schema
+    # included. Column lineage needs it: a compiled reference names a table, and
+    # without this there is no way back from that table to the model it is.
+    relation_name: str | None = None
     # The schema YAML that configures this model. In projects where materialization,
     # partitioning and hooks live in YAML rather than in the model file, a YAML-only
     # change is a real change — and without this link it reaches no model at all.

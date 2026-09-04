@@ -65,6 +65,48 @@ def _output_columns(sql: str, dialect: str) -> set[str]:
     return names
 
 
+def _name_search(ctx: RuleContext, column: str, candidates: tuple[str, ...]) -> tuple[str, ...]:
+    """Downstream models whose SQL contains the column's name.
+
+    The weaker answer, kept for models column lineage could not resolve. It is wrong in
+    both directions -- blind to a consumer reading through ``select *``, and fooled by a
+    same-named column arriving from somewhere else -- so it never claims to be proof.
+    """
+    pattern = re.compile(rf"\b{re.escape(column)}\b")
+    found: list[str] = []
+    for name in candidates:
+        model = ctx.after_snapshot.models.get(name)
+        sql = model.analysable_sql if model else None
+        if sql and pattern.search(sql):
+            found.append(name)
+    return tuple(found)
+
+
+@dataclass(frozen=True)
+class _ColumnImpact:
+    """Who reads a column, and how confident we are that the list is complete."""
+
+    models: tuple[str, ...]
+    # Downstream columns computed from this one, named as model.column.
+    columns: tuple[str, ...] = ()
+    # Models that name the column without carrying it forward — join keys, predicates.
+    referenced_by: tuple[str, ...] = ()
+    confidence: Confidence = Confidence.LIKELY
+    source: str = "name search"
+
+    def note(self, column: str) -> str:
+        parts: list[str] = []
+        if self.columns:
+            shown = ", ".join(self.columns[:8])
+            more = f" (+{len(self.columns) - 8} more)" if len(self.columns) > 8 else ""
+            parts.append(f"feeds {shown}{more}")
+        if self.referenced_by:
+            parts.append(f"joined or filtered on by {', '.join(self.referenced_by)}")
+        if not parts:
+            parts.append(f"referenced by {', '.join(self.models)}")
+        return f"`{column}` " + "; ".join(parts) + f" — resolved by {self.source}"
+
+
 @dataclass
 class ColumnRemovedWithConsumersRule(Rule):
     """A column disappeared from a model that other models read.
@@ -91,8 +133,8 @@ class ColumnRemovedWithConsumersRule(Rule):
 
         findings: list[Finding] = []
         for column in sorted(removed):
-            consumers = self._consumers(ctx, column)
-            if not consumers:
+            impact = self._consumers(ctx, column)
+            if not impact.models:
                 continue
             findings.append(
                 Finding(
@@ -100,38 +142,68 @@ class ColumnRemovedWithConsumersRule(Rule):
                     family=self.family,
                     title=f"Column `{column}` removed but still selected downstream",
                     severity=_severity_for(ctx, self.severity),
-                    confidence=Confidence.LIKELY,
+                    confidence=impact.confidence,
                     evidence=Evidence(
                         model_name=ctx.model_name,
                         file_path=ctx.after.file_path,
-                        note=f"`{column}` referenced by: {', '.join(consumers)}",
+                        note=impact.note(column),
                     ),
                     consequence=(
-                        f"{len(consumers)} downstream model(s) select `{column}` from "
-                        "this model. They will fail to compile, and any that are built "
-                        "before this change lands keep a stale column that no longer "
-                        "has a source."
+                        f"{len(impact.models)} downstream model(s) read `{column}` from "
+                        "this model. The ones that name it stop compiling. The ones "
+                        "that select through a star keep building and quietly produce "
+                        "one column fewer, which is the harder half to notice — "
+                        "nothing errors, and a report loses a field."
                     ),
                     suggestion=(
                         "Remove or repoint the downstream references in the same "
                         "change, or keep the column and deprecate it separately."
                     ),
-                    blast_radius=consumers,
+                    blast_radius=impact.models,
                 )
             )
         return findings
 
     @staticmethod
-    def _consumers(ctx: RuleContext, column: str) -> tuple[str, ...]:
-        """Downstream models whose SQL mentions the column."""
-        found: list[str] = []
-        pattern = re.compile(rf"\b{re.escape(column)}\b")
-        for name in ctx.after_snapshot.downstream_of(ctx.model_name):
-            model = ctx.after_snapshot.models.get(name)
-            sql = model.analysable_sql if model else None
-            if sql and pattern.search(sql):
-                found.append(name)
-        return tuple(found)
+    def _consumers(ctx: RuleContext, column: str) -> _ColumnImpact:
+        """Downstream models that read the column, resolved as precisely as possible.
+
+        Column lineage is asked first, and asked of the **before** revision: the column
+        exists there, which is the only revision in which "who reads it" has an answer.
+
+        The fallback is a word search over downstream SQL, kept because a model whose
+        lineage could not be resolved must still be checked. It is materially worse in
+        both directions -- it cannot see a consumer that reads the column through
+        ``select *``, and it counts a same-named column from an unrelated upstream as a
+        consumer -- so a finding that rests on it says so and carries lower confidence.
+        """
+        downstream = ctx.after_snapshot.downstream_of(ctx.model_name)
+        index = ctx.lineage
+        graph = index.before if index is not None else None
+
+        if graph is not None and graph.is_traced(ctx.model_name):
+            refs = graph.consumers_of(ctx.model_name, column)
+            referenced = graph.referencing_models(ctx.model_name, column)
+            models = set(graph.consumer_models(ctx.model_name, column))
+            # Only the downstream models lineage could not resolve need searching, and
+            # only those cost the finding its confidence.
+            blind = tuple(name for name in downstream if not graph.is_traced(name))
+            source = "column lineage"
+            confidence = Confidence.PROVEN
+            if blind:
+                models |= set(_name_search(ctx, column, blind))
+                confidence = Confidence.LIKELY
+                source = f"column lineage, with {len(blind)} unresolved model(s) name-searched"
+            return _ColumnImpact(
+                models=tuple(sorted(models)),
+                columns=tuple(str(ref) for ref in refs),
+                referenced_by=referenced,
+                confidence=confidence,
+                source=source,
+            )
+
+        searched = _name_search(ctx, column, downstream)
+        return _ColumnImpact(searched, confidence=Confidence.LIKELY, source="name search")
 
 
 @dataclass

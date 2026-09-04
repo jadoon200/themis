@@ -15,6 +15,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 
+from themis.analyze.lineage import LineageIndex
 from themis.models import Finding, Grain, Severity
 from themis.snapshot import ModelNode, ProjectSnapshot
 
@@ -34,6 +35,9 @@ class RuleContext:
     after_snapshot: ProjectSnapshot
     grains: dict[str, Grain]
     dialect: str = "trino"
+    # Column-level lineage, built on first use. None means nothing constructed one --
+    # rules that need it fall back and say so, rather than reporting a confident empty.
+    lineage: LineageIndex | None = None
     # Populated when a macro edit is what pulled this model into the review.
     via_macro: str | None = None
     # Populated when a schema YAML edit is what pulled it in.

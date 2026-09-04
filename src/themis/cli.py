@@ -253,6 +253,81 @@ def grain(
 
 
 @app.command()
+def lineage(
+    project: ProjectOpt = Path("demo_project"),
+    model: Annotated[
+        str | None, typer.Option("--model", help="Restrict the report to one model.")
+    ] = None,
+    column: Annotated[
+        str | None, typer.Option("--column", help="Trace one column, up and down.")
+    ] = None,
+    verbose: VerboseOpt = False,
+) -> None:
+    """Show column-level lineage: what feeds a column, and what would break without it.
+
+    With no arguments this reports coverage — how many models resolved and which did
+    not — because a lineage answer is only as trustworthy as the share of the project
+    it could actually resolve. An unresolved model is unknown, never clean.
+    """
+    from themis.analyze.lineage import build_column_graph
+
+    configure_logging(verbose=verbose)
+    settings = load_settings()
+
+    manifest_path = project / "target" / "manifest.json"
+    if not manifest_path.exists():
+        typer.echo(
+            f"No manifest at {manifest_path}. Run `dbt compile` in {project} first — "
+            "`dbt parse` is not enough, it leaves Jinja unexpanded.",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
+    snapshot = load_manifest(manifest_path, revision="HEAD", backend=Backend.MANIFEST)
+    graph = build_column_graph(snapshot, dialect=settings.dialect)
+
+    if column is not None:
+        if model is None:
+            typer.echo("--column needs --model: a column name alone is ambiguous.", err=True)
+            raise typer.Exit(code=2)
+        if not graph.is_traced(model):
+            reason = graph.unresolved.get(model, "not traced")
+            typer.echo(f"{model}: lineage unresolved ({reason}). Treat as unknown.", err=True)
+            raise typer.Exit(code=2)
+        sources = graph.sources_of(model, column)
+        feeds = graph.consumers_of(model, column)
+        referenced = graph.referencing_models(model, column)
+        typer.echo(f"{model}.{column}")
+        typer.echo(f"  reads from : {', '.join(str(r) for r in sources) or '—'}")
+        typer.echo(f"  feeds      : {', '.join(str(r) for r in feeds) or '—'}")
+        typer.echo(f"  joined on  : {', '.join(referenced) or '—'}")
+        raise typer.Exit(code=0)
+
+    names = [model] if model else sorted(graph.outputs)
+    for name in names:
+        if not graph.is_traced(name):
+            typer.echo(f"{name:32s} unresolved — {graph.unresolved.get(name, 'not traced')}")
+            continue
+        columns = graph.outputs.get(name, ())
+        readers = {reader for col in columns for reader in graph.consumer_models(name, col)}
+        typer.echo(f"{name:32s} {len(columns):3d} column(s), read by {len(readers)} model(s)")
+
+    # Seeds are CSV, not SQL: they are legitimate roots, not resolution failures, so
+    # counting them in the denominator would understate coverage.
+    analysable = sum(1 for m in snapshot.models.values() if not m.is_seed)
+    typer.echo(
+        f"\n{len(graph.outputs)} of {analysable} SQL model(s) resolved; "
+        f"{len(graph.unresolved)} unresolved."
+    )
+    if graph.unresolved:
+        typer.echo(
+            "Unresolved models are reported as unknown rather than as having no "
+            "consumers — a lineage tool that goes quiet is how a breaking change passes."
+        )
+    raise typer.Exit(code=0)
+
+
+@app.command()
 def ask(
     question: Annotated[str, typer.Argument(help="What to ask about a completed review.")],
     run: Annotated[str, typer.Option("--run", help="Run id, or 'latest'.")] = "latest",

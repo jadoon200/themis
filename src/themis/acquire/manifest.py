@@ -73,6 +73,7 @@ def _model_from_node(unique_id: str, node: dict[str, Any]) -> ModelNode:
         unique_id=unique_id,
         file_path=str(node.get("original_file_path", "")),
         resource_type=str(node.get("resource_type", "model")),
+        relation_name=node.get("relation_name"),
         patch_path=node.get("patch_path"),
         raw_sql=str(node.get("raw_code") or ""),
         # Absent on a parse-only manifest. Left as None rather than falling back to

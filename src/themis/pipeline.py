@@ -11,6 +11,7 @@ from pathlib import Path
 
 from themis.acquire.snapshot_builder import AcquireResult, acquire
 from themis.analyze.grain import infer_grains
+from themis.analyze.lineage import LineageIndex
 from themis.config import Settings
 from themis.execute.runner import ExecutionResult, execute
 from themis.logging import get_logger
@@ -72,8 +73,24 @@ def build_contexts(
             if model not in directly_changed:
                 via_macro.setdefault(model, label)
 
+    affected = directly_changed | set(via_macro) | set(via_yaml)
+
+    # Column lineage is traced over the changed models and everything below them --
+    # the only region where a column edge can change a verdict. The index builds on
+    # first use, so a review whose rules never ask for lineage never pays for it.
+    trace = set(affected)
+    for name in affected:
+        trace.update(result.after.downstream_of(name))
+        trace.update(result.before.downstream_of(name))
+    lineage = LineageIndex(
+        before_snapshot=result.before,
+        after_snapshot=result.after,
+        trace=frozenset(trace),
+        dialect=dialect,
+    )
+
     contexts: list[RuleContext] = []
-    for name in sorted(directly_changed | set(via_macro) | set(via_yaml)):
+    for name in sorted(affected):
         before = result.before.models.get(name)
         after = result.after.models.get(name)
         if before is None and after is None:
@@ -87,6 +104,7 @@ def build_contexts(
                 after_snapshot=result.after,
                 grains=grains,
                 dialect=dialect,
+                lineage=lineage,
                 via_macro=via_macro.get(name),
                 via_yaml=via_yaml.get(name),
             )
