@@ -774,6 +774,23 @@ def eval_cmd(
             typer.echo(f"  {mark:7s} {outcome.mutation.id}")
         typer.echo("")
 
+    described = report.with_description
+    if described and use_llm:
+        misleading = [o for o in described if not o.mutation.description_is_honest]
+        honest = [o for o in described if o.mutation.description_is_honest]
+        caught = sum(1 for o in misleading if o.undisclosed)
+        alarms = sum(1 for o in honest if o.undisclosed)
+        typer.echo(
+            "intent pass (the only reviewer with no rule behind it): "
+            f"{caught}/{len(misleading)} misleading descriptions caught, "
+            f"{alarms}/{len(honest)} false alarms on honest ones"
+        )
+        for outcome in described:
+            label = "honest    " if outcome.mutation.description_is_honest else "MISLEADING"
+            said = "; ".join(outcome.undisclosed)[:150] or "—"
+            typer.echo(f"  {label} {outcome.mutation.id[:34]:36s} {said}")
+        typer.echo("")
+
     if report.benign:
         suppressed = sum(o.llm_suppressed for o in report.benign)
         benign_flagged = sum(1 for o in report.benign if o.detected)

@@ -46,6 +46,10 @@ class MutationOutcome:
     # Severity of each finding. A level almost everything reaches stops telling a
     # reviewer which one to open first, and that is only visible if it is counted.
     severities: tuple[str, ...] = ()
+    # What the intent pass said the description failed to mention. Empty is the right
+    # answer for an honest description and a miss for a misleading one, so it has to
+    # be kept rather than counted.
+    undisclosed: tuple[str, ...] = ()
     # Individual rule ids, not just families. A family can look well covered while
     # three of its rules have never fired on a real case -- which has happened here,
     # to rules whose unit tests all passed.
@@ -280,6 +284,9 @@ def run_mutation(
                 settings=settings,
                 run_execution=use_execution,
                 run_llm=use_llm,
+                # Without this the intent pass never runs at all, which is how the
+                # only reviewer with no rule behind it went unmeasured.
+                pr_description=mutation.pr_description,
                 # The worktree holds the mutated code; the data lives only in the
                 # original project. Without this a macro that queries at compile time
                 # reads an empty database and every rule is skipped for want of
@@ -321,6 +328,7 @@ def run_mutation(
         row_delta = max(deltas, key=abs) if deltas else 0
 
     llm = result.llm
+    undisclosed = tuple(llm.undisclosed) if llm else ()
     return MutationOutcome(
         mutation=mutation,
         applied=True,
@@ -330,6 +338,7 @@ def run_mutation(
         families_fired=families,
         rules_fired=rules,
         severities=severities,
+        undisclosed=undisclosed,
         expected_family_fired=mutation.expects_family in families,
         finding_count=len(result.findings),
         row_delta=row_delta,
@@ -368,6 +377,16 @@ class EvalReport:
             for o in self.usable
             if o.mutation.kind not in (Kind.LATENT, Kind.UNRULED, Kind.GENERATED)
         ]
+
+    @property
+    def with_description(self) -> list[MutationOutcome]:
+        """Mutations carrying an author's description, so the intent pass can run.
+
+        Scored in both directions on purpose. Naming what a misleading description
+        omits is the whole point; naming something on an honest one is a false alarm,
+        and a pass that speaks up on every change has found nothing.
+        """
+        return [o for o in self.usable if o.mutation.pr_description]
 
     @property
     def benign(self) -> list[MutationOutcome]:

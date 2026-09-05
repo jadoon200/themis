@@ -96,6 +96,18 @@ class Mutation:
     relative_path: str
     find: str
     replace: str
+    # What the author would have written on the pull request. The intent pass is the
+    # only reviewer with no rule behind it, and it cannot run without one — which is
+    # why it went unmeasured for so long.
+    #
+    # Two shapes are useful and only two. A description that omits or misstates what
+    # the change does is what intent exists to catch; an honest one is the control,
+    # because a pass that flags every change has found nothing. Mutations without a
+    # description simply do not exercise it.
+    pr_description: str | None = None
+    # True when the description genuinely covers the change, so intent naming anything
+    # is a false alarm rather than a catch.
+    description_is_honest: bool = False
 
     def apply(self, project_dir: Path) -> bool:
         """Apply to a checked-out project. False if the anchor text is not present."""
@@ -163,6 +175,11 @@ _ALL_INJECTED: tuple[Mutation, ...] = (
     ),
     Mutation(
         id="money_cast_to_double",
+        pr_description=(
+            "Simplify the money() macro — drop the redundant cast wrapper so the expression reads"
+            "more clearly."
+        ),
+        description_is_honest=False,
         kind=Kind.DEFECT,
         expects_family="F3",
         description=(
@@ -183,6 +200,11 @@ _ALL_INJECTED: tuple[Mutation, ...] = (
     ),
     Mutation(
         id="filter_dropped_reversals",
+        pr_description=(
+            "Remove a redundant predicate from the revenue filter — it was already covered by the"
+            "account type check."
+        ),
+        description_is_honest=False,
         kind=Kind.DEFECT,
         expects_family="F2",
         description="Reversal entries filtered out, overstating gross revenue",
@@ -201,6 +223,11 @@ _ALL_INJECTED: tuple[Mutation, ...] = (
     ),
     Mutation(
         id="period_boundary_shifted",
+        pr_description=(
+            "Change the FX rate period from month to year granularity, so entries pick up the"
+            "annual rate."
+        ),
+        description_is_honest=True,
         kind=Kind.DEFECT,
         expects_family="F4",
         description="Rate period truncated to year, pulling the wrong FX rate for every month",
@@ -210,6 +237,10 @@ _ALL_INJECTED: tuple[Mutation, ...] = (
     ),
     Mutation(
         id="incremental_guard_removed",
+        pr_description=(
+            "Tidy up fct_revenue_incremental: remove some leftover scaffolding from the sourceCTE."
+        ),
+        description_is_honest=False,
         kind=Kind.LATENT,
         expects_family="F5",
         description="is_incremental() guard dropped, so every run reprocesses all history",
@@ -252,6 +283,11 @@ _ALL_INJECTED: tuple[Mutation, ...] = (
     ),
     Mutation(
         id="column_removed_with_consumers",
+        pr_description=(
+            "Drop currency_code from fct_revenue. Downstream consumers are updated in a follow-up"
+            "PR."
+        ),
+        description_is_honest=True,
         kind=Kind.DEFECT,
         expects_family="F6",
         description="currency_code dropped from fct_revenue while downstream still selects it",
@@ -538,6 +574,11 @@ _ALL_INJECTED: tuple[Mutation, ...] = (
     ),
     Mutation(
         id="sign_convention_flipped",
+        pr_description=(
+            "Fix the debit/credit branch in signed_amount, which had the wrong entry type on the"
+            "first arm."
+        ),
+        description_is_honest=False,
         kind=Kind.DEFECT,
         expects_family="F3",
         description="Debit/credit sign inverted, flipping the sense of every amount",
@@ -562,6 +603,10 @@ BENIGN: tuple[Mutation, ...] = tuple(m for m in _ALL_INJECTED if m.kind is Kind.
 CONTROLS: tuple[Mutation, ...] = (
     Mutation(
         id="control_rename_ctes",
+        pr_description=(
+            "Rename the CTEs in int_gl_entries_converted for readability. No behaviour change."
+        ),
+        description_is_honest=True,
         kind=Kind.CONTROL,
         expects_family="",
         description="CTEs renamed — a routine tidy-up that changes nothing",
@@ -595,6 +640,8 @@ rates as (select * from fx),""",
     ),
     Mutation(
         id="control_add_comments",
+        pr_description=("Add explanatory comments to the FX conversion. No behaviour change."),
+        description_is_honest=True,
         kind=Kind.CONTROL,
         expects_family="",
         description="Explanatory comments added",
