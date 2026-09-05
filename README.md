@@ -30,7 +30,12 @@ model is reserved for judgement, and never produces facts of its own.
 7  ASK       grounded follow-up questions
 ```
 
-Stages 0–3 and 6 need no model at all. `--no-llm` is a fully useful mode.
+Stages 0–4 and 6 need no model at all, and `--no-llm` is a fully useful mode —
+detection is entirely the rules' work. The model is kept for the three jobs no rule can
+do: reading the author's description against what the SQL actually does (it catches 5
+of 5 descriptions that misstate the change), naming a cause for a measured movement no
+rule anticipated, and writing the corrected SQL. It has never suppressed a finding, and
+the report says so.
 
 ### Two things worth calling out
 

@@ -13,6 +13,11 @@
   output column traced back through CTEs and renames to the relations it reads.
   Join keys and filter predicates are collected alongside, because a column can break
   a model while contributing nothing to its output.
+- **Model layer, in the three seats a rule cannot fill.** Intent reads the author's
+  description against the semantic diff; explain proposes a cause for a measured
+  movement no rule accounts for; fixes propose corrected SQL, discarded unless they
+  parse in the shape the original did. Adjudication remains on and unproven — it has
+  never changed a decision.
 - **Suggested tests.** The derived grain emitted as `schema.yml` assertions, with a
   refusal policy strict enough that a suggestion does not fail on first run — and
   measured to be worth accepting: declaring the keys halves the false-positive rate.
@@ -56,9 +61,13 @@ measurement and settled the grain question [EVAL](EVAL.md) shows inference alone
 cannot. The mutation harness and the precision and recall figures run on the same
 machinery.
 
-**M4 — review.** Built. Four specialists, an intent pass, self-check, and an explain
-pass for measured changes no rule accounts for. The deliverable was a number and
-[EVAL](EVAL.md) has it.
+**M4 — review.** Built and, at last, measured in all four seats. Adjudication changes
+no decision and has not across 36 runs and three models. The other three earn their
+place because no rule can occupy them: **intent** catches 5 of 5 descriptions that
+misstate what the change does, **explain** names a cause for a measured movement no
+rule accounts for, and **fixes** return corrected SQL for 14 of 24 findings with none
+malformed. [EVAL](EVAL.md) has the numbers and the tuning mistake that cost two intent
+catches before it was undone.
 
 **M5 — follow-up.** Built. Persisted runs and grounded Q&A, including "why was this not
 flagged?", answered from persisted absence. An unanswerable question gets a refusal.

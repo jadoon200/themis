@@ -864,6 +864,94 @@ partially-compiled manifest. The tell was arithmetic — six runs finishing in s
 seconds cannot contain two model calls. It was re-run against a verified-quiescent
 project, which is also how `F1002` was found.
 
+## The three jobs a rule cannot do
+
+Adjudication has never changed a decision — 36 sweep runs across three models settled
+that. But adjudication was never the only seat, and the other three had gone unmeasured
+for different reasons. All three now have numbers.
+
+### Intent — 5 of 5
+
+The only reviewer with no rule behind it. It compares the author's description against
+what the SQL actually does, and it had **never once run**, because it needs a pull
+request description and the corpus had none. Eight mutations now carry the description
+their author would plausibly have written: five that understate or misstate the change,
+three that are honest.
+
+| | |
+|---|---|
+| Misleading descriptions caught | **5 / 5** |
+| False alarms on honest descriptions | 1 / 3 |
+
+What it produced, against what the author claimed:
+
+| the description said | intent said |
+|---|---|
+| "simplify the money() macro, drop the redundant cast wrapper" | removes the cast around monetary values **in models tagged regulatory or recon** |
+| "remove a redundant predicate, already covered by the account type check" | *added* a filter `NOT is_reversal`, not mentioned by the author |
+| "fix the debit/credit branch" | alters the **sign convention** of a monetary expression |
+| "tidy up leftover scaffolding" | removed the **`is_incremental()` guard**, affecting incremental behaviour |
+| "downstream consumers are updated in a follow-up PR" | the column is **still selected downstream**, contradicting that claim |
+
+No rule can produce any of those sentences. `F3001` reports the cast; nothing else in
+the system compares it to what the author said they were doing.
+
+The single false alarm is worth naming rather than tuning away. On
+`period_boundary_shifted` the author honestly described a granularity change, and
+intent restated it with a risk assessment attached — drifting from *"what was not
+mentioned"* to *"what is concerning"*. On a denominator of three that is one observation,
+not a rate, and the last attempt to tune this pass cost more than it bought.
+
+### The tuning that made it worse
+
+The first measured run caught every misleading description and produced one cosmetic
+false alarm: the model wrote *"nothing was omitted"* as an **item** in a list whose only
+meaning is omissions. The fix — telling it to return an empty list instead — removed
+the false alarms and **cost two real catches**. Pushed toward silence, it went quiet on
+changes it had previously described correctly. 5 of 5 became 3 of 5.
+
+That was a bad trade. The artefact was a *formatting* problem and it was solved by
+making the reviewer timid. There is now a separate boolean for "the description covers
+the change", so the prose can stay direct and the nothing-here case is unambiguous. The
+catches came back.
+
+### Fixes — 14 of 24
+
+A rule can name a defect and give general advice; it cannot write the corrected `ON`
+clause, because which columns the key needs is not something the rule holds as SQL.
+
+| | |
+|---|---|
+| Findings with SQL to correct | 24 |
+| Proposals returned | **14** |
+| Discarded as unparseable | **0** |
+| Discarded as identical to the original | 0 |
+
+It proposes for roughly three findings in five and stays quiet on the rest, which is
+the shape you want. Two guards make it printable: a proposal that does not parse is
+dropped, and one that echoes the original is dropped. Writing the test found the first
+guard was wrong — a finding's evidence is almost always a *fragment*, a join clause or a
+predicate, and none of those parse standalone, so it would have discarded every correct
+answer. Proposals are now checked in whatever context makes the original parse.
+
+### Explain — 1 cause proposed
+
+Fires only with `--execute`, which is why it had gone unmeasured here for so long. It
+diagnoses a measured movement no rule accounts for, and on this corpus it did.
+
+### What the model layer costs, and what it is for
+
+45 calls, 31,848 tokens, 285 seconds for a 42-mutation corpus. The run's own summary
+line puts it as well as anything:
+
+> It suppressed nothing, so detection is entirely the rules' work. What it added is
+> explanation of measured changes no rule accounts for — the one contribution rules
+> cannot make.
+
+Detection belongs to the rules. Where the model earns its place is where no rule can
+exist: reading a claim against a change, naming a cause for a movement nobody
+anticipated, and writing the correction.
+
 ## Known limitations
 
 Kept current. Several entries here were closed and are gone rather than left standing —
