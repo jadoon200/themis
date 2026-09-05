@@ -302,6 +302,10 @@ def _intent_pass(
         return []
 
     usage.add(response.usage)
+    if response.payload.get("description_covers_change"):
+        # Said plainly rather than inferred from an empty list, so a model that answers
+        # in prose does not have its "nothing was omitted" read as an omission.
+        return []
     raw = response.payload.get("undisclosed_changes")
     if not isinstance(raw, list):
         return []

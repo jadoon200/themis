@@ -44,10 +44,18 @@ VERDICT_SCHEMA: dict[str, Any] = {
 INTENT_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
+        # Asked as its own field rather than inferred from an empty list. Models say
+        # "nothing was omitted" *in* the list when the list is the only place to write,
+        # and everything downstream then reads that sentence as an omission. Telling
+        # them to return an empty list instead fixed the false alarms and cost two real
+        # catches: pushed toward silence, they went quiet on changes they had been
+        # describing correctly. A separate boolean lets the answer be direct and the
+        # "nothing here" case be unambiguous.
+        "description_covers_change": {"type": "boolean"},
         "undisclosed_changes": {"type": "array", "items": {"type": "string"}},
         "rationale": {"type": "string"},
     },
-    "required": ["undisclosed_changes", "rationale"],
+    "required": ["description_covers_change", "undisclosed_changes", "rationale"],
 }
 
 _SHARED_RULES = """You review changes to dbt SQL models that transform financial data.
@@ -256,10 +264,14 @@ or to how money is typed.
 Do not repeat findings that the automated checks already reported; they are shown to
 you as context, not as output.
 
-If the description covers the change, return an **empty list**. Do not write a sentence
-saying there is nothing undisclosed — an empty list is how you say that, and a sentence
-saying "nothing was omitted" is read by everything downstream as an omission having
-been found.""",
+Be direct about what you find. A description that calls a change "a tidy-up", "a
+simplification" or "no behaviour change" while the SQL alters money, filters, grain or
+incremental behaviour is exactly what you are here to catch, and saying so plainly is
+the job.
+
+Set `description_covers_change` to true when the author's description genuinely accounts
+for what the SQL does, and leave the list empty in that case. Never write a sentence
+saying nothing was omitted — that is what the boolean is for.""",
 )
 
 ALL_SPECIALISTS: tuple[Specialist, ...] = (
