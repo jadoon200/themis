@@ -129,6 +129,20 @@ def _render_finding(index: int, finding: Finding) -> str:
         lines += ["", f"**Suggested:** {finding.suggestion}"]
     if finding.llm_rationale:
         lines += ["", f"**Review note:** {finding.llm_rationale}"]
+    if finding.suggested_fix:
+        # Collapsed, and labelled as a proposal. It parses and it differs from the
+        # original, which is all that has been checked — a reviewer reads it the way
+        # they would read a colleague's suggestion, not a verified patch.
+        lines += [
+            "",
+            "<details><summary>Proposed fix — read it, do not apply it blind</summary>",
+            "",
+            "```sql",
+            finding.suggested_fix,
+            "```",
+            "",
+            "</details>",
+        ]
     return "\n".join(lines)
 
 

@@ -210,6 +210,9 @@ class Finding(BaseModel):
     verdict: Verdict = Verdict.UNDECIDABLE
     # Set when a specialist adjudicated it; absent on pure --no-llm runs.
     llm_rationale: str | None = None
+    # Corrected SQL a model proposed for this finding. Never applied, and discarded
+    # unless it parses in the target dialect and actually differs from the original.
+    suggested_fix: str | None = None
     suppressed_reason: str | None = None
 
     @property

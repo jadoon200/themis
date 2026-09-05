@@ -43,6 +43,7 @@ def _finding(finding: Finding, *, score: float, subsumed_by: str | None) -> dict
         # it, or a more precise rule already said it.
         "suppressed_reason": finding.suppressed_reason,
         "llm_rationale": finding.llm_rationale,
+        "suggested_fix": finding.suggested_fix,
     }
 
 

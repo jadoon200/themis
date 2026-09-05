@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 
 from themis.analyze.lineage import ColumnGraph
 from themis.config import Settings
-from themis.llm.context_pack import ContextPack, build_intent_pack, build_pack
+from themis.llm.context_pack import ContextPack, Section, build_intent_pack, build_pack
 from themis.llm.provider import Provider, Usage
 from themis.logging import get_logger
 from themis.models import Confidence, Finding, Grain, Severity, Verdict
@@ -190,6 +190,18 @@ def review(
             summary.suppressed += 1
         reviewed.append(updated)
 
+    # After adjudication, so nothing is written for a finding a specialist just
+    # refuted, and only for what a reviewer will actually be shown.
+    reviewed = _propose_fixes(
+        reviewed,
+        provider=provider,
+        settings=settings,
+        snapshot=snapshot,
+        grains=grains,
+        lineage=lineage,
+        usage=summary.usage,
+    )
+
     if pr_description:
         summary.undisclosed = _intent_pass(
             provider,
@@ -213,6 +225,42 @@ def review(
         tokens=summary.usage.prompt_tokens + summary.usage.completion_tokens,
     )
     return summary
+
+
+def _propose_fixes(
+    findings: list[Finding],
+    *,
+    provider: Provider,
+    settings: Settings,
+    snapshot: ProjectSnapshot,
+    grains: dict[str, Grain],
+    lineage: ColumnGraph | None,
+    usage: Usage,
+) -> list[Finding]:
+    """Attach corrected SQL where a model can write it, and nothing where it cannot.
+
+    Only for findings that still stand and that name a fragment of SQL. A finding a
+    specialist refuted needs no fix, and one about a config rather than a statement has
+    no fragment to rewrite.
+    """
+    from themis.review.fix import propose
+
+    out: list[Finding] = []
+    for finding in findings:
+        if finding.suppressed_reason or not finding.evidence.sql_after:
+            out.append(finding)
+            continue
+        pack = build_pack(
+            finding,
+            snapshot=snapshot,
+            grains=grains,
+            pr_description=None,
+            needs=frozenset({Section.RELATED_SQL, Section.GRAIN}),
+            lineage=lineage,
+        )
+        fixed = propose(finding, pack, provider=provider, settings=settings, usage=usage)
+        out.append(finding.model_copy(update={"suggested_fix": fixed}) if fixed else finding)
+    return out
 
 
 def _intent_pass(
