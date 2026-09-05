@@ -176,7 +176,7 @@ _ALL_INJECTED: tuple[Mutation, ...] = (
     Mutation(
         id="money_cast_to_double",
         pr_description=(
-            "Simplify the money() macro — drop the redundant cast wrapper so the expression reads"
+            "Simplify the money() macro — drop the redundant cast wrapper so the expression reads "
             "more clearly."
         ),
         description_is_honest=False,
@@ -201,7 +201,7 @@ _ALL_INJECTED: tuple[Mutation, ...] = (
     Mutation(
         id="filter_dropped_reversals",
         pr_description=(
-            "Remove a redundant predicate from the revenue filter — it was already covered by the"
+            "Remove a redundant predicate from the revenue filter — it was already covered by the "
             "account type check."
         ),
         description_is_honest=False,
@@ -224,7 +224,7 @@ _ALL_INJECTED: tuple[Mutation, ...] = (
     Mutation(
         id="period_boundary_shifted",
         pr_description=(
-            "Change the FX rate period from month to year granularity, so entries pick up the"
+            "Change the FX rate period from month to year granularity, so entries pick up the "
             "annual rate."
         ),
         description_is_honest=True,
@@ -238,7 +238,7 @@ _ALL_INJECTED: tuple[Mutation, ...] = (
     Mutation(
         id="incremental_guard_removed",
         pr_description=(
-            "Tidy up fct_revenue_incremental: remove some leftover scaffolding from the sourceCTE."
+            "Tidy up fct_revenue_incremental: remove leftover scaffolding from the source CTE."
         ),
         description_is_honest=False,
         kind=Kind.LATENT,
@@ -284,10 +284,13 @@ _ALL_INJECTED: tuple[Mutation, ...] = (
     Mutation(
         id="column_removed_with_consumers",
         pr_description=(
-            "Drop currency_code from fct_revenue. Downstream consumers are updated in a follow-up"
-            "PR."
+            "Drop currency_code from fct_revenue. Downstream consumers are updated in a "
+            "follow-up PR."
         ),
-        description_is_honest=True,
+        # Misleading on reflection: the description asserts the downstream is handled
+        # elsewhere and it is not — the consumers still select the column. Intent
+        # saying so is a catch, and scoring it as a false alarm was my labelling error.
+        description_is_honest=False,
         kind=Kind.DEFECT,
         expects_family="F6",
         description="currency_code dropped from fct_revenue while downstream still selects it",
@@ -475,8 +478,8 @@ _ALL_INJECTED: tuple[Mutation, ...] = (
             "layout while new writes use the new one"
         ),
         relative_path=_INCREMENTAL,
-        find="    properties={'partitioned_by': \"ARRAY['period_month']\"},",
-        replace="    properties={'partitioned_by': \"ARRAY['posting_date']\"},",
+        find="{'partitioned_by': \"ARRAY['period_month']\"}",
+        replace="{'partitioned_by': \"ARRAY['posting_date']\"}",
     ),
     Mutation(
         id="partition_overwrite_hook_removed",
@@ -575,7 +578,7 @@ _ALL_INJECTED: tuple[Mutation, ...] = (
     Mutation(
         id="sign_convention_flipped",
         pr_description=(
-            "Fix the debit/credit branch in signed_amount, which had the wrong entry type on the"
+            "Fix the debit/credit branch in signed_amount, which had the wrong entry type on the "
             "first arm."
         ),
         description_is_honest=False,

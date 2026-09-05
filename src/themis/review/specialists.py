@@ -253,8 +253,13 @@ checks found. List anything the change does that the description does not mentio
 particularly changes to incremental behaviour, to models tagged regulatory or recon,
 or to how money is typed.
 
-List nothing if the description covers the change. Do not repeat findings that the
-automated checks already reported; they are shown to you as context, not as output.""",
+Do not repeat findings that the automated checks already reported; they are shown to
+you as context, not as output.
+
+If the description covers the change, return an **empty list**. Do not write a sentence
+saying there is nothing undisclosed — an empty list is how you say that, and a sentence
+saying "nothing was omitted" is read by everything downstream as an omission having
+been found.""",
 )
 
 ALL_SPECIALISTS: tuple[Specialist, ...] = (

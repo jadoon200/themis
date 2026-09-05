@@ -50,6 +50,11 @@ class MutationOutcome:
     # answer for an honest description and a miss for a misleading one, so it has to
     # be kept rather than counted.
     undisclosed: tuple[str, ...] = ()
+    # Findings that came back with corrected SQL attached, and findings that could have.
+    # The ratio is the measurement: a pass that proposes nothing is not earning its
+    # calls, and one that proposes for everything is probably guessing.
+    fixes_proposed: int = 0
+    fixable_findings: int = 0
     # Individual rule ids, not just families. A family can look well covered while
     # three of its rules have never fired on a real case -- which has happened here,
     # to rules whose unit tests all passed.
@@ -329,6 +334,8 @@ def run_mutation(
 
     llm = result.llm
     undisclosed = tuple(llm.undisclosed) if llm else ()
+    fixes = sum(1 for f in result.findings if f.suggested_fix)
+    fixable = sum(1 for f in result.findings if f.evidence.sql_after and not f.suppressed_reason)
     return MutationOutcome(
         mutation=mutation,
         applied=True,
@@ -339,6 +346,8 @@ def run_mutation(
         rules_fired=rules,
         severities=severities,
         undisclosed=undisclosed,
+        fixes_proposed=fixes,
+        fixable_findings=fixable,
         expected_family_fired=mutation.expects_family in families,
         finding_count=len(result.findings),
         row_delta=row_delta,

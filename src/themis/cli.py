@@ -774,6 +774,16 @@ def eval_cmd(
             typer.echo(f"  {mark:7s} {outcome.mutation.id}")
         typer.echo("")
 
+    fixable = sum(o.fixable_findings for o in report.usable)
+    if fixable and use_llm:
+        proposed = sum(o.fixes_proposed for o in report.usable)
+        typer.echo(
+            f"proposed fixes: {proposed}/{fixable} findings came back with corrected SQL "
+            "(a proposal that does not parse, or that echoes the original, is discarded "
+            "before it is counted)"
+        )
+        typer.echo("")
+
     described = report.with_description
     if described and use_llm:
         misleading = [o for o in described if not o.mutation.description_is_honest]
