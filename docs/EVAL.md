@@ -958,6 +958,16 @@ Kept current. Several entries here were closed and are gone rather than left sta
 a limitations list that lags the code is worse than none, because it teaches the reader
 to discount the rest of it.
 
+- **The corpus has no set-operation mutation, and a real false negative hid there.**
+  Grain propagation inherited a proven key across `UNION ALL` — one dependency, no join,
+  a projection carrying the key straight through, every pass-through condition satisfied,
+  and every row doubled. Because `PROPAGATED` counts as proven, `F1` read the inherited
+  key as covering the join keys and returned before writing a finding: not a demotion, no
+  finding at all. Forty-two mutations, 29/29 rule coverage and 100% recall could not see
+  it, because none of them unions anything. It is guarded and unit-tested now, and the
+  corpus gap is the honest part of the entry — a mutation for it would have to be written
+  against a demo model that unions, and inventing one to close a gap discovered by
+  reading is how a corpus starts measuring its author's imagination instead of the tool.
 - **The Trino demo build is only idempotent under `--full-refresh`.** All eighteen
   models build on Trino from cold, which is what CI does — a fresh service container
   every run. A *second* incremental run of the same table fails: the memory connector

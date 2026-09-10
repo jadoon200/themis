@@ -94,3 +94,40 @@ def test_an_empty_review_renders_a_valid_document() -> None:
     doc = _render(findings=[])
     assert doc["schema_version"] == 1
     assert doc["findings"] == []
+
+
+# --- the model layer, and the one output no rule could have produced ------------
+
+
+def test_the_intent_pass_reaches_the_artifact() -> None:
+    """What the description does not account for has no finding to attach to, which is
+    how it went missing from this format on the first pass. It is also the only thing
+    here a rule could not have produced, so a gate reading JSON must be able to see it.
+    """
+    from themis.llm.provider import Usage
+    from themis.review.supervisor import ReviewSummary
+
+    summary = ReviewSummary(
+        undisclosed=["the is_incremental() guard was removed"],
+        adjudicated=2,
+        settled_without_llm=3,
+        suppressed=0,
+        explained=1,
+        usage=Usage(calls=6, prompt_tokens=900, completion_tokens=100),
+    )
+    payload = json.loads(json_out.render([_finding()], llm=summary))
+    layer = payload["model_layer"]
+    assert layer["undisclosed_changes"] == ["the is_incremental() guard was removed"]
+    assert layer["adjudicated"] == 2
+    assert layer["settled_without_llm"] == 3
+    assert layer["suppressed"] == 0
+    assert layer["explained"] == 1
+    assert layer["calls"] == 6
+    assert layer["tokens"] == 1000
+
+
+def test_a_no_llm_run_says_so_rather_than_reporting_an_idle_layer() -> None:
+    """Null distinguishes a review with no model layer from one whose layer did nothing.
+    An empty object would read as the second and hide the first."""
+    payload = json.loads(json_out.render([_finding()]))
+    assert payload["model_layer"] is None

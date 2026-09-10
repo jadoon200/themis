@@ -206,6 +206,7 @@ def review(
                 degraded_reason=result.degraded_reason,
                 governed_models=result.governed_models,
                 untested_grains=result.untested_grains,
+                llm=result.llm,
             )
         )
         log.info("review.json_written", path=str(json_out), findings=len(result.findings))

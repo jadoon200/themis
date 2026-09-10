@@ -243,3 +243,59 @@ def test_propagation_never_inherits_from_a_guess() -> None:
     child.depends_on_models = ("model.test.stg",)
     parent = {"stg": Grain(model_name="stg", columns=("id",), source=GrainSource.HEURISTIC)}
     assert _propagate(child, parent, "trino") is None
+
+
+def test_propagation_refuses_a_union_all_of_the_same_upstream() -> None:
+    """`UNION ALL` duplicates rows, so the parent's key is not this model's key.
+
+    It clears every other pass-through condition — one dependency, no join, and a
+    projection carrying the key straight through — which is what made it dangerous:
+    PROPAGATED counts as proven, so F1 read the inherited key as "the join key covers
+    a proven unique key: safe" and never reported the fan-out.
+    """
+    from themis.analyze.grain import _propagate
+    from themis.models import Grain, GrainSource
+
+    snapshot = _snapshot(
+        child="select id, amount from stg union all select id, amount from stg",
+    )
+    child = snapshot.models["child"]
+    child.depends_on_models = ("model.test.stg",)
+    parent = {"stg": Grain(model_name="stg", columns=("id",), source=GrainSource.STRUCTURAL)}
+    assert _propagate(child, parent, "trino") is None
+
+
+@pytest.mark.parametrize("operator", ["union", "union all", "except", "intersect"])
+def test_propagation_refuses_every_set_operation(operator: str) -> None:
+    """Each one changes the population rather than passing it through.
+
+    `UNION` and `INTERSECT` happen to dedup, but only on the whole projection rather
+    than on the key — and a grain that holds by coincidence is the kind of claim this
+    derivation exists not to make.
+    """
+    from themis.analyze.grain import _propagate
+    from themis.models import Grain, GrainSource
+
+    snapshot = _snapshot(child=f"select id from stg {operator} select id from other")
+    child = snapshot.models["child"]
+    child.depends_on_models = ("model.test.stg",)
+    parent = {"stg": Grain(model_name="stg", columns=("id",), source=GrainSource.STRUCTURAL)}
+    assert _propagate(child, parent, "trino") is None
+
+
+def test_propagation_refuses_a_union_hidden_in_a_cte() -> None:
+    """The outer select passes through, so the union is where the grain broke."""
+    from themis.analyze.grain import _propagate
+    from themis.models import Grain, GrainSource
+
+    snapshot = _snapshot(
+        child=(
+            "with combined as ("
+            "  select id, amount from stg union all select id, amount from stg"
+            ") select id, amount from combined"
+        ),
+    )
+    child = snapshot.models["child"]
+    child.depends_on_models = ("model.test.stg",)
+    parent = {"stg": Grain(model_name="stg", columns=("id",), source=GrainSource.STRUCTURAL)}
+    assert _propagate(child, parent, "trino") is None

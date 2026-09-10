@@ -341,6 +341,16 @@ def _propagate(model: ModelNode, grains: dict[str, Grain], dialect: str) -> Grai
     if list(tree.find_all(exp.Join)):
         return None
 
+    # A set operation is the other way grain changes without a join. `UNION ALL` of one
+    # upstream has a single dependency, no join, and a projection that carries the key
+    # straight through -- and it still duplicates every row, so the parent's key is not
+    # this model's key. Inheriting anyway is worse than admitting we do not know: since
+    # PROPAGATED counts as proven, F1 reads the inherited key as "the join key covers a
+    # proven unique key: safe" and a real fan-out is never reported. Refused for EXCEPT
+    # and INTERSECT too, which change the population rather than passing it through.
+    if list(tree.find_all(exp.SetOperation)):
+        return None
+
     # The key must still be emitted. A pass-through that projects a subset can drop
     # part of the parent's key, and the rows are then no longer unique on what is
     # left — inheriting it anyway would assert uniqueness the data does not have.

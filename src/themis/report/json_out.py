@@ -18,6 +18,7 @@ import json
 from typing import Any
 
 from themis.models import ExecutionDelta, Finding, Grain
+from themis.review.supervisor import ReviewSummary
 from themis.rules.base import SkippedRule
 from themis.triage.rubric import triage
 
@@ -73,6 +74,30 @@ def _grain(grain: Grain) -> dict[str, Any]:
     }
 
 
+def _model_layer(llm: ReviewSummary) -> dict[str, Any]:
+    """What the model layer contributed, and what it cost.
+
+    Carried because it is the part of a review a reader is most entitled to distrust.
+    A consumer trending false positives needs to know whether a finding was adjudicated
+    or settled without a model call, and `suppressed` is the number that would show this
+    layer starting to hide things.
+    """
+    return {
+        "adjudicated": llm.adjudicated,
+        "settled_without_llm": llm.settled_without_llm,
+        "suppressed": llm.suppressed,
+        "rejected_by_selfcheck": llm.rejected_by_selfcheck,
+        "explained": llm.explained,
+        # The intent pass: what the author's description does not account for. It has no
+        # rule behind it and so no finding to attach to, which is why it went missing
+        # from this format on the first pass — and it is the one output here that a rule
+        # could not have produced.
+        "undisclosed_changes": list(llm.undisclosed),
+        "calls": llm.usage.calls,
+        "tokens": llm.usage.prompt_tokens + llm.usage.completion_tokens,
+    }
+
+
 def render(
     findings: list[Finding],
     *,
@@ -84,6 +109,7 @@ def render(
     degraded_reason: str | None = None,
     governed_models: frozenset[str] = frozenset(),
     untested_grains: tuple[str, ...] = (),
+    llm: ReviewSummary | None = None,
 ) -> str:
     """One review as JSON, including what it could not check."""
     triaged = triage(findings, governed_models=governed_models)
@@ -105,6 +131,9 @@ def render(
             "grains": [_grain(g) for _, g in sorted((grains or {}).items())],
             "execution_deltas": [_delta(d) for _, d in sorted((deltas or {}).items())],
             "untested_grains": list(untested_grains),
+            # None rather than an empty object on a --no-llm run: a reader can tell a
+            # review that had no model layer from one whose model layer did nothing.
+            "model_layer": _model_layer(llm) if llm is not None else None,
         },
         indent=2,
     )

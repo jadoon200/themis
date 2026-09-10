@@ -22,6 +22,7 @@ from themis.logging import get_logger
 from themis.models import Confidence, Finding, Grain, Severity, Verdict
 from themis.review import selfcheck
 from themis.review.explain import explain
+from themis.review.fix import propose
 from themis.review.specialists import (
     INTENT,
     Adjudication,
@@ -243,8 +244,6 @@ def _propose_fixes(
     specialist refuted needs no fix, and one about a config rather than a statement has
     no fragment to rewrite.
     """
-    from themis.review.fix import propose
-
     out: list[Finding] = []
     for finding in findings:
         if finding.suppressed_reason or not finding.evidence.sql_after:
@@ -302,11 +301,26 @@ def _intent_pass(
         return []
 
     usage.add(response.usage)
+    raw = response.payload.get("undisclosed_changes")
+    items: list[str] = []
+    if isinstance(raw, list):
+        items = [str(item).strip() for item in raw if str(item).strip()]
+
     if response.payload.get("description_covers_change"):
         # Said plainly rather than inferred from an empty list, so a model that answers
         # in prose does not have its "nothing was omitted" read as an omission.
+        #
+        # The boolean wins over the list, and it has to: the artefact this exists to
+        # absorb *is* a non-empty list — "nothing was omitted" written as an item — so
+        # a guard that kept the list whenever it had contents would let the false alarm
+        # straight back in. The two cases are indistinguishable by shape.
+        #
+        # What is not acceptable is doing it silently. A model that sets the boolean and
+        # then lists something substantive has contradicted itself, and that is either a
+        # real catch being dropped or the artefact being absorbed as designed — which of
+        # the two is not knowable from the counters, only from the text. So it is logged
+        # in full, the way a rejected self-check verdict is.
+        if items:
+            log.warning("intent.discarded_by_boolean", items=items[:8])
         return []
-    raw = response.payload.get("undisclosed_changes")
-    if not isinstance(raw, list):
-        return []
-    return [str(item).strip() for item in raw if str(item).strip()][:8]
+    return items[:8]
