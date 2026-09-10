@@ -22,6 +22,7 @@ from themis.logging import get_logger
 from themis.models import Confidence, Finding, Grain, Severity, Verdict
 from themis.review import selfcheck
 from themis.review.explain import explain
+from themis.review.fix import propose
 from themis.review.specialists import (
     INTENT,
     Adjudication,
@@ -243,8 +244,6 @@ def _propose_fixes(
     specialist refuted needs no fix, and one about a config rather than a statement has
     no fragment to rewrite.
     """
-    from themis.review.fix import propose
-
     out: list[Finding] = []
     for finding in findings:
         if finding.suppressed_reason or not finding.evidence.sql_after:

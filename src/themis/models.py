@@ -124,10 +124,18 @@ class Grain(BaseModel):
 
         ``PROPAGATED`` belongs here, which it did not always. Inheritance only happens
         from a parent that was itself proven, across a single upstream, with no join,
-        and only when the key survives the projection — so a propagated grain is a
-        derivation, not a guess. Excluding it meant a dimension selecting straight from
-        a tested staging model counted as having no known key at all, and every join
-        onto it was reported as a possible fan-out.
+        no set operation, and only when the key survives the projection — so a
+        propagated grain is a derivation, not a guess. Excluding it meant a dimension
+        selecting straight from a tested staging model counted as having no known key at
+        all, and every join onto it was reported as a possible fan-out.
+
+        Those conditions are what makes the chain sound, not just one hop of it. A
+        propagated grain becomes a parent on the next pass of the fixpoint in
+        ``infer_grains``, so a staging → intermediate → mart run of pass-throughs
+        inherits the whole way down — and each link re-proves every condition rather
+        than trusting the link above it. The set-operation condition was missing at
+        first, and a ``UNION ALL`` of one upstream satisfies every other one while
+        doubling the rows.
         """
         return self.source in (
             GrainSource.MEASURED,
