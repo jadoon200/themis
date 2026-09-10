@@ -587,3 +587,27 @@ def test_intent_uses_the_supervisor_model_not_the_specialist_one() -> None:
     """Judgement rather than a narrow check, and it happens once per review."""
     _, provider = _intent({"description_covers_change": False, "undisclosed_changes": []})
     assert provider.models == [Settings().llm_supervisor_model]
+
+
+def test_a_re_record_replaces_rather_than_accumulates(tmp_path: Any) -> None:
+    """Merging is how a stale recording hides.
+
+    A key is a hash of the prompt, so editing a prompt does not update its entry — it
+    orphans it and adds a second. The file then holds two answers, only one of which is
+    to a question still being asked, and nothing distinguishes them.
+    """
+    from themis.llm.cassette import Cassette
+
+    path = tmp_path / "review.json"
+    first = Cassette(path)
+    first.put("old-prompt-key", {"verdict": "confirm"}, note="the prompt before the edit")
+    first.save()
+
+    merged = Cassette(path)
+    assert len(merged) == 1
+
+    fresh = Cassette(path, load=False)
+    fresh.put("new-prompt-key", {"verdict": "refute"}, note="the prompt after the edit")
+    fresh.save()
+    assert len(Cassette(path)) == 1
+    assert Cassette(path).get("old-prompt-key") is None

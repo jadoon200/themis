@@ -38,10 +38,19 @@ def cassette_key(*, system: str, prompt: str, model: str) -> str:
 class Cassette:
     """A file of recorded exchanges."""
 
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, *, load: bool = True) -> None:
+        """``load=False`` starts empty, so a re-record replaces rather than accumulates.
+
+        Accumulating is how a stale recording hides. A key is a hash of the prompt, so
+        editing a prompt does not update its entry — it orphans it and adds a second
+        one, and the file then holds two answers to questions only one of which is still
+        being asked, with nothing to tell them apart. The recorder replays every scenario
+        it has, so a fresh file is complete by construction and anything that would have
+        survived a merge was dead.
+        """
         self.path = path
         self._entries: dict[str, dict[str, Any]] = {}
-        if path.exists():
+        if load and path.exists():
             self._entries = json.loads(path.read_text())
 
     def get(self, key: str) -> dict[str, Any] | None:

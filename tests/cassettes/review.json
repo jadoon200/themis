@@ -1,29 +1,37 @@
 {
-  "40de9375d623d7b7231897055c8245b4": {
+  "4ed915cb1f4aa5d2d44dc3db3288b524": {
+    "_note": "## What was measured",
+    "confidence": "likely",
+    "evidence_quote": "cast(entries.amount_txn_ccy / rates.rate as decimal(38, 6))",
+    "hypothesis": "The change in the sum(amount_usd) is caused by the division operation replacing multiplication in the amount conversion logic."
+  },
+  "5818138641ce2797bb5857a647545a88": {
+    "_note": "## What the author said this change does",
+    "description_covers_change": false,
+    "rationale": "The author claimed to simplify the FX join, but the change adds a new join to stg_fx_rates, which could alter the data transformation logic and potentially impact the results.",
+    "undisclosed_changes": [
+      "The change introduces a new join to stg_fx_rates, which was not mentioned in the author's description of simplifying the FX join."
+    ]
+  },
+  "6264e580ab505229af323b6f363cd193": {
     "_note": "## The finding",
-    "evidence_quote": "-- Monthly FX rates to USD. Grain is (currency_code, rate_date) -- there are several rows per currency, one per month...",
-    "rationale": "The SQL of stg_fx_rates shows it is grainned by (currency_code, rate_date), but the join only uses currency_code. This will multiply rows if multiple rate dates exist for the same currency, confirming the risk.",
+    "evidence_quote": "-- Monthly FX rates to USD. Grain is (currency_code, rate_date) -- there are several rows per currency, one per month, which is exactly why every join to this model must carry the date predicate as well as the currency.",
+    "rationale": "The SQL for stg_fx_rates shows it has multiple rows per currency_code (one per month). The join on currency_code alone will multiply rows, leading to duplicated amounts. The evidence_quote is: '-- Monthly FX rates to USD. Grain is (currency_code, rate_date) -- there are several rows per currency, one per month...'",
     "severity": "high",
     "verdict": "confirm"
   },
-  "559529e7bef0b4ed27cde3527be3f3d8": {
-    "_note": "## What the author said this change does",
-    "rationale": "The author claimed to simplify the FX join, but the change adds a new join to stg_fx_rates, which could alter the logic and potentially fan out results. This change is not covered by the author's description.",
-    "undisclosed_changes": [
-      "The change introduces a new join to stg_fx_rates in int_gl_entries_converted, which was not mentioned in the author's description."
-    ]
+  "788686c996a8a519f60d353218cfad1c": {
+    "_note": "## The finding",
+    "can_fix": true,
+    "explanation": "The join condition was updated to include both `currency_code` and `rate_date` to ensure it joins on the correct grain, preventing a fan-out issue.",
+    "fixed_sql": "INNER JOIN rates ON entries.currency_code = rates.currency_code AND entries.rate_date = rates.rate_date"
   },
-  "6775471b8a215093f1799eb97fbf4c8e": {
-    "_note": "## What was measured",
-    "confidence": "likely",
-    "evidence_quote": "-    cast(entries.amount_txn_ccy * rates.rate as decimal(38, 6))\n+    cast(entries.amount_txn_ccy / rates.rate as decimal(38, 6))",
-    "hypothesis": "The change in the sum(amount_usd) is caused by dividing instead of multiplying the amount_txn_ccy by the exchange rate."
-  },
-  "e7a7422ece5b733de9998c53a4795eed": {
+  "ae03cc6dedce5b8e2ec994d146a53ff3": {
     "_note": "## What the author said this change does",
-    "rationale": "The author's description does not explain why the model changed, and the automated check flags this as an unexplained change. This raises a risk that the simplification may have unintended effects on the model's output.",
+    "description_covers_change": false,
+    "rationale": "The author claimed to simplify the FX join by removing a redundant period predicate, but this change could affect the grain and filtering of the model. The automated check flagged this as an unexplained change.",
     "undisclosed_changes": [
-      "The author claimed to simplify the FX join by removing a redundant period predicate, but the automated checks found that `int_gl_entries_converted` changed without an explained reason. This suggests the change may have altered the logic in a way not described, potentially affecting the correctness of the model."
+      "The change removes a period predicate from the FX join, which could alter the grain of the model by filtering out entries outside the specified period. This change is not mentioned in the author's description."
     ]
   }
 }

@@ -54,7 +54,9 @@ def main() -> int:
     base = _git(repo, "rev-parse", "main").strip()
     relative = project.resolve().relative_to(repo.resolve())
 
-    cassette = Cassette(CASSETTE)
+    # Fresh, not merged: a prompt edit orphans its old key rather than replacing it,
+    # so merging keeps answers to questions nothing asks any more.
+    cassette = Cassette(CASSETTE, load=False)
     provider = RecordingProvider(build_provider(settings), cassette)
 
     for mutation_id, execute in SCENARIOS:
@@ -90,6 +92,15 @@ def main() -> int:
                     run_llm=True,
                     pr_description=("Simplify the FX join; the period predicate was redundant."),
                     provider=provider,
+                    # The worktree holds the code; the data lives only in the original
+                    # project, because the database file is gitignored. Without this a
+                    # macro that queries at compile time read an empty database, dbt
+                    # aborted, every model lost its compiled SQL, and all 20 rules
+                    # skipped -- so there were no findings to adjudicate and the
+                    # specialist path recorded nothing. The harness had this from the
+                    # start; the recorder never did, and the cassette kept the last
+                    # verdict recorded before it broke.
+                    data_anchor=project.resolve(),
                 )
             finally:
                 _git(repo, "worktree", "remove", "--force", str(tree))
