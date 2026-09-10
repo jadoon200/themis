@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from structlog.testing import capture_logs
+
 from themis.config import Settings
 from themis.llm.context_pack import ContextPack, build_pack
 from themis.llm.provider import LLMError, Response, Usage
@@ -493,3 +495,95 @@ def test_a_logged_quote_says_when_it_was_truncated() -> None:
     assert "truncated for the log" in logged
     assert str(len(long_quote)) in logged
     assert selfcheck._for_log("short one") == "short one"
+
+
+# --- intent: the boolean, and what it is allowed to throw away -----------------
+
+
+def _intent(payload: dict[str, Any]) -> tuple[list[str], FakeProvider]:
+    provider = FakeProvider(payload)
+    said = supervisor._intent_pass(
+        provider,
+        settings=Settings(),
+        findings=[_finding()],
+        changed_models=("fct_revenue",),
+        pr_description="Tidy up the source CTE; no behaviour change.",
+        snapshot=_snapshot(),
+        usage=Usage(),
+    )
+    return said, provider
+
+
+def test_intent_reports_what_the_description_left_out() -> None:
+    said, _ = _intent(
+        {
+            "description_covers_change": False,
+            "undisclosed_changes": ["the is_incremental() guard was removed"],
+            "rationale": "not mentioned",
+        }
+    )
+    assert said == ["the is_incremental() guard was removed"]
+
+
+def test_the_boolean_absorbs_the_nothing_here_artefact() -> None:
+    """What the boolean exists for: models write "nothing was omitted" as an *item*,
+    because the list is the only place to write, and everything downstream then reads
+    that sentence as an omission having been found."""
+    said, _ = _intent(
+        {
+            "description_covers_change": True,
+            "undisclosed_changes": ["Nothing was omitted from the description."],
+            "rationale": "the description matches the SQL",
+        }
+    )
+    assert said == []
+
+
+def test_a_contradicted_boolean_is_logged_rather_than_discarded_in_silence() -> None:
+    """The boolean still wins, and it has to: the artefact it absorbs is itself a
+    non-empty list, so keeping the list whenever it had contents would let the false
+    alarm straight back in. But a model that sets the boolean and then names something
+    substantive has contradicted itself, and which of the two happened is not knowable
+    from the counters — only from the text. So the text is logged."""
+    with capture_logs() as logs:
+        said, _ = _intent(
+            {
+                "description_covers_change": True,
+                "undisclosed_changes": ["the sign convention on signed_amount was flipped"],
+                "rationale": "covered",
+            }
+        )
+    assert said == []
+    discarded = [entry for entry in logs if entry["event"] == "intent.discarded_by_boolean"]
+    assert discarded and "signed_amount" in discarded[0]["items"][0]
+
+
+def test_intent_survives_a_model_that_answers_in_the_wrong_shape() -> None:
+    """A string where a list belongs is the model failing, not the review failing."""
+    said, _ = _intent(
+        {"description_covers_change": False, "undisclosed_changes": "a sentence", "rationale": ""}
+    )
+    assert said == []
+
+
+def test_intent_never_runs_without_a_description() -> None:
+    """No description is not the same as an honest one, and there is nothing to compare
+    the SQL against."""
+    provider = FakeProvider({"description_covers_change": False, "undisclosed_changes": ["x"]})
+    said = supervisor._intent_pass(
+        provider,
+        settings=Settings(),
+        findings=[_finding()],
+        changed_models=("fct_revenue",),
+        pr_description="   ",
+        snapshot=_snapshot(),
+        usage=Usage(),
+    )
+    assert said == []
+    assert provider.prompts == []
+
+
+def test_intent_uses_the_supervisor_model_not_the_specialist_one() -> None:
+    """Judgement rather than a narrow check, and it happens once per review."""
+    _, provider = _intent({"description_covers_change": False, "undisclosed_changes": []})
+    assert provider.models == [Settings().llm_supervisor_model]
