@@ -211,3 +211,58 @@ def test_a_real_fan_out_still_fires_after_a_rename() -> None:
     findings = JoinFanOutRule().check(_ctx(SAFE_JOIN, renamed_and_broken, {}))
     assert len(findings) == 1
     assert "stg_rates" in findings[0].title
+
+
+def test_a_grain_column_named_only_on_the_other_side_does_not_cover_the_key() -> None:
+    """`e.period = r.effective` constrains r on `effective`, not on `period`."""
+    after = """
+    with entries as (select * from stg_entries),
+         rates as (select * from stg_rates)
+    select e.id, r.rate
+    from entries e
+    inner join rates r on e.ccy = r.ccy and e.period = r.effective
+    """
+    grains = {"stg_rates": _grain(GrainSource.DECLARED_TEST, "ccy", "period")}
+    assert JoinFanOutRule().check(_ctx(None, after, grains))
+
+
+def test_a_using_join_is_keyed_on_its_using_columns() -> None:
+    after = """
+    with entries as (select * from stg_entries),
+         rates as (select * from stg_rates)
+    select entries.id, rates.rate
+    from entries
+    inner join rates using (ccy, period)
+    """
+    grains = {"stg_rates": _grain(GrainSource.DECLARED_TEST, "ccy", "period")}
+    assert JoinFanOutRule().check(_ctx(None, after, grains)) == []
+
+
+def test_a_join_onto_a_model_that_fans_out_after_its_own_dedup_is_reported() -> None:
+    """End to end through derivation: this model's grain used to be proven, and F1001
+    returned nothing at all for a join onto it."""
+    from themis.analyze.grain import infer_grains
+
+    latest_accounts = """
+    with ranked as (
+        select *, row_number() over (partition by account_id order by updated_at desc) as rn
+        from raw_accounts
+    ),
+    latest as (select * from ranked where rn = 1)
+    select l.account_id, o.owner_name
+    from latest l join raw_owners o on o.account_id = l.account_id
+    """
+    snapshot = ProjectSnapshot(
+        revision="r",
+        backend=Backend.MANIFEST,
+        models={"dim_latest_accounts": _model("dim_latest_accounts", latest_accounts)},
+    )
+    grains = infer_grains(snapshot)
+    after = """
+    with entries as (select * from stg_entries),
+         accounts as (select * from dim_latest_accounts)
+    select e.id, a.owner_name
+    from entries e
+    join accounts a on a.account_id = e.account_id
+    """
+    assert JoinFanOutRule().check(_ctx(None, after, grains))

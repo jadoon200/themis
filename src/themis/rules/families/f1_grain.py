@@ -37,11 +37,27 @@ FAMILY = "F1"
 
 
 def _join_key_columns(join: exp.Join) -> tuple[str, ...]:
-    """Column names appearing in a join's ON condition."""
+    """Columns of the joined relation that its ON (or USING) condition constrains.
+
+    Only the joined side counts. Whether the join multiplies rows depends on how many
+    rows of *that* relation match, so a grain column named on the other side constrains
+    nothing — reading ``on e.rate_date = r.effective_date`` as keyed on ``rate_date``
+    would let a key the right side does not have cover its grain. Unqualified columns
+    are kept, since they cannot be placed.
+    """
+    using = join.args.get("using")
+    if using:
+        return tuple(dict.fromkeys(item.name for item in using if item.name))
     on = join.args.get("on")
     if on is None:
         return ()
-    return tuple(dict.fromkeys(col.name for col in on.find_all(exp.Column)))
+    target = join.this
+    names = {target.alias_or_name, getattr(target, "name", "")} - {""}
+    return tuple(
+        dict.fromkeys(
+            col.name for col in on.find_all(exp.Column) if not col.table or col.table in names
+        )
+    )
 
 
 def _joined_relation_name(join: exp.Join) -> str | None:

@@ -37,33 +37,141 @@ log = get_logger(__name__)
 _KEY_SUFFIXES = ("_id", "_key", "_sk", "_pk", "_code")
 
 
-def _column_names(expressions: list[exp.Expression]) -> tuple[str, ...]:
-    """Best-effort column names from a GROUP BY or DISTINCT ON list.
+def _as_select(node: exp.Expression | None) -> exp.Select | None:
+    """The SELECT a node *is*, looking through parentheses — never one it merely contains.
 
-    Positional group-by (``GROUP BY 1, 2``) resolves against the select list; anything
-    that is a computed expression rather than a plain column is skipped, because a
-    grain we cannot name is not one we can check a join against.
+    ``node.find(exp.Select)`` answered a different question, and it was the wrong one for
+    a set operation: the first branch of a ``UNION ALL`` is a select, and its grain was
+    reported as the grain of the union that duplicates its rows.
     """
-    names: list[str] = []
-    for expression in expressions:
-        if isinstance(expression, exp.Column):
-            names.append(expression.name)
-        elif isinstance(expression, exp.Alias):
-            names.append(expression.alias)
-    return tuple(names)
+    while isinstance(node, (exp.Subquery, exp.Paren)):
+        node = node.this
+    return node if isinstance(node, exp.Select) else None
 
 
-def _resolve_positional_group_by(select: exp.Select, group: exp.Group) -> tuple[str, ...]:
-    """Turn ``GROUP BY 1, 2`` into column names using the select list."""
-    projections = select.expressions
+def _output_name(select: exp.Select, expression: exp.Expression) -> str | None:
+    """The name a grouped or distinct expression has in this select's output, if any.
+
+    A key has to be something the model emits. ``group by account_id`` projected as
+    ``account_id as acct`` is unique on ``acct``; ``group by date_trunc('month', d)``
+    projected as ``period`` is unique on ``period``; an expression the projection never
+    names cannot be checked against a join key at all.
+    """
+    if isinstance(expression, exp.Literal) and expression.is_int:
+        index = int(expression.name) - 1
+        if 0 <= index < len(select.expressions):
+            target = select.expressions[index]
+            return target.alias_or_name or None
+        return None
+    for projection in select.expressions:
+        inner = projection.this if isinstance(projection, exp.Alias) else projection
+        same_column = (
+            isinstance(inner, exp.Column)
+            and isinstance(expression, exp.Column)
+            and inner.name == expression.name
+        )
+        if same_column or inner == expression:
+            return projection.alias_or_name or None
+    return None
+
+
+def _group_by_grain(select: exp.Select) -> tuple[str, ...] | None:
+    """The key a GROUP BY proves, or None unless every grouped expression is named.
+
+    Skipping what cannot be named used to shrink the key instead: ``group by a,
+    date_trunc('month', d)`` became unique on ``(a)``, which it is not. A key that is a
+    strict subset of the real one is a false proof, and F1 trusts proofs.
+
+    ``ROLLUP``, ``CUBE`` and ``GROUPING SETS`` emit subtotal rows alongside the detail,
+    so no list of grouped columns is a key for them.
+    """
+    group = select.args.get("group")
+    if not isinstance(group, exp.Group):
+        return None
+    if any(group.args.get(arg) for arg in ("rollup", "cube", "grouping_sets")):
+        return None
+    if not group.expressions:
+        return None
     names: list[str] = []
     for expression in group.expressions:
-        if isinstance(expression, exp.Literal) and expression.is_int:
-            index = int(expression.name) - 1
-            if 0 <= index < len(projections):
-                target = projections[index]
-                names.append(target.alias if isinstance(target, exp.Alias) else target.name)
-    return tuple(names)
+        name = _output_name(select, expression)
+        if name is None:
+            return None
+        names.append(name)
+    return tuple(dict.fromkeys(names))
+
+
+def _distinct_grain(select: exp.Select) -> tuple[str, ...] | None:
+    """The key a SELECT DISTINCT proves: every projected column, or nothing.
+
+    Dropping an unnamed expression from the list narrowed the key exactly as it did for
+    GROUP BY. A star cannot be enumerated here either.
+    """
+    if not select.args.get("distinct"):
+        return None
+    names: list[str] = []
+    for projection in select.expressions:
+        if isinstance(projection, exp.Star) or (
+            isinstance(projection, exp.Column) and isinstance(projection.this, exp.Star)
+        ):
+            return None
+        name = projection.alias_or_name
+        if not name or not isinstance(projection, (exp.Alias, exp.Column)):
+            return None
+        names.append(name)
+    return tuple(names) or None
+
+
+def _conjuncts(expression: exp.Expression) -> list[exp.Expression]:
+    """The top-level AND-ed terms of a predicate. A term under OR or NOT is not one."""
+    while isinstance(expression, exp.Paren):
+        expression = expression.this
+    if isinstance(expression, exp.And):
+        return [*_conjuncts(expression.this), *_conjuncts(expression.expression)]
+    return [expression]
+
+
+def _pinned_to_one(select: exp.Select) -> set[str]:
+    """Columns this select's own WHERE requires to equal 1 (or be at most 1).
+
+    Only this select's WHERE, and only its top-level conjuncts. A predicate inside a
+    subquery filters a different relation, and ``rn = 1 or flag`` keeps rows the rank
+    does not.
+    """
+    where = select.args.get("where")
+    if not isinstance(where, exp.Where):
+        return set()
+    pinned: set[str] = set()
+    for term in _conjuncts(where.this):
+        if not isinstance(term, (exp.EQ, exp.LTE, exp.LT)):
+            continue
+        left, right = term.this, term.expression
+        if isinstance(right, exp.Column) and isinstance(left, exp.Literal):
+            left, right = right, left
+        if not (isinstance(left, exp.Column) and isinstance(right, exp.Literal)):
+            continue
+        limit = "2" if isinstance(term, exp.LT) else "1"
+        if right.name == limit:
+            pinned.add(left.name)
+    return pinned
+
+
+def _rank_partitions(select: exp.Select) -> dict[str, tuple[str, ...]]:
+    """``row_number() over (partition by k ...) as rn`` projections of this select alone."""
+    ranked: dict[str, tuple[str, ...]] = {}
+    for projection in select.expressions:
+        if not isinstance(projection, exp.Alias):
+            continue
+        window = projection.this
+        if not (isinstance(window, exp.Window) and isinstance(window.this, exp.RowNumber)):
+            continue
+        partition = window.args.get("partition_by") or []
+        names = tuple(col.name for col in partition if isinstance(col, exp.Column))
+        # A partition on an expression cannot be named as a key, and dropping it would
+        # shrink the key the same way an unnamed GROUP BY expression did.
+        if names and len(names) == len(partition):
+            ranked[projection.alias] = names
+    return ranked
 
 
 def _grain_of_select(
@@ -75,32 +183,35 @@ def _grain_of_select(
     so the grain-setting construct is almost never in the final projection — it is in
     the last CTE, and the outer select just passes it through. Reading only the
     outermost SELECT would report ``unknown`` for most of a real project.
+
+    Every construct is read from this select's own clauses. The dedup idiom used to be
+    found by searching the whole subtree, so a ``row_number() ... = 1`` in a CTE proved
+    the grain of an outer select that joined afterwards and fanned the rows back out.
     """
     if depth > 10:  # cyclic or pathological CTE nesting
         return None
 
-    group = select.args.get("group")
-    if isinstance(group, exp.Group) and group.expressions:
-        names = _column_names(group.expressions) or _resolve_positional_group_by(select, group)
-        if names:
-            return names, "GROUP BY"
+    grouped = _group_by_grain(select)
+    if grouped is not None:
+        return grouped, "GROUP BY"
 
-    if select.args.get("distinct"):
-        names = _column_names(select.expressions)
-        if names:
-            return names, "SELECT DISTINCT"
+    distinct = _distinct_grain(select)
+    if distinct is not None:
+        return distinct, "SELECT DISTINCT"
 
-    dedup = _row_number_dedup(select)
-    if dedup is not None:
-        return dedup, "ROW_NUMBER() dedup filtered to one row per partition"
-
-    # Nothing here sets a grain. If this select merely passes a CTE through, the grain
-    # is whatever that CTE established.
+    # Nothing here sets a grain by itself. If this select passes a relation through —
+    # no join — its grain is that relation's, or, when this select's WHERE pins a rank
+    # the relation computes, one row per the rank's partition.
     inner = _passthrough_target(select, ctes)
     if inner is None:
         return None
-
     name, inner_select = inner
+
+    for column in sorted(_pinned_to_one(select)):
+        partition = _rank_partitions(inner_select).get(column)
+        if partition is not None and _projection_covers(select, partition):
+            return partition, f"ROW_NUMBER() in `{name}` filtered to one row per partition"
+
     resolved = _grain_of_select(inner_select, ctes, depth + 1)
     if resolved is None:
         return None
@@ -119,7 +230,9 @@ def _passthrough_target(
     """The CTE or subquery this select reads through without changing its grain.
 
     A join is disqualifying — a join is exactly where grain changes. A WHERE is not:
-    filtering removes rows but cannot make a unique key non-unique.
+    filtering removes rows but cannot make a unique key non-unique. A set operation is
+    disqualifying too: a relation that is a ``UNION ALL`` is not a select at all, and
+    reading its first branch as though it were reports a key the union duplicates.
 
     Inline subqueries count as well as named CTEs. ``select * from (select ...) as x``
     is the same pass-through written differently, and handling only the named form
@@ -135,18 +248,16 @@ def _passthrough_target(
 
     # Inline subquery: `from (select ...) as alias`.
     if isinstance(table, exp.Subquery):
-        inner = table.this if isinstance(table.this, exp.Select) else table.find(exp.Select)
-        if isinstance(inner, exp.Select):
-            return (table.alias_or_name or "subquery", inner)
-        return None
+        inner = _as_select(table)
+        return (table.alias_or_name or "subquery", inner) if inner is not None else None
 
     if not isinstance(table, exp.Table):
         return None
     body = ctes.get(table.name)
     if body is None:
         return None
-    inner = body if isinstance(body, exp.Select) else body.find(exp.Select)
-    return (table.name, inner) if isinstance(inner, exp.Select) else None
+    inner = _as_select(body)
+    return (table.name, inner) if inner is not None else None
 
 
 def _projection_covers(select: exp.Select, columns: tuple[str, ...]) -> bool:
@@ -182,47 +293,14 @@ def _structural_grain(sql: str, dialect: str) -> tuple[tuple[str, ...], str] | N
     except ParseError:
         return None
 
-    select = tree if isinstance(tree, exp.Select) else tree.find(exp.Select)
-    if not isinstance(select, exp.Select):
+    # The statement itself, never a select found somewhere inside it: a model whose
+    # final statement is a UNION ALL has no key, whatever its first branch has.
+    select = _as_select(tree)
+    if select is None:
         return None
 
     ctes = {cte.alias_or_name: cte.this for cte in tree.find_all(exp.CTE) if cte.alias_or_name}
     return _grain_of_select(select, ctes)
-
-
-def _row_number_dedup(scope: exp.Expression) -> tuple[str, ...] | None:
-    """Detect ``row_number() over (partition by k ...)`` filtered to one row.
-
-    Requires both halves: the window function *and* a predicate pinning it to 1.
-    A ranked column that is never filtered does not deduplicate anything, and
-    treating it as if it did would assert a grain the data does not have.
-    """
-    ranked: dict[str, tuple[str, ...]] = {}
-    for window in scope.find_all(exp.Window):
-        fn = window.this
-        if not isinstance(fn, exp.RowNumber):
-            continue
-        partition = _column_names(list(window.args.get("partition_by") or []))
-        if not partition:
-            continue
-        parent = window.parent
-        alias = parent.alias if isinstance(parent, exp.Alias) else None
-        if alias:
-            ranked[alias] = partition
-
-    if not ranked:
-        return None
-
-    for predicate in scope.find_all(exp.EQ, exp.LTE):
-        left, right = predicate.this, predicate.expression
-        if (
-            isinstance(left, exp.Column)
-            and left.name in ranked
-            and isinstance(right, exp.Literal)
-            and right.name == "1"
-        ):
-            return ranked[left.name]
-    return None
 
 
 def _declared_grain(model_name: str, snapshot: ProjectSnapshot) -> tuple[str, ...] | None:
