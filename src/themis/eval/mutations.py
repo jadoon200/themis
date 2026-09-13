@@ -108,6 +108,12 @@ class Mutation:
     # True when the description genuinely covers the change, so intent naming anything
     # is a false alarm rather than a catch.
     description_is_honest: bool = False
+    # Why the head is expected not to build, when that is the point of the case — a
+    # column removed while a downstream model still selects it. Every other mutation
+    # must build: one that does not is invalid SQL scoring as a detected defect, which
+    # is how "mixing currencies in one total" was counted as caught for months while the
+    # mutation never ran at all.
+    build_fails: str | None = None
 
     def apply(self, project_dir: Path) -> bool:
         """Apply to a checked-out project. False if the anchor text is not present."""
@@ -165,11 +171,27 @@ _ALL_INJECTED: tuple[Mutation, ...] = (
             "Currency dropped from the regulatory summary's grain, mixing currencies in one total"
         ),
         relative_path=_MART_SUMMARY,
-        find="""    group by
+        # The select list and the GROUP BY together. Dropping the key from the GROUP BY
+        # alone left `currency_code` selected and ungrouped, so the head never built and
+        # the currencies were never mixed — the case scored as caught on a build error.
+        find="""        entity_code,
+        currency_code,
+        count(*)                        as entry_count,
+        count(distinct contract_id)     as contract_count,
+        sum(amount_txn_ccy)             as revenue_txn_ccy,
+        sum(amount_usd)                 as revenue_usd
+    from revenue
+    group by
         period_month,
         entity_code,
         currency_code""",
-        replace="""    group by
+        replace="""        entity_code,
+        count(*)                        as entry_count,
+        count(distinct contract_id)     as contract_count,
+        sum(amount_txn_ccy)             as revenue_txn_ccy,
+        sum(amount_usd)                 as revenue_usd
+    from revenue
+    group by
         period_month,
         entity_code""",
     ),
@@ -297,6 +319,9 @@ _ALL_INJECTED: tuple[Mutation, ...] = (
         relative_path=_MART_REVENUE,
         find="    currency_code,\n",
         replace="",
+        build_fails=(
+            "fct_regulatory_summary still selects currency_code — the breakage is the defect"
+        ),
     ),
     Mutation(
         id="join_key_column_removed",
@@ -306,6 +331,9 @@ _ALL_INJECTED: tuple[Mutation, ...] = (
         relative_path=_STG_FX,
         find="    cast(rate_date as date) as rate_date,\n",
         replace="",
+        build_fails=(
+            "int_gl_entries_converted still joins on rates.rate_date — the breakage is the defect"
+        ),
     ),
     Mutation(
         id="hardcoded_table_reference",
@@ -334,8 +362,20 @@ _ALL_INJECTED: tuple[Mutation, ...] = (
         expects_family="F7",
         description="Counterparty email carried into a published mart",
         relative_path=_MART_REVENUE,
-        find="    amount_txn_ccy,\n    amount_usd",
-        replace="    amount_txn_ccy,\n    amount_usd,\n    customer_email",
+        # The email lives on stg_contracts and reaches nothing below it, so the mart has
+        # to join for it. Selecting it without the join referenced a column that does not
+        # exist, and the case scored as caught on a build error.
+        find="    amount_usd\nfrom {{ ref('int_revenue_recognized') }}",
+        replace=(
+            "    amount_usd,\n"
+            "    customer_email\n"
+            "from (\n"
+            "    select revenue.*, contracts.customer_email\n"
+            "    from {{ ref('int_revenue_recognized') }} as revenue\n"
+            "    left join {{ ref('stg_contracts') }} as contracts\n"
+            "        on contracts.contract_id = revenue.contract_id\n"
+            ") as revenue"
+        ),
     ),
     Mutation(
         id="approx_aggregate_in_regulatory",
@@ -348,6 +388,10 @@ _ALL_INJECTED: tuple[Mutation, ...] = (
         relative_path=_MART_SUMMARY,
         find="count(distinct contract_id)     as contract_count",
         replace="approx_distinct(contract_id)    as contract_count",
+        build_fails=(
+            "DuckDB has no approx_distinct; the Trino function is the case the rule exists "
+            "for, and a latent case is scored on detection, not on the build"
+        ),
     ),
     Mutation(
         id="grain_unprovable_on_regulatory",
@@ -374,6 +418,7 @@ _ALL_INJECTED: tuple[Mutation, ...] = (
         relative_path=_CONTRACT_MART,
         find="    entity_code,\n    reference_code",
         replace="    entity_code",
+        build_fails="the enforced contract rejects the model — the breakage is the defect",
     ),
     Mutation(
         id="select_star_introduced",
@@ -429,16 +474,18 @@ _ALL_INJECTED: tuple[Mutation, ...] = (
         kind=Kind.DEFECT,
         expects_family="F2",
         description=(
-            "Contracts excluded with NOT IN over a nullable column, which returns "
-            "nothing at all the moment the subquery yields one NULL"
+            "Entries on reversed contracts excluded with NOT IN over a nullable column — "
+            "one reversal has no contract, so the subquery yields a NULL and no row survives"
         ),
         relative_path=_INT_REVENUE,
-        find="    left join contracts\n        on converted.contract_id = contracts.contract_id",
+        # In the WHERE, where DuckDB can run it. The earlier version put the NOT IN in a
+        # LEFT JOIN's ON clause, which DuckDB cannot execute, and compared contract ids
+        # to customer ids, which never match — so it moved nothing even where it ran.
+        find=_REVENUE_FILTER,
         replace=(
-            "    left join contracts\n"
-            "        on converted.contract_id = contracts.contract_id\n"
+            _REVENUE_FILTER + "\n"
             "        and converted.contract_id not in (\n"
-            "            select customer_id from contracts\n"
+            "            select contract_id from converted where is_reversal\n"
             "        )"
         ),
     ),
@@ -518,11 +565,18 @@ _ALL_INJECTED: tuple[Mutation, ...] = (
             "correct — the grain is not *proven* — but the join multiplies nothing"
         ),
         relative_path=_MART_REVENUE,
+        # Wrapped, so the mart's unqualified column list still resolves. Joining in the
+        # mart's own FROM made `account_id` ambiguous: the head never built, the case
+        # measured as a change, and a safe join scored as a false positive for a query
+        # that did not run.
         find="from {{ ref('int_revenue_recognized') }}",
         replace=(
-            "from {{ ref('int_revenue_recognized') }} as base\n"
-            "left join {{ ref('dim_accounts') }} as dim\n"
-            "    on dim.account_id = base.account_id"
+            "from (\n"
+            "    select base.*, dim.account_type as dim_account_type\n"
+            "    from {{ ref('int_revenue_recognized') }} as base\n"
+            "    left join {{ ref('dim_accounts') }} as dim\n"
+            "        on dim.account_id = base.account_id\n"
+            ") as base"
         ),
     ),
     Mutation(

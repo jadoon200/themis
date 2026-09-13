@@ -26,6 +26,7 @@ from themis.acquire import git
 from themis.config import Settings
 from themis.eval.mutations import Kind, Mutation
 from themis.logging import get_logger
+from themis.pipeline import ReviewResult
 from themis.pipeline import review as run_review
 
 log = get_logger(__name__)
@@ -324,6 +325,24 @@ def run_mutation(
     changed = bool(
         execution and execution.ran and any(d.is_material for d in execution.deltas.values())
     )
+
+    invalid = _unscorable(mutation, result, use_execution=use_execution)
+    if invalid is not None:
+        # Recorded as an error rather than a result. Each of these used to score: a
+        # review with twenty rules skipped counted as a detection when the safety net
+        # fired, and a mutation that did not compile counted as a defect that moved the
+        # numbers. Neither measures the reviewer.
+        log.warning("eval.unscorable", mutation=mutation.id, reason=invalid[:300])
+        return MutationOutcome(
+            mutation=mutation,
+            applied=True,
+            changed_results=changed,
+            detected=bool(result.findings),
+            families_fired=tuple(sorted({f.family for f in result.findings})),
+            expected_family_fired=False,
+            finding_count=len(result.findings),
+            error=invalid,
+        )
     families = tuple(sorted({f.family for f in result.findings}))
     rules = tuple(sorted({f.rule_id for f in result.findings}))
     severities = tuple(f.severity.value for f in result.findings)
@@ -358,6 +377,42 @@ def run_mutation(
         llm_explained=llm.explained if llm else 0,
         llm_rejected=llm.rejected_by_selfcheck if llm else 0,
     )
+
+
+def _unscorable(mutation: Mutation, result: ReviewResult, *, use_execution: bool) -> str | None:
+    """Why a review cannot be scored against its mutation, or None when it can.
+
+    Two ways a case measures something other than the reviewer:
+
+    - **Degraded grounding.** In CI the demo project was only seeded, a compile-time
+      query hit a missing table, and every review ran with twenty of twenty-nine rules
+      skipped. The corpus printed 9/29 rule coverage and 76% recall and passed, for ten
+      days, because an outcome never recorded that its checks had not run.
+    - **A build that failed without being meant to.** Invalid SQL is a detected "defect"
+      to an oracle that asks whether anything moved. Four mutations were invalid, one of
+      them a benign case the headline false-positive rate rested on.
+    """
+    if result.degraded_reason:
+        return f"grounding degraded — {result.degraded_reason}"
+
+    execution = result.execution
+    if not use_execution or execution is None or not execution.ran:
+        return None
+    unbuilt = {
+        name: delta for name, delta in execution.deltas.items() if delta.failed_revision is not None
+    }
+    base_failures = [d for d in unbuilt.values() if d.failed_revision in ("base", "both")]
+    if base_failures:
+        return f"the base revision does not build: {base_failures[0].build_error}"
+    if unbuilt and mutation.build_fails is None:
+        first = next(iter(unbuilt.values()))
+        return (
+            f"the mutated head does not build ({first.build_error}) — the mutation is invalid "
+            "SQL here, or declare why it is meant to break the build"
+        )
+    if not unbuilt and mutation.build_fails is not None:
+        return f"declared to break the build ({mutation.build_fails}), but it built"
+    return None
 
 
 @dataclass
@@ -530,17 +585,67 @@ class EvalReport:
         Worth surfacing rather than hiding: a 'defect' that changes nothing is a bad
         test, and a 'control' that moves the numbers is a bug in the control.
         """
+
+        def disagrees(o: MutationOutcome) -> bool:
+            if o.mutation.kind is Kind.BENIGN:
+                # Declared safe, so measuring it as safe is agreement — and measuring it
+                # as changed is exactly a mislabelling. Skipping benign cases entirely hid
+                # one that did not even build, scoring as a false positive.
+                return o.changed_results
+            return (o.mutation.kind is Kind.DEFECT) != o.changed_results
+
         return [
             o
             for o in self.scored
             # Meaningless without an oracle: nothing was measured, so every defect
             # trivially "did not change results" and the whole list is noise.
-            if o.oracle_available
-            # A benign mutation is declared safe and measuring it as safe is agreement,
-            # not a mislabelling. Without this every one of them reports as a bad test.
-            and o.mutation.kind is not Kind.BENIGN
-            and (o.mutation.kind is Kind.DEFECT) != o.changed_results
+            if o.oracle_available and disagrees(o)
         ]
+
+    def gate_failures(self, *, full_corpus: bool) -> list[str]:
+        """Everything that should fail a CI run, or an empty list.
+
+        The exit code used to depend on stale mutations alone, so a corpus reporting 9/29
+        rule coverage and four false negatives passed. What fails now is what the corpus
+        exists to prevent: a case that could not be scored, a defect nobody reported, a
+        control flagged, a mutation whose declared kind the measurement contradicts, and —
+        over the whole corpus — a rule that never fired.
+
+        Benign cases being flagged does not fail it. That is recall-first working as
+        designed, and the number is reported rather than gated.
+        """
+        failures: list[str] = []
+        for outcome in self.outcomes:
+            if outcome.mutation.kind is Kind.GENERATED:
+                continue  # nobody chose these; they are reported, never gated
+            if not outcome.applied or outcome.error is not None:
+                failures.append(f"{outcome.mutation.id}: could not be scored — {outcome.error}")
+        for outcome in self.scored:
+            if outcome.classification == "false_negative":
+                failures.append(
+                    f"{outcome.mutation.id}: a defect that moved the numbers was not reported"
+                )
+            if outcome.mutation.kind is Kind.CONTROL and outcome.detected:
+                failures.append(
+                    f"{outcome.mutation.id}: a behaviour-preserving control was flagged"
+                )
+        failures.extend(
+            f"{o.mutation.id}: latent defect not reported" for o in self.latent if not o.detected
+        )
+        failures.extend(
+            f"{o.mutation.id}: unruled defect not reported — the safety net did not fire"
+            for o in self.unruled
+            if not o.detected
+        )
+        failures.extend(
+            f"{o.mutation.id}: declared {o.mutation.kind.value}, measured the opposite"
+            for o in self.mislabelled
+        )
+        if full_corpus:
+            _, never = self.rule_coverage()
+            if never:
+                failures.append(f"rules that never fired: {', '.join(never)}")
+        return failures
 
 
 def run_corpus(

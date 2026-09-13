@@ -690,6 +690,11 @@ def eval_cmd(
     Ground truth comes from execution, not from how each mutation was labelled: both
     revisions are built and the results compared, so a change that moves no number is
     treated as behaviour-preserving whatever it was called.
+
+    Exits 1 when the gate fails: a case that could not be scored (degraded grounding, or
+    a build that failed without being meant to), a missed defect, latent case or unruled
+    case, a flagged control, a mislabelled mutation, or — over `--mutations all` — any
+    rule that never fired. Exit 2 means the run could not start.
     """
     from themis.eval.harness import DirtyRepositoryError, run_corpus
     from themis.eval.mutations import Kind, select
@@ -977,19 +982,28 @@ def eval_cmd(
         typer.echo("")
         typer.echo("Declared kind disagrees with what execution measured:")
         for outcome in report.mislabelled:
-            expected = (
-                "should change results" if outcome.mutation.kind is Kind.DEFECT else "should not"
-            )
-            typer.echo(f"  {outcome.mutation.id}: {expected}, but it did not")
+            if outcome.mutation.kind is Kind.DEFECT:
+                typer.echo(f"  {outcome.mutation.id}: should change results, but it did not")
+            else:
+                typer.echo(f"  {outcome.mutation.id}: should not change results, but it did")
 
     if report.stale:
         typer.echo("")
-        typer.echo("Could not be applied (the demo project has moved on):")
+        typer.echo("Could not be scored:")
         for outcome in report.stale:
             typer.echo(f"  {outcome.mutation.id}: {outcome.error}")
 
-    # A stale corpus silently measuring nothing is the failure mode worth guarding.
-    raise typer.Exit(code=1 if report.stale else 0)
+    # The gate. It used to fail on stale mutations alone, so a corpus reporting 9/29
+    # rule coverage and four missed defects passed CI for ten days.
+    failures = report.gate_failures(full_corpus=mutations == "all")
+    typer.echo("")
+    if failures:
+        typer.echo(f"gate: FAIL ({len(failures)})")
+        for failure in failures:
+            typer.echo(f"  {failure}")
+        raise typer.Exit(code=1)
+    typer.echo("gate: pass")
+    raise typer.Exit(code=0)
 
 
 def _persist(result: object, *, project: str, base: str, head: str, execute: bool) -> None:

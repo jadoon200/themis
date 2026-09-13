@@ -144,9 +144,15 @@ jobs:
           git config user.email "ci@example.invalid"
           git config user.name "themis-ci"
 
-      - name: Seed the demo project
+      - name: Build the demo project
+        # Built, not just seeded. `dim_entities` generates SQL from a query against
+        # `stg_accounts` at compile time; with only seeds loaded that table does not
+        # exist, every compile aborts, and twenty of twenty-nine rules skip on every
+        # mutation. This job reported 9/29 rule coverage and passed for ten days that way.
         working-directory: demo_project
-        run: dbt seed --profiles-dir . --project-dir . --target dev
+        run: dbt build --profiles-dir . --project-dir . --target dev
 
       - name: Run the mutation corpus
+        # Fails on the gate: an unscorable case, a missed defect, a flagged control, or a
+        # rule that never fired. `themis eval --help` lists what it checks.
         run: themis eval --project demo_project --mutations all --base origin/main
