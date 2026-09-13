@@ -341,3 +341,43 @@ def test_attached_catalogs_are_cleaned_too(tmp_path: Path) -> None:
         ("themis_base_ff00",),
     )
     assert dropped == ("themis_base_ff00_main",)
+
+
+def test_data_tests_never_decide_what_can_be_measured(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A failing `unique` test made `dbt build` skip every model below it.
+
+    On the tested variant a fan-out failed the declared test, so the models that would
+    have shown the fan-out were never built and the case could not be scored at all.
+    """
+    from themis.config import Settings
+    from themis.execute import runner
+
+    class _Result:
+        ok = True
+        stdout = ""
+
+    calls: list[list[str]] = []
+
+    def fake_run_dbt(project_dir: Path, args: list[str], **kwargs: object) -> _Result:
+        calls.append(args)
+        return _Result()
+
+    monkeypatch.setattr(runner, "run_dbt", fake_run_dbt)
+    monkeypatch.setattr(runner, "write_profile_for_schema", lambda *a, **k: tmp_path / "profiles")
+    _build(
+        tmp_path,
+        models=("mart", "inc"),
+        schema="themis_head_x",
+        target="dev",
+        settings=Settings(),
+        profiles_root=tmp_path,
+        anchor_dir=tmp_path,
+        label="head",
+        incremental_models=("inc",),
+    )
+    assert len(calls) == 2
+    for args in calls:
+        excluded = {args[i + 1] for i, a in enumerate(args) if a == "--exclude-resource-type"}
+        assert {"test", "unit_test"} <= excluded

@@ -163,12 +163,19 @@ def _build(
     # exist in the target schema, so a leftover table from an earlier run would be
     # silently preferred over the state one, and two runs of the same code could
     # measure differently.
+    #
+    # Data tests are excluded. `dbt build` skips everything downstream of a failing test,
+    # so on a project that declares a `unique` test, a fan-out made the test fail and every
+    # model below it was never built — there was nothing left to measure the fan-out with.
+    # Measurement must not depend on what the tests conclude; the tests are evidence of
+    # their own, not a precondition for the numbers.
     defer_args: list[str] = []
     if defer_state is not None:
         defer_args = ["--defer", "--favor-state", "--state", str(defer_state)]
         selection = [arg for model in models for arg in ("--select", model)]
     else:
         selection = [arg for model in models for arg in ("--select", f"+{model}")]
+    selection += ["--exclude-resource-type", "test", "--exclude-resource-type", "unit_test"]
 
     def run(args: list[str]) -> tuple[bool, str, dict[str, str]]:
         (target_dir / "run_results.json").unlink(missing_ok=True)
@@ -189,6 +196,7 @@ def _build(
         # Pass one already built their upstreams, and rebuilding the whole closure
         # again doubles the cost of every run for no additional signal.
         second = [arg for model in incremental_models for arg in ("--select", model)]
+        second += ["--exclude-resource-type", "test", "--exclude-resource-type", "unit_test"]
         ok, stdout, second_statuses = run(["build", *second, *defer_args])
         if not ok and not second_statuses:
             # The second pass failed before recording anything, so the first pass's
