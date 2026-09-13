@@ -12,9 +12,8 @@ and an 8B model asked one narrow question with a fixed output shape is a very di
 proposition from one asked to reason freely. Free-form output would also have to be
 parsed, and a parse failure mid-review is indistinguishable from a clean result.
 
-There is no recorded-response provider. One was written and never wired to anything,
-which left the model path untested in CI while looking as though it were covered. The
-gap is recorded in docs/EVAL.md instead.
+Recorded responses live in ``llm/cassette.py``: a provider that replays what the real
+model returned, keyed by prompt, so the model path runs in CI without a model.
 """
 
 from __future__ import annotations

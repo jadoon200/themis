@@ -1054,11 +1054,9 @@ def _gate_exit_code(findings: list[Finding], fail_on: str | None) -> int:
         Severity.LOW,
         Severity.INFO,
     ]
-    try:
-        threshold = order.index(Severity(fail_on))
-    except ValueError:
-        return 0
-
+    # Settings already refuse an unknown severity. Raising here too, rather than
+    # returning 0, keeps a gate that is handed a bad threshold from failing open.
+    threshold = order.index(Severity(fail_on.strip().lower()))
     return int(any(order.index(f.severity) <= threshold for f in findings))
 
 

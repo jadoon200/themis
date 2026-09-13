@@ -8,10 +8,11 @@ worker and the API hands back a key.
 
 from __future__ import annotations
 
+import secrets
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
@@ -25,10 +26,12 @@ from themis.api.schemas import (
     RunDetail,
     RunSummary,
 )
+from themis.config import Settings, load_settings
 from themis.db.base import get_engine, session_scope
 from themis.db.models import Finding, GrainRecord, ModelDelta, ReviewRun, RunSource, utcnow
 from themis.db.store import dismissal_rate, enqueue_run, prior_occurrences
 from themis.logging import get_logger
+from themis.projects import ProjectNotAllowedError, validate_project_ref
 
 log = get_logger(__name__)
 
@@ -37,6 +40,11 @@ log = get_logger(__name__)
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     """Open the connection pool once at startup rather than on the first request."""
     get_engine()
+    settings = load_settings()
+    if settings.api_token is None:
+        # Said once, loudly: every endpoint is open, and a review request runs dbt on the
+        # worker. Acceptable on the loopback interface, and nowhere else.
+        log.warning("api.no_token", hint="set THEMIS_API_TOKEN before binding beyond 127.0.0.1")
     log.info("api.started", version=__version__)
     yield
 
@@ -52,6 +60,22 @@ app = FastAPI(
 def get_session() -> Iterator[Session]:
     with session_scope() as session:
         yield session
+
+
+def get_settings() -> Settings:
+    return load_settings()
+
+
+def require_token(
+    authorization: str | None = Header(default=None),
+    settings: Settings = Depends(get_settings),
+) -> None:
+    """Require ``Authorization: Bearer <THEMIS_API_TOKEN>`` when a token is configured."""
+    if settings.api_token is None:
+        return
+    scheme, _, supplied = (authorization or "").partition(" ")
+    if scheme.lower() != "bearer" or not secrets.compare_digest(supplied, settings.api_token):
+        raise HTTPException(status_code=401, detail="missing or invalid bearer token")
 
 
 def _finding_out(session: Session, row: Finding) -> FindingOut:
@@ -113,9 +137,19 @@ def health() -> dict[str, object]:
     }
 
 
-@app.post("/reviews", response_model=RunSummary, status_code=202)
-def create_review(request: ReviewRequest, session: Session = Depends(get_session)) -> RunSummary:
+@app.post(
+    "/reviews", response_model=RunSummary, status_code=202, dependencies=[Depends(require_token)]
+)
+def create_review(
+    request: ReviewRequest,
+    session: Session = Depends(get_session),
+    settings: Settings = Depends(get_settings),
+) -> RunSummary:
     """Queue a review. Returns 202 with a run key; a worker does the work."""
+    try:
+        validate_project_ref(request.project, settings)
+    except ProjectNotAllowedError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     run = enqueue_run(
         session,
         project=request.project,
@@ -127,11 +161,12 @@ def create_review(request: ReviewRequest, session: Session = Depends(get_session
         use_llm=request.use_llm,
         pr_number=request.pr_number,
         pr_url=request.pr_url,
+        pr_description=request.pr_description,
     )
     return _summary(run, 0)
 
 
-@app.get("/reviews", response_model=list[RunSummary])
+@app.get("/reviews", response_model=list[RunSummary], dependencies=[Depends(require_token)])
 def list_reviews(
     project: str | None = None,
     status: str | None = None,
@@ -154,7 +189,7 @@ def list_reviews(
     return [_summary(run, counts.get(run.id, 0)) for run in runs]
 
 
-@app.get("/reviews/{run_key}", response_model=RunDetail)
+@app.get("/reviews/{run_key}", response_model=RunDetail, dependencies=[Depends(require_token)])
 def get_review(run_key: str, session: Session = Depends(get_session)) -> RunDetail:
     run = session.execute(
         select(ReviewRun)
@@ -199,7 +234,11 @@ def get_review(run_key: str, session: Session = Depends(get_session)) -> RunDeta
     )
 
 
-@app.post("/findings/{finding_id}/disposition", response_model=FindingOut)
+@app.post(
+    "/findings/{finding_id}/disposition",
+    response_model=FindingOut,
+    dependencies=[Depends(require_token)],
+)
 def set_disposition(
     finding_id: int,
     request: DispositionRequest,
@@ -220,7 +259,7 @@ def set_disposition(
     return _finding_out(session, row)
 
 
-@app.get("/models/{model_name}/grain")
+@app.get("/models/{model_name}/grain", dependencies=[Depends(require_token)])
 def model_grain_history(
     model_name: str,
     limit: int = Query(default=20, le=100),
@@ -253,7 +292,11 @@ def model_grain_history(
     ]
 
 
-@app.get("/models/{model_name}/deltas", response_model=list[DeltaOut])
+@app.get(
+    "/models/{model_name}/deltas",
+    response_model=list[DeltaOut],
+    dependencies=[Depends(require_token)],
+)
 def model_delta_history(
     model_name: str,
     limit: int = Query(default=20, le=100),

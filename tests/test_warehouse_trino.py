@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Iterator
+from pathlib import Path
 
 import pytest
 
@@ -164,3 +165,38 @@ def test_an_incomplete_trino_profile_is_refused() -> None:
     from pathlib import Path
 
     assert client_for_profile({"type": "trino", "host": HOST}, Path(".")) is None
+
+
+def test_a_runs_schemas_are_dropped_and_nobody_elses() -> None:
+    """Relation by relation, then the schema — the path that works on every connector."""
+    import trino
+
+    from themis.execute.warehouse import drop_run_schemas
+
+    conn = trino.dbapi.connect(
+        host=HOST, port=PORT, user="themis", catalog="memory", schema="default"
+    )
+    cur = conn.cursor()
+    for statement in (
+        "create schema if not exists memory.themis_head_c0ffee",
+        "create schema if not exists memory.themis_head_c0ffee_main",
+        "create schema if not exists memory.themis_head_c0ffee9",
+        "create table if not exists memory.themis_head_c0ffee.t as select 1 as x",
+        "create or replace view memory.themis_head_c0ffee_main.v as select 1 as x",
+    ):
+        cur.execute(statement)
+        cur.fetchall()
+
+    dropped = drop_run_schemas(
+        {"type": "trino", "host": HOST, "port": PORT, "user": "themis", "database": "memory"},
+        project_dir=Path("."),
+        prefixes=("themis_head_c0ffee",),
+    )
+    assert sorted(dropped) == ["themis_head_c0ffee", "themis_head_c0ffee_main"]
+
+    cur.execute("select schema_name from memory.information_schema.schemata")
+    remaining = {row[0] for row in cur.fetchall()}
+    assert "themis_head_c0ffee9" in remaining
+    assert "themis_head_c0ffee" not in remaining
+    cur.execute("drop schema if exists memory.themis_head_c0ffee9")
+    cur.fetchall()

@@ -75,6 +75,10 @@ class ReviewRun(Base):
     # guessing which options were in force.
     execute_requested: Mapped[bool] = mapped_column(default=False)
     llm_requested: Mapped[bool] = mapped_column(default=False)
+    # What the author says the change does. The intent pass has nothing to compare the
+    # SQL against without it, so a queued review could never run the one reviewer that
+    # has no rule behind it.
+    pr_description: Mapped[str | None] = mapped_column(Text, default=None)
 
     backend: Mapped[str | None] = mapped_column(String(32), default=None)
     executed: Mapped[bool] = mapped_column(default=False)

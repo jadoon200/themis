@@ -50,9 +50,11 @@ def enqueue_run(
     use_llm: bool = False,
     pr_number: int | None = None,
     pr_url: str | None = None,
+    pr_description: str | None = None,
 ) -> ReviewRun:
     """Queue a review. Returns immediately — a worker picks it up."""
     run = ReviewRun(
+        pr_description=pr_description,
         run_key=new_run_key(),
         project=project,
         repo=repo,
@@ -77,6 +79,7 @@ def claim_next_run(
     worker_id: str,
     timeout_s: float,
     can_execute: bool = True,
+    can_review: bool = True,
 ) -> ReviewRun | None:
     """Claim one queued run, or reclaim one whose worker stopped reporting.
 
@@ -97,6 +100,10 @@ def claim_next_run(
     )
     if not can_execute:
         claimable = claimable & (ReviewRun.execute_requested.is_(False))
+    if not can_review:
+        # The same rule for the model review: a worker with no model endpoint leaves the
+        # run for one that has one, rather than returning it with the review left out.
+        claimable = claimable & (ReviewRun.llm_requested.is_(False))
 
     statement = select(ReviewRun).where(claimable).order_by(ReviewRun.created_at).limit(1)
     # SQLite has no row locking; the tests run single-worker, so skipping the clause
@@ -119,10 +126,47 @@ def claim_next_run(
     return run
 
 
-def heartbeat(session: Session, run: ReviewRun) -> None:
-    """Report that a claimed run is still being worked on."""
+def still_owns(run: ReviewRun, worker_id: str | None) -> bool:
+    """Whether a worker still holds its claim on a run.
+
+    A worker whose heartbeats stopped reaching the database has its run reclaimed, and
+    keeps running regardless. Without this both workers wrote findings into the same run
+    when they finished, and the slower one's status was the one that stuck.
+    ``worker_id=None`` is a caller that never claimed through the queue — the CLI.
+    """
+    if worker_id is None:
+        return True
+    return run.status == RunStatus.RUNNING and run.worker_id == worker_id
+
+
+def load_owned_run(session: Session, run_id: int, worker_id: str | None) -> ReviewRun | None:
+    """A run, row-locked, if this worker still owns it; otherwise None, logged."""
+    run = session.get(ReviewRun, run_id, with_for_update=True)
+    if run is None:
+        return None
+    if not still_owns(run, worker_id):
+        log.warning(
+            "run.claim_lost",
+            run_key=run.run_key,
+            worker=worker_id,
+            current_worker=run.worker_id,
+            status=run.status,
+        )
+        return None
+    return run
+
+
+def heartbeat(session: Session, run: ReviewRun, worker_id: str | None = None) -> bool:
+    """Report that a claimed run is still being worked on. False once the claim is lost.
+
+    A worker that lost its claim must not keep refreshing the heartbeat of the worker
+    that took over — that would hide the new owner dying just as well.
+    """
+    if not still_owns(run, worker_id):
+        return False
     run.heartbeat_at = utcnow()
     session.flush()
+    return True
 
 
 def _delta_payload(finding: Finding) -> dict[str, object] | None:

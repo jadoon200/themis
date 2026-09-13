@@ -161,8 +161,20 @@ def answer_question(
         )
 
     # The same verification the specialists get. An answer citing something absent from
-    # the facts is the failure this whole lane exists to prevent.
-    if quote and not quote_is_grounded(quote, context):
+    # the facts is the failure this whole lane exists to prevent — and so is an answer
+    # citing nothing. The check used to run only when a quote was present, so a model
+    # that left the quote blank had its answer shown as grounded without any check.
+    if not quote:
+        log.warning("ask.unquoted", answer=text[:120])
+        return Answer(
+            text="",
+            grounded=False,
+            refusal_reason=(
+                "the answer quoted nothing from the stored review, so there was nothing to "
+                "check it against and it was discarded rather than shown"
+            ),
+        )
+    if not quote_is_grounded(quote, context):
         log.warning("ask.ungrounded", quote=quote[:120])
         return Answer(
             text="",

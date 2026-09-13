@@ -247,3 +247,21 @@ def test_the_model_never_receives_a_database_handle(session: Session, run: Revie
     prompt = provider.prompts[0]
     assert "sqlite" not in prompt.lower()
     assert "select " not in prompt.lower()
+
+
+def test_an_answer_that_quotes_nothing_is_discarded(session: Session, run: ReviewRun) -> None:
+    """The fabricated answer above, with the quote left blank. The grounding check only
+    ran when a quote was present, so this one used to be shown as grounded."""
+    result = _answer(
+        {
+            "can_answer": True,
+            "answer": "Yes, a uniqueness test confirmed the key is safe.",
+            "evidence_quote": "",
+        },
+        session,
+        run,
+        "was the fx table checked?",
+    )
+    assert not result.grounded
+    assert result.text == ""
+    assert "quoted nothing" in (result.refusal_reason or "")
