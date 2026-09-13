@@ -8,12 +8,13 @@ had to fall back.
 
 from __future__ import annotations
 
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
 from themis.acquire import git
 from themis.acquire.cache import CacheKey, ManifestCache
-from themis.acquire.dbt_runner import DbtError, compile_project
+from themis.acquire.dbt_runner import DbtError, compile_project, seed_partial_parse
 from themis.acquire.manifest import ManifestError, load_manifest
 from themis.logging import get_logger
 from themis.models import Backend
@@ -31,14 +32,57 @@ class AcquireResult:
     # report rather than swallowed.
     degraded_reason: str | None = None
 
+    def _nodes_for(self, change: git.ChangedFile) -> list[str]:
+        """Model or seed names a changed file defines, in either revision."""
+        names: list[str] = []
+        for snapshot in (self.after, self.before):
+            node = snapshot.node_for_file(change.path)
+            if node is not None and node.name not in names:
+                names.append(node.name)
+        return names
+
+    def _is_seed(self, name: str) -> bool:
+        node = self.after.models.get(name) or self.before.models.get(name)
+        return node is not None and node.is_seed
+
     @property
     def changed_models(self) -> tuple[str, ...]:
-        return tuple(sorted({c.model_name for c in self.changed if c.is_model}))
+        """SQL models whose own file changed.
+
+        Resolved through the manifest, so a project whose ``model-paths`` is not
+        ``models/`` is still reviewed. The folder convention is only a fallback for a file
+        neither revision's manifest knows — which a compile failure can produce.
+        """
+        names: set[str] = set()
+        for change in self.changed:
+            nodes = self._nodes_for(change)
+            if nodes:
+                names.update(n for n in nodes if not self._is_seed(n))
+            elif change.is_model:
+                names.add(change.model_name)
+        return tuple(sorted(names))
+
+    @property
+    def changed_seeds(self) -> tuple[str, ...]:
+        """Seeds whose CSV changed.
+
+        In a financial project these are reference data — FX rates, account mappings,
+        cost-centre hierarchies — and editing one moves every figure built on it while
+        changing no SQL at all. No rule can see that; execution can.
+        """
+        names: set[str] = set()
+        for change in self.changed:
+            nodes = self._nodes_for(change)
+            if nodes:
+                names.update(n for n in nodes if self._is_seed(n))
+            elif change.is_seed:
+                names.add(change.model_name)
+        return tuple(sorted(names))
 
     @property
     def changed_macros(self) -> tuple[str, ...]:
         """Stems of changed macro files. Kept for display; routing uses the paths."""
-        return tuple(sorted({c.model_name for c in self.changed if c.is_macro}))
+        return tuple(sorted({Path(path).stem for path in self.changed_macro_files}))
 
     @property
     def changed_schema_files(self) -> tuple[str, ...]:
@@ -52,12 +96,32 @@ class AcquireResult:
 
     @property
     def changed_macro_files(self) -> tuple[str, ...]:
-        """Paths of changed macro files.
+        """Paths of changed files that define macros, in either revision.
 
         Routing must go through the path: one file defines several macros, and the
-        filename identifies at most one of them.
+        filename identifies at most one of them. And it goes through the manifest rather
+        than the ``macros/`` folder, for the same reason models do.
         """
-        return tuple(sorted({c.path for c in self.changed if c.is_macro}))
+        paths: set[str] = set()
+        for change in self.changed:
+            if not change.path.endswith(".sql"):
+                continue
+            defines_macros = bool(
+                self.after.macros_in_file(change.path) or self.before.macros_in_file(change.path)
+            )
+            # The folder convention only as a fallback, for a file neither manifest knows.
+            if defines_macros or (change.is_macro and not self._nodes_for(change)):
+                paths.add(change.path)
+        return tuple(sorted(paths))
+
+    @property
+    def changed_project_config(self) -> bool:
+        """Whether ``dbt_project.yml`` itself changed.
+
+        Folder-level configs and vars live there, so one line can re-materialize a whole
+        directory of models without touching any of their files.
+        """
+        return any(Path(c.path).name == "dbt_project.yml" for c in self.changed)
 
 
 def _compile_snapshot(
@@ -70,6 +134,7 @@ def _compile_snapshot(
     anchor_dir: Path | None = None,
     cache: ManifestCache | None = None,
     cache_key: CacheKey | None = None,
+    parse_cache_from: Path | None = None,
 ) -> ProjectSnapshot | None:
     """Compile a project revision into a snapshot, or None if it cannot be compiled.
 
@@ -80,9 +145,11 @@ def _compile_snapshot(
     ``cache`` short-circuits the compile when this exact revision has been compiled
     before. Only callers that can honestly name the revision pass one — a working tree
     with uncommitted edits is described by no SHA, so it has no key.
-    """
-    import tempfile
 
+    dbt writes into a directory this call owns rather than the project's ``target/``. A
+    compile that dies before writing a manifest would otherwise hand back whichever
+    manifest the previous compile left there, under this revision's name.
+    """
     from themis.execute.profiles import ProfileError, write_anchored_profile
 
     if cache is not None and cache_key is not None:
@@ -105,51 +172,29 @@ def _compile_snapshot(
                     )
                 except ProfileError as exc:
                     log.warning("acquire.profile_unreadable", error=str(exc)[:200])
-            manifest_path = compile_project(
+            target_dir = Path(tmp) / "target"
+            seed_partial_parse(parse_cache_from or project_dir, target_dir)
+            compiled = compile_project(
                 project_dir,
                 target=target,
                 allowed_targets=allowed_targets,
                 timeout_s=timeout_s,
                 profiles_dir=profiles_dir,
+                target_path=target_dir,
             )
-            snapshot = load_manifest(manifest_path, revision=revision, backend=Backend.MANIFEST)
+            snapshot = load_manifest(
+                compiled.manifest_path, revision=revision, backend=Backend.MANIFEST
+            )
+            if compiled.error is not None:
+                # Never cached: a partial compile is a fact about one attempt, not about
+                # the revision, and serving it again would repeat the gap on every review.
+                return snapshot.model_copy(update={"compile_error": compiled.error})
             if cache is not None and cache_key is not None:
-                cache.put(cache_key, manifest_path, snapshot)
+                cache.put(cache_key, compiled.manifest_path, snapshot)
             return snapshot
     except (DbtError, ManifestError) as exc:
         log.warning("acquire.compile_failed", revision=revision[:8], error=str(exc)[:400])
         return None
-
-
-def seed_partial_parse(source_project: Path, worktree_project: Path) -> bool:
-    """Copy dbt's parse cache into a fresh worktree before compiling it.
-
-    dbt keeps its parsed project in ``target/partial_parse.msgpack`` and, when it finds
-    one, reparses only the files that changed since. A detached worktree never has one,
-    which is why dbt's own documentation notes that partial parsing does not help a new
-    branch or pull request — every base compile reparses the entire project from cold.
-
-    Handing it the cache from the working copy fixes that: same project, a handful of
-    files different, so dbt reparses those and reuses the rest. It is the only saving
-    available to a project whose manifest cannot be cached at all — parsing is
-    unaffected by compile-time queries, because it happens before any of them run.
-
-    Failure is not an error. A missing or unreadable cache costs a full parse, which is
-    what would have happened anyway, and a corrupt one is dbt's to detect: it validates
-    the cache against the project and falls back on its own.
-    """
-    source = source_project / "target" / "partial_parse.msgpack"
-    if not source.exists():
-        return False
-    destination = worktree_project / "target" / "partial_parse.msgpack"
-    try:
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_bytes(source.read_bytes())
-    except OSError as exc:
-        log.debug("acquire.partial_parse_not_seeded", error=str(exc)[:200])
-        return False
-    log.debug("acquire.partial_parse_seeded", path=str(destination))
-    return True
 
 
 def manifest_file(given: Path) -> Path:
@@ -199,15 +244,37 @@ def warm_cache(
             anchor_dir=project_dir,
             cache=cache,
             cache_key=key,
+            parse_cache_from=project_dir,
         )
     if snapshot is None:
         return False, f"{sha[:12]} could not be compiled"
+    if snapshot.compile_error is not None:
+        return (
+            False,
+            f"{sha[:12]} compiled only partly, so it was not cached: {snapshot.compile_error}",
+        )
     if not cache.contains(key):
         return False, (
             f"{sha[:12]} compiled but was not cached — this project builds SQL from "
             "query results, so a revision does not determine the manifest"
         )
     return True, f"cached {sha[:12]}"
+
+
+def _partial_compile_reason(snapshot: ProjectSnapshot, label: str) -> str | None:
+    """Say how much of a revision has no compiled SQL, and why, when some of it does not."""
+    missing = snapshot.models_without_compiled_sql
+    total = sum(1 for m in snapshot.models.values() if not m.is_seed)
+    if not missing:
+        return None
+    cause = f" (dbt: {snapshot.compile_error[:300]})" if snapshot.compile_error else ""
+    if len(missing) == total:
+        return f"the {label} manifest has no compiled SQL; most rules cannot run{cause}"
+    shown = ", ".join(missing[:5]) + (f" and {len(missing) - 5} more" if len(missing) > 5 else "")
+    return (
+        f"{len(missing)} of {total} models in the {label} revision have no compiled SQL "
+        f"({shown}), so checks on them could not run{cause}"
+    )
 
 
 def acquire(
@@ -225,9 +292,14 @@ def acquire(
 ) -> AcquireResult:
     """Produce the snapshot pair for a review.
 
-    The head revision is compiled from the working tree — that is what the reviewer is
-    actually proposing. The base is reconstructed in a detached worktree so the user's
-    checkout is never touched.
+    The head is compiled from the working tree when the working tree *is* the head —
+    ``HEAD``, or a name for the checked-out commit with nothing modified. Any other head
+    is compiled from a worktree at that commit. Compiling the working tree regardless
+    reviewed whatever was checked out under the SHA of whatever was asked for, and a
+    review of a real fan-out came back clean.
+
+    The base is always reconstructed in a detached worktree so the user's checkout is
+    never touched.
 
     ``data_anchor`` separates *where the code is* from *where the data is*. A caller
     reviewing a copy of the project — the eval harness works this way — has code in a
@@ -238,7 +310,8 @@ def acquire(
     repo = git.repo_root(project_dir)
     base_sha = git.resolve_revision(repo, base)
     head_sha = git.resolve_revision(repo, head)
-    changed = git.changed_files(repo, base, head)
+    head_in_place = git.is_working_tree(repo, head, project_dir)
+    changed = git.changed_files(repo, base_sha, head_sha, working_tree=head_in_place)
     relative = project_dir.resolve().relative_to(repo.resolve())
 
     cache = ManifestCache(cache_dir or repo / ".themis", enabled=use_cache)
@@ -246,20 +319,35 @@ def acquire(
     def key_for(revision: str) -> CacheKey:
         return CacheKey(revision=revision, target=target, project=str(relative))
 
-    # The head is normally the working tree, and a working tree with uncommitted edits
-    # is not described by its SHA — caching it would serve one reviewer's unsaved work
-    # to the next run of that revision. Only a clean checkout gets a key.
-    head_key = key_for(head_sha) if git.is_clean(repo, project_dir) else None
-    after = _compile_snapshot(
-        project_dir,
-        revision=head_sha,
-        target=target,
-        allowed_targets=allowed_targets,
-        timeout_s=timeout_s,
-        anchor_dir=data_anchor,
-        cache=cache,
-        cache_key=head_key,
-    )
+    after: ProjectSnapshot | None
+    if head_in_place:
+        # A working tree with uncommitted edits is not described by its SHA — caching it
+        # would serve one reviewer's unsaved work to the next run of that revision. Only
+        # a clean checkout gets a key.
+        head_key = key_for(head_sha) if git.is_clean(repo, project_dir) else None
+        after = _compile_snapshot(
+            project_dir,
+            revision=head_sha,
+            target=target,
+            allowed_targets=allowed_targets,
+            timeout_s=timeout_s,
+            anchor_dir=data_anchor,
+            cache=cache,
+            cache_key=head_key,
+        )
+    else:
+        with git.worktree_at(repo, head_sha) as tree:
+            after = _compile_snapshot(
+                tree / relative,
+                revision=head_sha,
+                target=target,
+                allowed_targets=allowed_targets,
+                timeout_s=timeout_s,
+                anchor_dir=data_anchor or project_dir,
+                cache=cache,
+                cache_key=key_for(head_sha),
+                parse_cache_from=project_dir,
+            )
 
     # Backend A: a production manifest removes the need to rebuild the base at all.
     before: ProjectSnapshot | None = None
@@ -292,9 +380,6 @@ def acquire(
                 log.warning("acquire.cached_manifest_unusable", error=str(exc)[:200])
         if before is None:
             with git.worktree_at(repo, base_sha) as tree:
-                # Only worth doing for a project the manifest cache refuses; for any
-                # other the compile is skipped entirely on the second review.
-                seed_partial_parse(project_dir, tree / relative)
                 before = _compile_snapshot(
                     tree / relative,
                     revision=base_sha,
@@ -306,6 +391,7 @@ def acquire(
                     anchor_dir=data_anchor or project_dir,
                     cache=cache,
                     cache_key=base_key,
+                    parse_cache_from=project_dir,
                 )
 
     if after is None:
@@ -322,23 +408,30 @@ def acquire(
             f"a production manifest was given but could not be used ({prod_backend_failed}); "
             "the base was rebuilt from git instead"
         )
+    head_gap = _partial_compile_reason(after, "head")
+    if head_gap:
+        reasons.append(head_gap)
     if before is None:
         # A new project, or a base that no longer compiles. Every model reads as new,
         # which is noisy but honest — better than silently comparing against nothing.
         before = ProjectSnapshot(revision=base_sha, backend=after.backend)
         reasons.append("base revision could not be compiled; every model is treated as new")
-    elif not after.has_compiled_sql:
-        reasons.append("manifest has no compiled SQL; most rules cannot run")
+    else:
+        # The base matters as much as the head. A model whose base has no SQL looks new
+        # to every rule, so every join in it reads as added.
+        base_gap = _partial_compile_reason(before, "base")
+        if base_gap:
+            reasons.append(base_gap)
     degraded = "; ".join(reasons) or None
 
     log.info(
         "acquire.complete",
         base=base_sha[:8],
         head=head_sha[:8],
+        head_from="working tree" if head_in_place else "worktree",
         changed_files=len(changed),
-        # Both, because only the base varies. The head is always compiled from the
-        # working tree, so logging its backend alone reports "manifest" whichever
-        # grounding the base actually got — including the one the caller asked for.
+        # Both, because only the base can come from a production manifest; logging the
+        # head's backend alone would report "manifest" whichever grounding the base got.
         head_backend=after.backend.value,
         base_backend=before.backend.value,
     )

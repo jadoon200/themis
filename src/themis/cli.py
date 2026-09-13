@@ -18,6 +18,22 @@ from themis.logging import configure_logging, get_logger
 from themis.models import Backend, Finding, GrainSource, Severity
 from themis.report import markdown
 
+
+def _review_errors() -> tuple[type[Exception], ...]:
+    """Failures that mean a review could not start, as opposed to a bug in THEMIS.
+
+    Reported as one line and exit code 2. A traceback for "that revision does not exist"
+    reads as the tool crashing, and a CI log full of one hides the sentence that matters.
+    """
+    from themis.acquire.dbt_runner import DbtError, UnsafeTargetError
+    from themis.acquire.git import GitError
+    from themis.capabilities import CapabilityError
+
+    return (GitError, DbtError, UnsafeTargetError, CapabilityError)
+
+
+_REVIEW_ERRORS = _review_errors()
+
 app = typer.Typer(
     name="themis",
     help="Automated review of dbt model changes for financial data transformations.",
@@ -128,19 +144,23 @@ def review(
     settings = load_settings()
     log.info("review.start", project=str(project), base=base, head=head, llm=not no_llm)
 
-    result = run_review(
-        project,
-        base=base,
-        head=head,
-        settings=settings,
-        target=target,
-        run_execution=execute or settings.execute_enabled,
-        run_llm=not no_llm,
-        pr_description=pr_description,
-        prod_manifest=prod_manifest,
-        defer_state=defer_state,
-        use_manifest_cache=not no_manifest_cache,
-    )
+    try:
+        result = run_review(
+            project,
+            base=base,
+            head=head,
+            settings=settings,
+            target=target,
+            run_execution=execute or settings.execute_enabled,
+            run_llm=not no_llm,
+            pr_description=pr_description,
+            prod_manifest=prod_manifest,
+            defer_state=defer_state,
+            use_manifest_cache=not no_manifest_cache,
+        )
+    except _REVIEW_ERRORS as exc:
+        typer.echo(f"Review could not run: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
 
     if result.execution is not None and not result.execution.ran:
         log.warning("review.execution_skipped", reason=result.execution.skipped_reason)
@@ -179,6 +199,7 @@ def review(
             degraded_reason=result.degraded_reason,
             untested_grains=result.untested_grains,
             governed_models=result.governed_models,
+            seed_affected=result.seed_affected,
         )
     )
 
@@ -207,12 +228,19 @@ def review(
                 governed_models=result.governed_models,
                 untested_grains=result.untested_grains,
                 llm=result.llm,
+                seed_affected=result.seed_affected,
             )
         )
         log.info("review.json_written", path=str(json_out), findings=len(result.findings))
 
     if save:
-        _persist(result, project=str(project), base=base, head=head, execute=execute)
+        _persist(
+            result,
+            project=str(project),
+            base=base,
+            head=head,
+            execute=execute or settings.execute_enabled,
+        )
 
     raise typer.Exit(code=_gate_exit_code(result.findings, settings.fail_on_severity))
 
@@ -235,14 +263,18 @@ def execute(
     settings = load_settings()
     log.info("execute.start", project=str(project), base=base, head=head)
 
-    result = run_review(
-        project,
-        base=base,
-        head=head,
-        settings=settings,
-        run_execution=True,
-        defer_state=defer_state,
-    )
+    try:
+        result = run_review(
+            project,
+            base=base,
+            head=head,
+            settings=settings,
+            run_execution=True,
+            defer_state=defer_state,
+        )
+    except _REVIEW_ERRORS as exc:
+        typer.echo(f"Execution could not run: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
     run = result.execution
     if run is None or not run.ran:
         reason = run.skipped_reason if run else "execution did not run"

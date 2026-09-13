@@ -60,6 +60,8 @@ def _delta(delta: ExecutionDelta) -> dict[str, Any]:
         "columns_retyped": {k: list(v) for k, v in sorted(delta.columns_retyped.items())},
         "is_material": delta.is_material,
         "build_error": delta.build_error,
+        "failed_revision": delta.failed_revision,
+        "build_skipped": delta.build_skipped,
     }
 
 
@@ -110,6 +112,7 @@ def render(
     governed_models: frozenset[str] = frozenset(),
     untested_grains: tuple[str, ...] = (),
     llm: ReviewSummary | None = None,
+    seed_affected: dict[str, tuple[str, ...]] | None = None,
 ) -> str:
     """One review as JSON, including what it could not check."""
     triaged = triage(findings, governed_models=governed_models)
@@ -117,6 +120,9 @@ def render(
         {
             "schema_version": 1,
             "models_reviewed": list(models_reviewed),
+            "seeds_changed": {
+                seed: list(models) for seed, models in sorted((seed_affected or {}).items())
+            },
             "executed": executed,
             # Never omitted. A report that hides its own blind spots reads exactly like
             # one that had none.

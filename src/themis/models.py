@@ -163,6 +163,13 @@ class ExecutionDelta(BaseModel):
     columns_retyped: dict[str, tuple[str, str]] = Field(default_factory=dict)
     null_rate_deltas: dict[str, tuple[float, float]] = Field(default_factory=dict)
     build_error: str | None = None
+    # Which revision did not build: "head", "base", or "both". Kept apart from the
+    # message because they mean different things to a reviewer — a head that no longer
+    # builds is this change's doing, a base that never built is not.
+    failed_revision: str | None = None
+    # Not built because something it depends on failed, rather than failing itself. The
+    # model that actually broke is where a reviewer should look.
+    build_skipped: bool = False
 
     @property
     def row_delta(self) -> int | None:

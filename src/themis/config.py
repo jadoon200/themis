@@ -42,9 +42,12 @@ class Settings(BaseSettings):
 
     # --- execution (Stage 3) -------------------------------------------------
     execute_enabled: bool = False
-    # Schemas the base and head builds land in. Never production.
+    # Prefixes for the schemas the base and head builds land in. Never production. Each
+    # run appends its own token, so no two runs — and no two workers — share one.
     execute_base_schema: str = "themis_base"
     execute_head_schema: str = "themis_head"
+    # Leave a run's schemas in place instead of dropping them, to inspect what was built.
+    execute_keep_schemas: bool = False
     execute_timeout_s: float = 900.0
     # Skip models above this many rows rather than blowing the time budget.
     execute_max_rows: int = 5_000_000

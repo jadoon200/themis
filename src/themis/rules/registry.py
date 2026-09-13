@@ -72,7 +72,16 @@ def run_rules(
 
 
 def _skip_reason(rule: Rule, ctx: RuleContext) -> str:
-    model = ctx.after or ctx.before
-    if rule.requires_compiled_sql and (model is None or model.analysable_sql is None):
-        return "no compiled SQL — manifest came from `dbt parse`, not `dbt compile`"
+    if rule.requires_compiled_sql:
+        head_missing = ctx.after is not None and ctx.after.analysable_sql is None
+        base_missing = ctx.before is not None and ctx.before.analysable_sql is None
+        # Say which revision, and do not guess at why: `dbt parse` is one cause, a
+        # compile that aborted part-way is another, and the degraded-grounding line at the
+        # top of the report names the actual one.
+        if head_missing and base_missing:
+            return "no compiled SQL for this model in either revision"
+        if head_missing:
+            return "no compiled SQL for this model in the head revision"
+        if base_missing:
+            return "no compiled SQL for this model in the base revision"
     return "the rule's grounding requirement was not met"
