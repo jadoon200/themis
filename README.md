@@ -37,7 +37,7 @@ of 5 descriptions that misstate the change), naming a cause for a measured movem
 rule anticipated, and writing the corrected SQL. It has never suppressed a finding, and
 the report says so.
 
-### Two things worth calling out
+### Worth calling out
 
 **Grain is derived, not read.** Fan-out detection normally rests on declared
 uniqueness tests. Real projects frequently have none, so THEMIS derives each model's
@@ -59,13 +59,14 @@ components, because an opaque number gating a merge is not a reviewable statemen
 
 **Deriving grain costs precision, not recall — measured.** Running the same corpus
 against a variant of the demo project that declares its keys: recall is 100% either
-way, while the false-positive rate halves, 25% to 12%. Every defect is caught without
-declared tests; what they buy is not flagging the safe changes.
+way, and one of the four safe-but-flagged changes stops being flagged — a join onto a
+dimension whose key the declared test proves. Every defect is caught without declared
+tests; what they buy is fewer flags on safe changes, and only the kind a key can settle.
 
 **The derived grain is handed back as tests.** Because THEMIS works out each model's
 key without being told, it can emit the assertions the project never wrote — and it
 refuses to emit any it cannot stand behind, so a suggested test does not turn red on
-first run. On the demo project it offers five and all five pass.
+first run. On the demo project it offers six and all six pass.
 
 ```bash
 themis suggest-tests --project demo_project --yaml
@@ -100,9 +101,15 @@ not run:
 themis review --base main --head HEAD --sarif themis.sarif --json themis.json
 ```
 
-Stage 3 builds both revisions to measure what actually moved. On a project whose
-ancestor closure is large, point it at a manifest from an existing build and the
-unchanged upstreams are read where they already are instead of being rebuilt twice:
+`--head HEAD` reviews the working tree, uncommitted files included. Any other revision is
+compiled and built from that commit rather than from whatever happens to be checked out,
+so a CI job can name the pull request's SHA from any checkout.
+
+Stage 3 builds both revisions to measure what actually moved — each into schemas of its
+own, dropped afterwards, and measuring only the models dbt reports as built, so a failed
+build is reported as one rather than read as a result. On a project whose ancestor
+closure is large, point it at a manifest from an existing build and the unchanged
+upstreams are read where they already are instead of being rebuilt twice:
 
 ```bash
 themis execute --base main --head HEAD --defer-state path/to/prod/target
@@ -122,6 +129,10 @@ the base from git. It does not quietly answer a different question than the one 
 Everything runs locally and costs nothing: DuckDB as the warehouse, Ollama for the
 model. No warehouse credentials, no API keys, no paid dependency.
 
+The service (`make api`, `make worker`) binds to the loopback interface. A review request
+runs dbt on the project it names, so before exposing it set `THEMIS_API_TOKEN` and
+`THEMIS_PROJECT_ROOTS`, and run `make migrate` after upgrading.
+
 ## Dialect
 
 SQL is parsed as **Trino** (Starburst), independently of what executes it. The demo
@@ -130,11 +141,17 @@ executes SQL during analysis.
 
 ## Status
 
-Early. See `docs/ROADMAP.md` for what is built and what is next, and `docs/EVAL.md`
-for measured precision and recall — 100% recall, **89% precision, 25% false-positive
-rate** — including the cases where THEMIS does worse than it looks like it should. The
-false-positive rate read 0% until the corpus gained cases in which a rule could be
-wrong; it was a property of the questions, not the answers.
+A proof of concept. See `docs/ROADMAP.md` for what is built and what is next, and
+`docs/EVAL.md` for the measurements, including where THEMIS does worse than it looks
+like it should. On the 42-case corpus: **100% recall, all 29 rules firing, every
+behaviour-preserving control silent** — and CI fails if any of that stops being true.
+Four of four deliberately safe changes are still flagged (recall-first, by design),
+which puts precision at 81% and the false-positive rate at 40%; those two figures move
+with how many safe cases the corpus holds, so the four-of-four is the one to read.
+
+That CI gate is recent. Until September 2026 the corpus job ran against a project it had
+not built, measured 9 of 29 rules, and passed — `docs/EVAL.md` records what else a review
+of the review found.
 
 ## Licence
 

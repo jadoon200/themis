@@ -19,8 +19,9 @@
   parse in the shape the original did. Adjudication remains on and unproven — it has
   never changed a decision.
 - **Suggested tests.** The derived grain emitted as `schema.yml` assertions, with a
-  refusal policy strict enough that a suggestion does not fail on first run — and
-  measured to be worth accepting: declaring the keys halves the false-positive rate.
+  refusal policy strict enough that a suggestion does not fail on first run — six on the
+  demo project, all six holding — and measured to be worth accepting: declaring the keys
+  settles the one safe change on the corpus that a key can settle.
 - **Tested-vs-testless measurement.** `themis eval --variant tested` merges declared
   keys into the demo project and reruns the corpus, which is how the cost of deriving
   grain rather than reading it is finally a number rather than an expectation.
@@ -31,16 +32,30 @@
   rather than hidden.
 - **Stage 3 — Execute.** Both revisions built and diffed on real data, with
   `--defer-state` to resolve unchanged upstreams to an existing build instead of
-  rebuilding the ancestor closure twice.
+  rebuilding the ancestor closure twice. Each run builds into schemas of its own and
+  drops them afterwards, and dbt's own record of which models built decides what is
+  measured — a relation merely existing is never taken as this run's result. A head that
+  no longer builds is a finding in its own right (`X0002`).
+- **The revision asked for.** The head is compiled and built from the commit `--head`
+  names; the working tree stands in only when it is that commit. A seed data change, a
+  `dbt_project.yml` edit, and a model outside `models/` all reach a review.
+- **A corpus that fails.** `themis eval` exits non-zero when a case could not be scored,
+  a defect or latent case goes unreported, a control is flagged, or a rule never fires —
+  and CI runs it against a built project.
 - **Manifest cache.** Compiled manifests are content-addressed by git revision, so the
   base compile a review repeats every time is paid once — and refused outright for
   projects whose SQL is built from query results, where a revision does not determine
   the output.
-- **Capability-scoped workers.** Each worker declares what it may do. `execute` is off
-  by default and is the only capability that reaches a warehouse with write access, so
-  the analysis fleet holds no credentials to misuse. Enforced when claiming work and
-  again at execution, because a guard living only in the scheduler is one a scheduling
-  bug removes.
+- **Capability-scoped workers.** Each worker declares what it may do, and every
+  capability is enforced: `compile` (which needs warehouse credentials and is not
+  read-only) and `analyse` to take work at all, `review` for a model review, and
+  `execute` — off by default, the only one that builds anything — for Stage 3. Checked
+  when claiming work and again in the pipeline, because a guard living only in the
+  scheduler is one a scheduling bug removes. A worker whose claim was taken over writes
+  nothing.
+- **Service.** Queued reviews carry the pull-request description and run the model
+  layer when asked. Revisions that git would read as options are rejected, project paths
+  are bounded by `THEMIS_PROJECT_ROOTS`, and `THEMIS_API_TOKEN` adds a bearer token.
 - **Warehouse clients.** DuckDB and **Trino**, both tested against a live engine.
 - **Report.** Ranked Markdown, macro attribution, measured deltas where present; SARIF
   for inline annotations, carrying the same triage; and JSON for anything that is not a
@@ -51,9 +66,9 @@
 ## Next
 
 **M2 — grounding depth.** Built. Column-level lineage, the grain lattice, macro and
-YAML routing, missing-test suggestions derived from the grain, and rule families F2
-through F8. Still open: the dual-manifest backend is loadable but not exercised, and
-the dbt-bouncer ingest is untuned.
+YAML routing, missing-test suggestions derived from the grain, rule families F2 through
+F8, and the dual-manifest backend (`--prod-manifest`), measured on the demo project. The
+dbt-bouncer ingest is not built; see below.
 
 **M3 — execution.** Built. Base and head built side by side and diffed on real data:
 row counts, monetary sums, column sets, null rates. It turned inference into
@@ -65,12 +80,14 @@ machinery.
 no decision and has not across 36 runs and three models. The other three earn their
 place because no rule can occupy them: **intent** catches 5 of 5 descriptions that
 misstate what the change does, **explain** names a cause for a measured movement no
-rule accounts for, and **fixes** return corrected SQL for 14 of 24 findings with none
+rule accounts for, and **fixes** return corrected SQL for 16 of 26 findings with none
 malformed. [EVAL](EVAL.md) has the numbers and the tuning mistake that cost two intent
 catches before it was undone.
 
-**M5 — follow-up.** Built. Persisted runs and grounded Q&A, including "why was this not
-flagged?", answered from persisted absence. An unanswerable question gets a refusal.
+**M5 — follow-up.** Built as a CLI. Persisted runs and grounded Q&A, including "why was
+this not flagged?", answered from persisted absence. An unanswerable question — or an
+answer that quotes nothing — gets a refusal. The MCP server and counterfactual questions
+("what if this key were tested?") in the original plan are not built.
 
 **M6 — cost.** Built, minus the classifier. Triage ranks and demotes with an
 explicit, printed rubric; SARIF carries the same triage so the annotation view and the
@@ -79,7 +96,24 @@ report agree; token accounting was already done. The machine-learning lane is
 
 **Next.** Deferral and the dual-manifest backend measured against a project large
 enough for the saving to show as time rather than as object counts — that number has to
-come from a real warehouse. A tuned dbt-bouncer ingest for the governance family.
+come from a real warehouse. After that, in rough order of what it would change:
+
+- **A corpus case with a set operation.** The UNION ALL false negative was found by
+  reading, and a mutation for it needs a demo model that unions.
+- **Retry and fallback on a failed model call** — about twenty lines, and the one gap an
+  agent framework would genuinely have filled.
+- **A sample of differing rows** beside the measured totals, joined on the derived key.
+- **The MCP server** exposing the `ask` lane, and **counterfactual questions** that
+  re-run the rules against a hypothetical declared test.
+
+## Not built, with the reason
+
+**dbt-bouncer ingest.** Governance checks that are not diff-aware fire on every model of a
+project with no tests, which is exactly the noise triage exists to prevent; adopting it
+means writing a tuned configuration first, and F7 already covers the diff-aware part.
+
+**A UI.** Deferred at the owner's request. The JSON report carries everything one would
+render.
 
 ## Measured and left alone
 
