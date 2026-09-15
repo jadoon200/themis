@@ -1090,6 +1090,27 @@ Also closed: model calls retry transient failures, the names checks match on are
 `--redact` and `themis profile` let evidence leave a project whose code cannot, and CI
 reviews a fan-out on a live Trino end to end.
 
+### Running it all, repeatably
+
+The afternoon of component runs above was done by hand, once. `scripts/component_check.py`
+makes it a command: 47 checks against the real CLI, a real Postgres, the HTTP app and a
+worker, Ollama, a live Trino, and corpus subsets, over five scenario commits built on HEAD in
+a throwaway worktree. Its first full run found three defects that 448 passing tests did not.
+
+| defect | why no test could see it |
+|---|---|
+| every log line went to stdout, into `--yaml`, `--json` and piped reports | no test parsed a real command's stdout |
+| `dim_entities` read as changed on every review | its SQL comes from a query with no ORDER BY; two compiles of one commit differed |
+| `ask` about a model the review never saw exited 0 | the reply was true and quoted the absence notice, so grounding passed; only the exit code was wrong |
+
+The third is the subtle one. The model did nothing wrong — it said nothing was found and
+cited the line that says so. But a script reads exit 0 as "the review covered this", and
+whether it got that exit code depended on how the model chose to phrase a known answer. The
+refusal is now made by code, before any model call.
+
+Current result, on `fix/poc-base`: **47 of 47**, none skipped, 459 s; CI green on all four
+jobs, with the corpus job reproducing the numbers at the top of this file.
+
 ## Known limitations
 
 Kept current. Several entries here were closed and are gone rather than left standing —

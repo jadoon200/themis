@@ -145,6 +145,17 @@ The service (`make api`, `make worker`) binds to the loopback interface. A revie
 runs dbt on the project it names, so before exposing it set `THEMIS_API_TOKEN` and
 `THEMIS_PROJECT_ROOTS`, and run `make migrate` after upgrading.
 
+To check that every part actually runs — not a stand-in for it — with Postgres (`make up`),
+Ollama and a Trino on port 8085 available:
+
+```bash
+python scripts/component_check.py
+```
+
+47 checks from a throwaway worktree: the CLI, five scenario reviews, exit codes, reports,
+execution, persistence, `ask`, the API and a worker, Trino, and the corpus. `--quick` skips
+the model, Trino and the corpus.
+
 ## Dialect
 
 SQL is parsed as **Trino** (Starburst), independently of what executes it. The demo
