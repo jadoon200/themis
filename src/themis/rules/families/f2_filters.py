@@ -19,7 +19,13 @@ from dataclasses import dataclass, field
 
 from sqlglot import exp
 
-from themis.analyze.parse import ParseError, parse_sql
+from themis.analyze.parse import (
+    ParseError,
+    parse_sql,
+    resolve_relation,
+    select_from,
+    select_joins,
+)
 from themis.models import Confidence, Evidence, Finding, Severity
 from themis.rules.base import Rule, RuleContext
 
@@ -42,11 +48,40 @@ def _predicates(sql: str, dialect: str) -> dict[str, str]:
         condition = where.this
         if condition is None:
             continue
+        aliases = (
+            _relation_aliases(where.parent, tree) if isinstance(where.parent, exp.Select) else {}
+        )
         for conjunct in _split_conjuncts(condition):
             rendered = conjunct.sql(dialect=dialect)
+            # The key names each column by the model it reads, not by the alias the SQL
+            # happens to use. Renaming `accounts` to `coa` changes every qualifier in the
+            # WHERE while changing nothing about which rows qualify, and comparing the
+            # rendered text reported four filter changes on a pure refactor.
+            keyed = conjunct.copy()
+            for column in keyed.find_all(exp.Column):
+                qualifier = column.table
+                if qualifier and qualifier in aliases:
+                    column.set("table", exp.to_identifier(aliases[qualifier]))
             # Normalise whitespace so reformatting is not a change.
-            found[" ".join(rendered.split())] = rendered
+            found[" ".join(keyed.sql(dialect=dialect).split())] = rendered
     return found
+
+
+def _relation_aliases(select: exp.Select, tree: exp.Expression) -> dict[str, str]:
+    """Qualifier -> the model it names, for the relations this select reads."""
+    sources: list[exp.Expression] = []
+    source = select_from(select)
+    if source is not None:
+        sources.append(source.this)
+    sources.extend(join.this for join in select_joins(select))
+
+    aliases: dict[str, str] = {}
+    for relation in sources:
+        if isinstance(relation, exp.Table) and relation.name:
+            resolved = resolve_relation(tree, relation.name)
+            aliases[relation.alias_or_name] = resolved
+            aliases.setdefault(relation.name, resolved)
+    return aliases
 
 
 def _split_conjuncts(node: exp.Expression) -> list[exp.Expression]:

@@ -138,6 +138,22 @@ _MART_REVENUE = "models/marts/fct_revenue.sql"
 _STG_CONTRACTS = "models/staging/stg_contracts.sql"
 _CONTRACT_MART = "models/marts/dim_entity_contract.sql"
 _DIM_ENTITIES = "models/marts/dim_entities.sql"
+# The select list, joins and filter of int_revenue_recognized's `joined` CTE.
+_JOINED_ACCOUNTS = (
+    "        accounts.account_code,\n"
+    "        accounts.account_name,\n"
+    "        accounts.account_type,\n"
+    "        accounts.entity_code,\n"
+    "        contracts.customer_id,\n"
+    "        coalesce(contracts.recognition_method, 'point_in_time')"
+    " as recognition_method,\n"
+    "        contracts.term_months\n"
+    "    from converted\n"
+    "    inner join accounts\n"
+    "        on converted.account_id = accounts.account_id\n"
+    "    left join contracts\n"
+    "        on converted.contract_id = contracts.contract_id\n"
+)
 _ACCOUNT_SUMMARY = "models/marts/fct_account_period_summary.sql"
 _REVENUE_FILTER = (
     "    where {{ external_revenue_filter('accounts.account_type', 'accounts.is_intercompany') }}"
@@ -724,6 +740,20 @@ fx as (
 entries as (select * from ledger_entries),
 
 rates as (select * from fx),""",
+    ),
+    Mutation(
+        id="control_rename_alias_in_filter",
+        kind=Kind.CONTROL,
+        expects_family="",
+        description=(
+            "A table alias renamed everywhere it is used, the WHERE included — the refactor "
+            "F2001 read as two filters removed and two added"
+        ),
+        relative_path=_INT_REVENUE,
+        find=_JOINED_ACCOUNTS + _REVENUE_FILTER,
+        replace=(_JOINED_ACCOUNTS + _REVENUE_FILTER)
+        .replace("accounts.", "coa.")
+        .replace("inner join accounts\n", "inner join accounts as coa\n"),
     ),
     Mutation(
         id="control_add_comments",
