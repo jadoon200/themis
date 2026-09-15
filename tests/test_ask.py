@@ -249,6 +249,45 @@ def test_the_model_never_receives_a_database_handle(session: Session, run: Revie
     assert "select " not in prompt.lower()
 
 
+def test_a_question_only_about_an_unexamined_model_is_refused_without_the_model(
+    session: Session, run: ReviewRun
+) -> None:
+    """Found by running `themis ask` for real: the model answered "nothing was found",
+    quoted the absence notice, and was shown as a grounded answer."""
+    provider = FakeProvider(
+        {
+            "can_answer": True,
+            "answer": "Nothing was found about dim_customer_segments.",
+            "evidence_quote": "This review has no record of them at all",
+        }
+    )
+    question = "Was dim_customer_segments checked for duplicates?"
+    result = answer_question(
+        question, gather(session, run, question), provider=provider, settings=Settings()
+    )
+    assert not result.grounded
+    assert "dim_customer_segments" in (result.refusal_reason or "")
+    assert provider.prompts == []
+
+
+def test_a_known_model_alongside_an_unknown_one_still_reaches_the_model(
+    session: Session, run: ReviewRun
+) -> None:
+    provider = FakeProvider(
+        {
+            "can_answer": True,
+            "answer": "Rows went from 15 to 45.",
+            "evidence_quote": "stg_fx_rates is not unique on currency_code",
+        }
+    )
+    question = "did fct_revenue or dim_customer_segments change?"
+    result = answer_question(
+        question, gather(session, run, question), provider=provider, settings=Settings()
+    )
+    assert result.grounded
+    assert len(provider.prompts) == 1
+
+
 def test_an_answer_that_quotes_nothing_is_discarded(session: Session, run: ReviewRun) -> None:
     """The fabricated answer above, with the quote left blank. The grounding check only
     ran when a quote was present, so this one used to be shown as grounded."""

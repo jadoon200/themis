@@ -689,7 +689,8 @@ def ask(
             raise typer.Exit(code=2)
 
         facts = gather(session, stored, question)
-        context_is_empty = facts.is_empty
+        # The refusal for an unexamined model already says why the review is silent.
+        context_is_empty = facts.is_empty and not facts.unknown_entities
         run_key = stored.run_key
 
         # Answering happens inside the session because the facts are ORM rows; nothing
