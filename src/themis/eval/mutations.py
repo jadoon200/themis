@@ -138,6 +138,7 @@ _MART_REVENUE = "models/marts/fct_revenue.sql"
 _STG_CONTRACTS = "models/staging/stg_contracts.sql"
 _CONTRACT_MART = "models/marts/dim_entity_contract.sql"
 _DIM_ENTITIES = "models/marts/dim_entities.sql"
+_ACCOUNT_SUMMARY = "models/marts/fct_account_period_summary.sql"
 _REVENUE_FILTER = (
     "    where {{ external_revenue_filter('accounts.account_type', 'accounts.is_intercompany') }}"
 )
@@ -628,6 +629,35 @@ _ALL_INJECTED: tuple[Mutation, ...] = (
         relative_path=_INT_CONVERTED,
         find="{{ money('entries.amount_txn_ccy * rates.rate') }}   as amount_usd",
         replace="{{ money('entries.amount_txn_ccy / rates.rate') }}   as amount_usd",
+    ),
+    Mutation(
+        id="union_joined_as_one_row_per_period",
+        pr_description=(
+            "Add the reversed amount to the account period summary, from int_account_activity."
+        ),
+        description_is_honest=False,
+        kind=Kind.DEFECT,
+        expects_family="F1",
+        description=(
+            "A join onto a UNION ALL keyed as if it were one row per account and period. "
+            "The union has a row per activity type, so every account-period with both "
+            "postings and reversals doubles"
+        ),
+        # The case the corpus could not see: grain derivation read the union's first
+        # branch, proved a key the union duplicates, and F1001 then wrote nothing for a
+        # join that covered it. Execution still caught the fan-out, so the case scored as
+        # detected — only the expected-family gate makes the silent rule a failure.
+        relative_path=_ACCOUNT_SUMMARY,
+        find="select * from summary",
+        replace=(
+            "select\n"
+            "    summary.*,\n"
+            "    activity.amount_txn_ccy as reversed_amount_txn_ccy\n"
+            "from summary\n"
+            "left join {{ ref('int_account_activity') }} as activity\n"
+            "    on activity.account_id = summary.account_id\n"
+            "    and activity.period_month = summary.period_month"
+        ),
     ),
     Mutation(
         id="sign_convention_flipped",

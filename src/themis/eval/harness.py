@@ -620,6 +620,21 @@ class EvalReport:
                 continue  # nobody chose these; they are reported, never gated
             if not outcome.applied or outcome.error is not None:
                 failures.append(f"{outcome.mutation.id}: could not be scored — {outcome.error}")
+        for outcome in self.usable:
+            # Caught, but not by the rule that exists for it. Execution or the safety net
+            # can detect a fan-out on their own, so a rule that went silent still scored
+            # as a detection — which is exactly how the UNION ALL false negative hid.
+            if (
+                outcome.mutation.kind in (Kind.DEFECT, Kind.LATENT)
+                and outcome.detected
+                and outcome.mutation.expects_family
+                and not outcome.expected_family_fired
+            ):
+                failures.append(
+                    f"{outcome.mutation.id}: caught only incidentally — "
+                    f"{outcome.mutation.expects_family} did not fire "
+                    f"(fired: {', '.join(outcome.families_fired)})"
+                )
         for outcome in self.scored:
             if outcome.classification == "false_negative":
                 failures.append(

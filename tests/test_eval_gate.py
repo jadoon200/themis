@@ -164,3 +164,12 @@ def test_every_corpus_case_that_breaks_the_build_says_why() -> None:
     for mutation in ALL:
         if mutation.build_fails is not None:
             assert len(mutation.build_fails) > 20, mutation.id
+
+
+def test_a_defect_caught_only_by_another_family_fails() -> None:
+    """Execution caught the UNION ALL fan-out while F1001 said nothing, and it scored."""
+    outcome = _outcome()
+    outcome.expected_family_fired = False
+    outcome.families_fired = ("X",)
+    failures = EvalReport([outcome]).gate_failures(full_corpus=False)
+    assert any("incidentally" in f for f in failures)
