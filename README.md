@@ -32,8 +32,8 @@ model is reserved for judgement, and never produces facts of its own.
 
 Stages 0–4 and 6 need no model at all, and `--no-llm` is a fully useful mode —
 detection is entirely the rules' work. The model is kept for the three jobs no rule can
-do: reading the author's description against what the SQL actually does (it catches 5
-of 5 descriptions that misstate the change), naming a cause for a measured movement no
+do: reading the author's description against what the SQL actually does (it catches 6
+of 6 descriptions that misstate the change), naming a cause for a measured movement no
 rule anticipated, and writing the corrected SQL. It has never suppressed a finding, and
 the report says so.
 
@@ -66,7 +66,7 @@ tests; what they buy is fewer flags on safe changes, and only the kind a key can
 **The derived grain is handed back as tests.** Because THEMIS works out each model's
 key without being told, it can emit the assertions the project never wrote — and it
 refuses to emit any it cannot stand behind, so a suggested test does not turn red on
-first run. On the demo project it offers six and all six pass.
+first run. On the demo project it offers seven and all seven pass.
 
 ```bash
 themis suggest-tests --project demo_project --yaml
@@ -105,6 +105,11 @@ themis review --base main --head HEAD --sarif themis.sarif --json themis.json
 compiled and built from that commit rather than from whatever happens to be checked out,
 so a CI job can name the pull request's SHA from any checkout.
 
+Advisory by default. Set `THEMIS_FAIL_ON_SEVERITY=high` and the exit code gates a merge:
+`1` for a finding at or above it, and `3` when the review itself is incomplete — checks
+skipped, grounding degraded, or execution asked for and not run — because a gate that
+passes a review nobody finished is not a gate.
+
 Stage 3 builds both revisions to measure what actually moved — each into schemas of its
 own, dropped afterwards, and measuring only the models dbt reports as built, so a failed
 build is reported as one rather than read as a result. On a project whose ancestor
@@ -129,6 +134,13 @@ the base from git. It does not quietly answer a different question than the one 
 Everything runs locally and costs nothing: DuckDB as the warehouse, Ollama for the
 model. No warehouse credentials, no API keys, no paid dependency.
 
+Calibrating on a project whose code cannot be shared: `themis profile` describes it in
+counts — how much of its SQL parses, how much grain and lineage resolve, how often the
+configured names match — and `--redact` writes SARIF and JSON with no SQL, no measured
+values and hashed names. The names checks match on (money columns, personal-data columns,
+reporting tags, published folders) are settings, e.g.
+`THEMIS_MONEY_COLUMN_HINTS='["amount","ntnl","mtm"]'`.
+
 The service (`make api`, `make worker`) binds to the loopback interface. A review request
 runs dbt on the project it names, so before exposing it set `THEMIS_API_TOKEN` and
 `THEMIS_PROJECT_ROOTS`, and run `make migrate` after upgrading.
@@ -143,10 +155,10 @@ executes SQL during analysis.
 
 A proof of concept. See `docs/ROADMAP.md` for what is built and what is next, and
 `docs/EVAL.md` for the measurements, including where THEMIS does worse than it looks
-like it should. On the 42-case corpus: **100% recall, all 29 rules firing, every
+like it should. On the 44-case corpus: **100% recall, all 29 rules firing, every
 behaviour-preserving control silent** — and CI fails if any of that stops being true.
 Four of four deliberately safe changes are still flagged (recall-first, by design),
-which puts precision at 81% and the false-positive rate at 40%; those two figures move
+which puts precision at 82% and the false-positive rate at 36%; those two figures move
 with how many safe cases the corpus holds, so the four-of-four is the one to read.
 
 That CI gate is recent. Until September 2026 the corpus job ran against a project it had
