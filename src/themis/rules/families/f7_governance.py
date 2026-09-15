@@ -19,38 +19,6 @@ from themis.rules.base import Rule, RuleContext
 
 FAMILY = "F7"
 
-# Column-name hints for personal or restricted data. Deliberately broad — a false
-# positive costs one glance, a false negative puts personal data in a shared mart.
-_SENSITIVE = (
-    "email",
-    "phone",
-    "address",
-    "postcode",
-    "zipcode",
-    "ssn",
-    "nric",
-    "passport",
-    "dob",
-    "birth",
-    "salary",
-    "national_id",
-    "tax_id",
-    "account_number",
-    "iban",
-    "card_number",
-    "full_name",
-    "first_name",
-    "last_name",
-)
-
-# Folders whose models are consumed outside the data team.
-_WIDE_AUDIENCE = ("marts/", "reporting/", "published/", "exposed/")
-
-
-def _is_sensitive(name: str) -> bool:
-    lowered = name.lower()
-    return any(hint in lowered for hint in _SENSITIVE)
-
 
 @dataclass
 class SensitiveColumnExposedRule(Rule):
@@ -63,8 +31,7 @@ class SensitiveColumnExposedRule(Rule):
     def check(self, ctx: RuleContext) -> list[Finding]:
         if ctx.after is None:
             return []
-        path = (ctx.after.file_path or "").replace("\\", "/")
-        if not any(folder in path for folder in _WIDE_AUDIENCE):
+        if not ctx.vocabulary.is_published(ctx.after.file_path or ""):
             return []
 
         from themis.rules.families.f6_contracts import _output_columns, _resolved_outputs
@@ -98,7 +65,7 @@ class SensitiveColumnExposedRule(Rule):
                 return []
             before_columns = resolved
 
-        added = {c for c in after_columns - before_columns if _is_sensitive(c)}
+        added = {c for c in after_columns - before_columns if ctx.vocabulary.is_sensitive(c)}
         if not added:
             return []
 

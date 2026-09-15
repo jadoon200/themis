@@ -18,6 +18,8 @@ from dataclasses import dataclass, field
 from themis.analyze.lineage import LineageIndex
 from themis.models import Finding, Grain, Severity
 from themis.snapshot import ModelNode, ProjectSnapshot
+from themis.vocabulary import DEFAULT as DEFAULT_VOCABULARY
+from themis.vocabulary import Vocabulary
 
 
 @dataclass
@@ -42,6 +44,9 @@ class RuleContext:
     via_macro: str | None = None
     # Populated when a schema YAML edit is what pulled it in.
     via_yaml: str | None = None
+    # The names this project uses for money, personal data, reporting tags and published
+    # folders. Defaults to common convention; a run passes what it was configured with.
+    vocabulary: Vocabulary = DEFAULT_VOCABULARY
 
     @property
     def is_new(self) -> bool:
@@ -70,7 +75,7 @@ class RuleContext:
         model = self.after or self.before
         if model is None:
             return False
-        return bool({"regulatory", "recon", "control"} & set(model.tags))
+        return self.vocabulary.is_governed(model.tags)
 
 
 @dataclass

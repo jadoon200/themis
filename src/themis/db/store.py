@@ -200,7 +200,11 @@ def save_result(session: Session, run: ReviewRun, result: ReviewResult) -> Revie
                     rule_id=finding.rule_id,
                     model_name=finding.evidence.model_name,
                     project=run.project,
-                    evidence_note=finding.evidence.note,
+                    evidence_note=(
+                        finding.evidence.identity
+                        if finding.evidence.identity is not None
+                        else finding.evidence.note
+                    ),
                 ),
                 rule_id=finding.rule_id,
                 family=finding.family,

@@ -18,31 +18,9 @@ from sqlglot import exp
 from themis.analyze.parse import ParseError, parse_sql
 from themis.models import Confidence, Evidence, Finding, Severity
 from themis.rules.base import Rule, RuleContext
+from themis.vocabulary import Vocabulary
 
 FAMILY = "F3"
-
-# Substrings that mark a column as monetary. Deliberately broad: a false positive here
-# costs a reviewer one glance, a false negative costs a restatement.
-_MONEY_HINTS = (
-    "amount",
-    "amt",
-    "price",
-    "cost",
-    "revenue",
-    "balance",
-    "value",
-    "total",
-    "fee",
-    "tax",
-    "charge",
-    "payment",
-    "salary",
-    "rate",
-    "usd",
-    "eur",
-    "gbp",
-    "sgd",
-)
 
 # Binary floating point types. Exact-decimal types are fine.
 # Trino's REAL parses to FLOAT, so the two are covered by one entry.
@@ -51,11 +29,6 @@ _INEXACT_TYPES = {
     exp.DataType.Type.FLOAT,
     exp.DataType.Type.UDOUBLE,
 }
-
-
-def _is_monetary(name: str) -> bool:
-    lowered = name.lower()
-    return any(hint in lowered for hint in _MONEY_HINTS)
 
 
 def _cast_context_name(cast: exp.Cast) -> str | None:
@@ -128,7 +101,7 @@ class MoneyAsFloatRule(Rule):
         findings: list[Finding] = []
         seen: set[str] = set()
         for cast, name in _casts(ctx.after.analysable_sql, ctx.dialect):
-            if cast.to.this not in _INEXACT_TYPES or not _is_monetary(name):
+            if cast.to.this not in _INEXACT_TYPES or not ctx.vocabulary.is_monetary(name):
                 continue
             if name in before_inexact or name in seen:
                 continue  # pre-existing, or already reported for this model
@@ -204,7 +177,7 @@ class DecimalScaleReducedRule(Rule):
             previous = before_scales.get(name)
             if scale is None or previous is None or scale >= previous or name in seen:
                 continue
-            if not _is_monetary(name):
+            if not ctx.vocabulary.is_monetary(name):
                 continue
             seen.add(name)
             findings.append(
@@ -236,7 +209,7 @@ class DecimalScaleReducedRule(Rule):
         return findings
 
 
-def _sign_assigning_cases(sql: str, dialect: str) -> dict[str, str]:
+def _sign_assigning_cases(sql: str, dialect: str, vocab: Vocabulary) -> dict[str, str]:
     """CASE expressions that assign opposite signs to their branches.
 
     A ledger encodes debit and credit as a sign, and that encoding is almost always a
@@ -257,7 +230,7 @@ def _sign_assigning_cases(sql: str, dialect: str) -> dict[str, str]:
         if not _has_opposing_signs(case):
             continue
         columns = [c.name for c in case.find_all(exp.Column)]
-        if not any(_is_monetary(name) for name in columns):
+        if not any(vocab.is_monetary(name) for name in columns):
             continue
         # The key is the branch shape; the value is the condition. Same shape with a
         # different condition means the sign convention moved.
@@ -349,8 +322,8 @@ class SignConventionChangedRule(Rule):
         if before_sql is None or after_sql is None:
             return []
 
-        before = _sign_assigning_cases(before_sql, ctx.dialect)
-        after = _sign_assigning_cases(after_sql, ctx.dialect)
+        before = _sign_assigning_cases(before_sql, ctx.dialect, ctx.vocabulary)
+        after = _sign_assigning_cases(after_sql, ctx.dialect, ctx.vocabulary)
 
         findings: list[Finding] = []
         for shape, condition in sorted(after.items()):

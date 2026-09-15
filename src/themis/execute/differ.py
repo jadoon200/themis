@@ -10,30 +10,10 @@ from __future__ import annotations
 from themis.execute.warehouse import WarehouseClient
 from themis.logging import get_logger
 from themis.models import ExecutionDelta, Grain, GrainSource
+from themis.vocabulary import DEFAULT as DEFAULT_VOCABULARY
+from themis.vocabulary import Vocabulary
 
 log = get_logger(__name__)
-
-# Column-name hints for money, matching the F3 rule family so a measured finding and a
-# static one talk about the same set of columns.
-_MONEY_HINTS = (
-    "amount",
-    "amt",
-    "price",
-    "cost",
-    "revenue",
-    "balance",
-    "value",
-    "total",
-    "fee",
-    "tax",
-    "charge",
-    "payment",
-    "salary",
-)
-
-
-def _monetary(columns: tuple[str, ...]) -> tuple[str, ...]:
-    return tuple(c for c in columns if any(h in c.lower() for h in _MONEY_HINTS))
 
 
 def diff_tables(
@@ -43,6 +23,7 @@ def diff_tables(
     base_schema: str,
     head_schema: str,
     max_rows: int,
+    vocabulary: Vocabulary = DEFAULT_VOCABULARY,
 ) -> ExecutionDelta:
     """Compare one model built two ways."""
     before = client.shape(base_schema, model)
@@ -76,7 +57,8 @@ def diff_tables(
         return delta
 
     shared = tuple(sorted(set(before.column_types) & set(after.column_types)))
-    money = _monetary(tuple(c for c in shared if c in set(after.numeric_columns)))
+    numeric = set(after.numeric_columns)
+    money = tuple(c for c in shared if c in numeric and vocabulary.is_monetary(c))
 
     sums_before = client.sums(base_schema, model, money)
     sums_after = client.sums(head_schema, model, money)

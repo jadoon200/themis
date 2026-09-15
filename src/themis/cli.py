@@ -7,7 +7,7 @@ shell, and the eval harness all exercise exactly the same code path.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 import typer
 
@@ -130,9 +130,23 @@ def review(
         bool,
         typer.Option("--no-manifest-cache", help="Recompile every revision, ignoring .themis/."),
     ] = False,
+    redact: Annotated[
+        bool,
+        typer.Option(
+            "--redact",
+            help=(
+                "Write SARIF and JSON with no SQL, no measured values and hashed names — "
+                "safe to share outside the team that owns the project."
+            ),
+        ),
+    ] = False,
     verbose: VerboseOpt = False,
 ) -> None:
     """Review the dbt model changes between two revisions.
+
+    Exit codes: 0 pass (or advisory), 1 a finding at or above THEMIS_FAIL_ON_SEVERITY,
+    2 the review could not start, 3 blocking is on and the review is incomplete —
+    grounding degraded, checks skipped, or execution requested and not run.
 
     `--prod-manifest` and `--defer-state` both take production build artifacts and can
     be given the same `target/` directory: the first reads the base from it instead of
@@ -208,7 +222,12 @@ def review(
 
         sarif.parent.mkdir(parents=True, exist_ok=True)
         sarif.write_text(
-            sarif_report.render(result.findings, governed_models=result.governed_models)
+            sarif_report.render(
+                result.findings,
+                governed_models=result.governed_models,
+                incomplete=result.incomplete,
+                redact=settings.redact_salt if redact else None,
+            )
         )
         log.info("review.sarif_written", path=str(sarif), findings=len(result.findings))
 
@@ -229,6 +248,8 @@ def review(
                 untested_grains=result.untested_grains,
                 llm=result.llm,
                 seed_affected=result.seed_affected,
+                incomplete=result.incomplete,
+                redact=settings.redact_salt if redact else None,
             )
         )
         log.info("review.json_written", path=str(json_out), findings=len(result.findings))
@@ -242,7 +263,12 @@ def review(
             execute=execute or settings.execute_enabled,
         )
 
-    raise typer.Exit(code=_gate_exit_code(result.findings, settings.fail_on_severity))
+    code = _review_exit_code(result, settings.fail_on_severity)
+    if code == EXIT_INCOMPLETE:
+        typer.echo("Merge gate: the review is incomplete, so it cannot pass:", err=True)
+        for reason in result.incomplete_reasons:
+            typer.echo(f"  - {reason}", err=True)
+    raise typer.Exit(code=code)
 
 
 @app.command()
@@ -434,6 +460,61 @@ def suggest_tests_cmd(
         "or an `--execute` run to measure it."
     )
     typer.echo("Re-run with --yaml for a schema.yml fragment.")
+    raise typer.Exit(code=0)
+
+
+@app.command(name="profile")
+def profile_cmd(
+    project: ProjectOpt = Path("demo_project"),
+    as_json: Annotated[bool, typer.Option("--json", help="Print the profile as JSON.")] = False,
+    verbose: VerboseOpt = False,
+) -> None:
+    """Describe a project's shape in counts, naming nothing in it.
+
+    How much of its SQL parses, how deep it goes, how far its macros reach, how much grain
+    and lineage THEMIS can derive, and how often the configured vocabulary matches its
+    columns, tags and folders. Built to be shared from a project whose code cannot be.
+    """
+    import json
+
+    from themis import vocabulary
+    from themis.analyze.grain import infer_grains
+    from themis.analyze.lineage import build_column_graph
+    from themis.analyze.profile import profile
+
+    configure_logging(verbose=verbose)
+    settings = load_settings()
+
+    manifest_path = project / "target" / "manifest.json"
+    if not manifest_path.exists():
+        typer.echo(
+            f"No manifest at {manifest_path}. Run `dbt compile` in {project} first — "
+            "`dbt parse` is not enough, it leaves Jinja unexpanded.",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
+    snapshot = load_manifest(manifest_path, revision="HEAD", backend=Backend.MANIFEST)
+    result = profile(
+        snapshot,
+        infer_grains(snapshot, dialect=settings.dialect),
+        build_column_graph(snapshot, dialect=settings.dialect),
+        vocabulary.from_settings(settings),
+        dialect=settings.dialect,
+    )
+    if as_json:
+        typer.echo(json.dumps(result, indent=2))
+        raise typer.Exit(code=0)
+
+    def emit(section: dict[str, Any], indent: int = 0) -> None:
+        for key, value in section.items():
+            if isinstance(value, dict):
+                typer.echo(f"{'  ' * indent}{key}:")
+                emit(value, indent + 1)
+            else:
+                typer.echo(f"{'  ' * indent}{key}: {value}")
+
+    emit(result)
     raise typer.Exit(code=0)
 
 
@@ -1037,6 +1118,27 @@ def _persist(result: object, *, project: str, base: str, head: str, execute: boo
         # Never fail a review because history could not be written. The findings the
         # reviewer needs are already on screen.
         log.warning("review.not_saved", error=str(exc)[:200])
+
+
+EXIT_INCOMPLETE = 3
+
+
+def _review_exit_code(result: object, fail_on: str | None) -> int:
+    """The merge gate's decision for a whole review, not just its findings.
+
+    A blocking finding wins, because it blocks either way and says more. Otherwise an
+    incomplete review blocks too: the gate used to pass a review that had skipped most of
+    its rules, which is the one outcome a gate exists to prevent. Advisory mode (no
+    threshold set) never blocks, as before.
+    """
+    from themis.pipeline import ReviewResult
+
+    if not fail_on or not isinstance(result, ReviewResult):
+        return 0
+    blocking = _gate_exit_code(result.findings, fail_on)
+    if blocking:
+        return blocking
+    return EXIT_INCOMPLETE if result.incomplete_reasons else 0
 
 
 def _gate_exit_code(findings: list[Finding], fail_on: str | None) -> int:

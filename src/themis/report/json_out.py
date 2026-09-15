@@ -18,6 +18,7 @@ import json
 from typing import Any
 
 from themis.models import ExecutionDelta, Finding, Grain
+from themis.report import redact as redaction
 from themis.review.supervisor import ReviewSummary
 from themis.rules.base import SkippedRule
 from themis.triage.rubric import triage
@@ -113,9 +114,61 @@ def render(
     untested_grains: tuple[str, ...] = (),
     llm: ReviewSummary | None = None,
     seed_affected: dict[str, tuple[str, ...]] | None = None,
+    # (kind, reason) for every way the review checked less than it was asked to.
+    incomplete: tuple[tuple[str, str], ...] = (),
+    # A salt to redact with, or None for the full report. See `report.redact`.
+    redact: str | None = None,
 ) -> str:
     """One review as JSON, including what it could not check."""
     triaged = triage(findings, governed_models=governed_models)
+    if redact is not None:
+        salt = redact
+        return json.dumps(
+            {
+                "schema_version": 1,
+                "redacted": True,
+                "models_reviewed": len(models_reviewed),
+                "seeds_changed": len(seed_affected or {}),
+                "executed": executed,
+                "incomplete": sorted({kind for kind, _ in incomplete}),
+                "findings": [
+                    redaction.finding(
+                        t.finding, salt=salt, score=t.score, subsumed_by=t.subsumed_by
+                    )
+                    for t in triaged
+                ],
+                "skipped_checks": [
+                    {
+                        "rule_id": s.rule_id,
+                        "model": redaction.token(s.model_name, salt),
+                        "reason": redaction.skip_reason(s.reason),
+                    }
+                    for s in (skipped or [])
+                ],
+                "grains": [
+                    redaction.grain(g, salt=salt) for _, g in sorted((grains or {}).items())
+                ],
+                "execution_deltas": [
+                    redaction.delta(d, salt=salt) for _, d in sorted((deltas or {}).items())
+                ],
+                "untested_grains": len(untested_grains),
+                "model_layer": (
+                    {
+                        "adjudicated": llm.adjudicated,
+                        "settled_without_llm": llm.settled_without_llm,
+                        "suppressed": llm.suppressed,
+                        "rejected_by_selfcheck": llm.rejected_by_selfcheck,
+                        "explained": llm.explained,
+                        "undisclosed_changes": len(llm.undisclosed),
+                        "calls": llm.usage.calls,
+                        "tokens": llm.usage.prompt_tokens + llm.usage.completion_tokens,
+                    }
+                    if llm is not None
+                    else None
+                ),
+            },
+            indent=2,
+        )
     return json.dumps(
         {
             "schema_version": 1,
@@ -127,6 +180,7 @@ def render(
             # Never omitted. A report that hides its own blind spots reads exactly like
             # one that had none.
             "degraded_reason": degraded_reason,
+            "incomplete": [{"kind": kind, "reason": reason} for kind, reason in incomplete],
             "findings": [
                 _finding(t.finding, score=t.score, subsumed_by=t.subsumed_by) for t in triaged
             ],

@@ -16,6 +16,7 @@ import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from themis import vocabulary
 from themis.acquire import git
 from themis.acquire.dbt_runner import (
     assert_target_allowed,
@@ -31,6 +32,8 @@ from themis.execute.profiles import ProfileError, read_profile, write_profile_fo
 from themis.execute.warehouse import WarehouseClient, client_for_profile, drop_run_schemas
 from themis.logging import get_logger
 from themis.models import ExecutionDelta, Grain
+from themis.vocabulary import DEFAULT as DEFAULT_VOCABULARY
+from themis.vocabulary import Vocabulary
 
 log = get_logger(__name__)
 
@@ -337,6 +340,7 @@ def execute(
                 head_build=head_build,
                 base_build=base_build,
                 grain_candidates=grain_candidates or {},
+                vocab=vocabulary.from_settings(settings),
             )
         finally:
             client.close()
@@ -396,6 +400,7 @@ def _measure(
     head_build: BuildOutcome,
     base_build: BuildOutcome,
     grain_candidates: dict[str, Grain],
+    vocab: Vocabulary = DEFAULT_VOCABULARY,
 ) -> ExecutionResult:
     deltas: dict[str, ExecutionDelta] = {}
     grains: dict[str, Grain] = {}
@@ -418,7 +423,12 @@ def _measure(
             continue
 
         deltas[model] = diff_tables(
-            client, model, base_schema=base_schema, head_schema=head_schema, max_rows=max_rows
+            client,
+            model,
+            base_schema=base_schema,
+            head_schema=head_schema,
+            max_rows=max_rows,
+            vocabulary=vocab,
         )
         candidate = grain_candidates.get(model)
         measured = measure_grain(client, model, schema=head_schema, candidate=candidate)

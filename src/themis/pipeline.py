@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from themis import vocabulary
 from themis.acquire.snapshot_builder import AcquireResult, acquire
 from themis.analyze.grain import infer_grains
 from themis.analyze.lineage import LineageIndex
@@ -29,6 +30,8 @@ from themis.rules.base import RuleContext, SkippedRule
 from themis.rules.registry import run_rules
 from themis.snapshot import ProjectSnapshot
 from themis.triage.rubric import calibrate
+from themis.vocabulary import DEFAULT as DEFAULT_VOCABULARY
+from themis.vocabulary import Vocabulary
 
 log = get_logger(__name__)
 
@@ -56,10 +59,50 @@ class ReviewResult:
     # Reported as one line rather than a finding each: on a project with no test
     # coverage a per-model finding would fire on everything and bury the real ones.
     untested_grains: tuple[str, ...] = ()
+    # Whether the caller asked for Stage 3, so a review that wanted measurement and did
+    # not get it can say so rather than passing as an inference-only review by choice.
+    execution_requested: bool = False
+
+    @property
+    def incomplete(self) -> tuple[tuple[str, str], ...]:
+        """Every way this review checked less than it was asked to, as (kind, reason).
+
+        The merge gate used to read findings alone, so a review with most of its rules
+        skipped, or one that asked for execution and never built anything, exited 0 when
+        it found nothing — the same failure as the corpus job that measured 9/29 rules
+        and passed. A report can carry a banner; a gate only reads an exit code.
+
+        The kind is stable and carries no project detail, so it survives redaction.
+        """
+        items: list[tuple[str, str]] = []
+        if self.degraded_reason:
+            items.append(("grounding_degraded", f"grounding degraded: {self.degraded_reason}"))
+        if self.execution_requested and not self.executed:
+            why = self.execution.skipped_reason if self.execution else "it did not run"
+            items.append(("execution_not_run", f"execution was requested and did not run: {why}"))
+        if self.skipped:
+            rules = sorted({s.rule_id for s in self.skipped})
+            items.append(
+                (
+                    "checks_skipped",
+                    f"{len(self.skipped)} check(s) could not run ({', '.join(rules[:8])}"
+                    + (" and more" if len(rules) > 8 else "")
+                    + ")",
+                )
+            )
+        return tuple(items)
+
+    @property
+    def incomplete_reasons(self) -> tuple[str, ...]:
+        return tuple(reason for _, reason in self.incomplete)
 
 
 def build_contexts(
-    result: AcquireResult, grains: dict[str, Grain], *, dialect: str
+    result: AcquireResult,
+    grains: dict[str, Grain],
+    *,
+    dialect: str,
+    vocab: Vocabulary = DEFAULT_VOCABULARY,
 ) -> list[RuleContext]:
     """One context per model the change actually affects.
 
@@ -128,6 +171,7 @@ def build_contexts(
                 lineage=lineage,
                 via_macro=via_macro.get(name),
                 via_yaml=via_yaml.get(name),
+                vocabulary=vocab,
             )
         )
     return contexts
@@ -197,6 +241,7 @@ def unexplained_change_findings(
     before: ProjectSnapshot,
     after: ProjectSnapshot,
     changed_seeds: tuple[str, ...] = (),
+    vocab: Vocabulary = DEFAULT_VOCABULARY,
 ) -> list[Finding]:
     """Report models whose results moved with no rule explaining why.
 
@@ -284,6 +329,7 @@ def unexplained_change_findings(
                 after=after,
                 consequences=consequences,
                 is_root=name in roots,
+                vocab=vocab,
             )
         )
     return out
@@ -312,6 +358,7 @@ def _unexplained_finding(
     after: ProjectSnapshot,
     consequences: tuple[str, ...],
     is_root: bool,
+    vocab: Vocabulary = DEFAULT_VOCABULARY,
 ) -> Finding:
     from themis.models import Evidence, Severity
 
@@ -329,7 +376,7 @@ def _unexplained_finding(
         reached_name
         for reached_name in reached
         if (reached_model := after.models.get(reached_name))
-        and {"regulatory", "recon", "control"} & set(reached_model.tags)
+        and vocab.is_governed(reached_model.tags)
     )
     severity = Severity.CRITICAL if (moved and governed_models) else Severity.HIGH
 
@@ -368,7 +415,8 @@ def _unexplained_finding(
         title=f"`{name}` changed and no rule explains why",
         severity=severity,
         confidence=Confidence.MEASURED,
-        evidence=Evidence(model_name=name, note="; ".join(detail)),
+        # The note is what moved and by how much; the issue is that this model moved.
+        evidence=Evidence(model_name=name, note="; ".join(detail), identity=""),
         consequence=(
             origin + " That means the change is outside every defect class this tool knows "
             "about — so it has not been assessed, only observed."
@@ -439,6 +487,8 @@ def build_failure_findings(result: ExecutionResult, after: ProjectSnapshot) -> l
                 evidence=Evidence(
                     model_name=name,
                     file_path=model.file_path if model else None,
+                    # The dbt error text can carry run-specific detail; the issue is the model.
+                    identity="",
                     note=(head.error or "dbt reported the model as failed")[:600],
                 ),
                 consequence=(
@@ -487,7 +537,12 @@ def measured_grain_findings(result: ExecutionResult, inferred: dict[str, Grain])
                 title=f"`{name}` is not unique on its derived key",
                 severity=Severity.HIGH,
                 confidence=Confidence.MEASURED,
-                evidence=Evidence(model_name=name, note=measured.note),
+                evidence=Evidence(
+                    model_name=name,
+                    note=measured.note,
+                    # The multiplier is data; the issue is duplication on this key.
+                    identity=",".join(measured.columns),
+                ),
                 consequence=(
                     f"The key ({', '.join(measured.columns)}) was derived as this "
                     f"model's grain [{source}], but the built table has "
@@ -556,7 +611,8 @@ def review(
     )
 
     grains = infer_grains(acquired.after, dialect=settings.dialect)
-    contexts = build_contexts(acquired, grains, dialect=settings.dialect)
+    vocab = vocabulary.from_settings(settings)
+    contexts = build_contexts(acquired, grains, dialect=settings.dialect, vocab=vocab)
     findings, skipped = run_rules(contexts)
 
     macro_affected = {
@@ -612,6 +668,7 @@ def review(
                     acquired.before,
                     acquired.after,
                     changed_seeds=acquired.changed_seeds,
+                    vocab=vocab,
                 )
             )
             grains = {**grains, **execution.measured_grains}
@@ -679,9 +736,7 @@ def review(
         skipped=skipped,
         grains=grains,
         governed_models=frozenset(
-            name
-            for name, model in acquired.after.models.items()
-            if {"regulatory", "recon", "control"} & set(model.tags)
+            name for name, model in acquired.after.models.items() if vocab.is_governed(model.tags)
         ),
         untested_grains=untested,
         models_reviewed=tuple(c.model_name for c in contexts),
@@ -690,5 +745,6 @@ def review(
         degraded_reason=acquired.degraded_reason,
         executed=bool(execution and execution.ran),
         execution=execution,
+        execution_requested=run_execution,
         llm=llm_summary,
     )

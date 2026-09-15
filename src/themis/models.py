@@ -104,6 +104,11 @@ class Evidence(BaseModel):
     # rather than left in the prose note, because column lineage has to be asked a
     # column and parsing one back out of a sentence would be a guess.
     column_name: str | None = None
+    # What makes this the same issue on the next run, when the note is not it. A measured
+    # finding's note carries row counts and totals, which move whenever the data does, so
+    # fingerprinting the note gave the same issue a new identity every run and a
+    # dismissal never accumulated against it. None means the note is the identity.
+    identity: str | None = None
 
 
 class Grain(BaseModel):

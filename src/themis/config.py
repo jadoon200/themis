@@ -5,6 +5,8 @@ from __future__ import annotations
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from themis import vocabulary
+
 
 class Settings(BaseSettings):
     """Runtime configuration.
@@ -34,6 +36,10 @@ class Settings(BaseSettings):
     # a decision for the eval to make, not an assumption to ship.
     llm_supervisor_model: str = "qwen3:8b"
     llm_timeout_s: float = 120.0
+    # Retries after a transient failure — timeout, dropped connection, 5xx, a body that is
+    # not JSON — with a linear backoff. A 4xx is never retried.
+    llm_retries: int = 2
+    llm_retry_backoff_s: float = 1.0
     # Sampling. Zero by default because a verdict is not a creative task and two runs
     # of one review should agree; exposed so that claim can be measured rather than
     # assumed. `num_predict` caps the reply — too low truncates a quote mid-token and
@@ -64,6 +70,15 @@ class Settings(BaseSettings):
         "test",
         "local",
     )
+
+    # --- vocabulary ----------------------------------------------------------
+    # The names checks match on. Each replaces its default outright — set it as a JSON
+    # list, e.g. THEMIS_MONEY_COLUMN_HINTS='["amount","ntnl","mtm","pnl"]' — and
+    # `themis profile` shows how often each matches a project. See themis/vocabulary.py.
+    money_column_hints: tuple[str, ...] = vocabulary.MONEY_HINTS
+    sensitive_column_hints: tuple[str, ...] = vocabulary.SENSITIVE_HINTS
+    governed_tags: tuple[str, ...] = vocabulary.GOVERNED_TAGS
+    published_folders: tuple[str, ...] = vocabulary.PUBLISHED_FOLDERS
 
     # --- manifest cache ------------------------------------------------------
     # Compiled manifests are content-addressed by git revision, so the base compile a
@@ -116,6 +131,9 @@ class Settings(BaseSettings):
     # only, resolved against the worker's working directory. A review runs dbt — and so
     # the project's own macros and hooks — on whatever path it is given.
     project_roots: tuple[str, ...] = ()
+    # Mixed into the hashes `--redact` puts in place of model and column names. Without one,
+    # anyone holding a list of likely names can hash them and match. Keep it private.
+    redact_salt: str = ""
 
 
 def load_settings() -> Settings:
