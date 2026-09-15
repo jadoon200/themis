@@ -734,7 +734,17 @@ def eval_cmd(
             ),
         ),
     ] = None,
-    base: BaseOpt = "main",
+    base: Annotated[
+        str,
+        typer.Option(
+            "--base",
+            help=(
+                "Revision the mutations are applied to. HEAD by default: the corpus measures "
+                "the reviewer on the demo project as committed, and a branch that changes it "
+                "cannot be measured against another branch's copy."
+            ),
+        ),
+    ] = "HEAD",
     use_llm: Annotated[
         bool,
         typer.Option("--llm", help="Also run the model layer, and report what it added."),
