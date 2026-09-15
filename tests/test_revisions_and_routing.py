@@ -201,3 +201,45 @@ def test_a_seed_change_is_stated_even_with_nothing_to_rank() -> None:
     output = markdown.render([], seed_affected={"raw_fx_rates": ("stg_fx_rates", "fct_revenue")})
     assert "Seed `raw_fx_rates` changed" in output
     assert "--execute" in output
+
+
+def test_a_generated_model_whose_rows_came_back_reordered_has_not_changed() -> None:
+    """Unordered compile-time queries compile identical code to different SQL each time."""
+    from themis.pipeline import code_changed
+
+    generator = MacroNode(
+        name="label_case",
+        unique_id="macro.p.label_case",
+        file_path="macros/g.sql",
+        raw_sql="{% set rows = run_query('select 1') %}case ... end",
+    )
+
+    def snapshot(
+        compiled: str, raw: str = "select {{ label_case('x') }}", macro_sql: str | None = None
+    ) -> ProjectSnapshot:
+        macro = (
+            generator if macro_sql is None else generator.model_copy(update={"raw_sql": macro_sql})
+        )
+        return ProjectSnapshot(
+            revision="r",
+            backend=Backend.MANIFEST,
+            models={
+                "dim": ModelNode(
+                    name="dim",
+                    unique_id="model.p.dim",
+                    file_path="models/dim.sql",
+                    raw_sql=raw,
+                    compiled_sql=compiled,
+                    depends_on_macros=("macro.p.label_case",),
+                )
+            },
+            macros={"label_case": macro},
+        )
+
+    first = snapshot("select case when x='A' then 1 when x='B' then 2 end")
+    reordered = snapshot("select case when x='B' then 2 when x='A' then 1 end")
+    assert not code_changed("dim", first, reordered)
+    assert code_changed("dim", first, snapshot("same", raw="select {{ label_case('y') }}"))
+    assert code_changed(
+        "dim", first, snapshot("same", macro_sql="{% set rows = run_query('select 2') %}")
+    )

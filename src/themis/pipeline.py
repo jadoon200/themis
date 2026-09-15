@@ -177,15 +177,51 @@ def build_contexts(
     return contexts
 
 
+def _macro_texts(snapshot: ProjectSnapshot, names: set[str]) -> dict[str, str]:
+    """The source of these macros and every macro they call, transitively."""
+    seen: dict[str, str] = {}
+    pending = list(names)
+    while pending:
+        name = pending.pop()
+        if name in seen:
+            continue
+        macro = snapshot.macros.get(name)
+        seen[name] = macro.raw_sql if macro else ""
+        if macro:
+            pending.extend(ref.split(".")[-1] for ref in macro.depends_on_macros)
+    return seen
+
+
+def code_changed(name: str, before: ProjectSnapshot, after: ProjectSnapshot) -> bool:
+    """Whether a model's code differs between revisions.
+
+    Compiled SQL answers that for most models. It cannot for a model whose SQL is built
+    from query results: two compiles of identical code differ whenever the rows come back
+    differently — including merely in a different order, which an unordered query does
+    between one compile and the next. The demo project's own generated model did exactly
+    that, so it read as changed in every review. For such a model the code is its raw SQL
+    and the macros it calls.
+    """
+    was, now = before.models.get(name), after.models.get(name)
+    if was is None or now is None:
+        return (was is None) != (now is None)
+    generated = set(before.data_dependent_models()) | set(after.data_dependent_models())
+    if name not in generated:
+        return was.analysable_sql != now.analysable_sql
+    if was.raw_sql != now.raw_sql:
+        return True
+    called = {ref.split(".")[-1] for ref in (*was.depends_on_macros, *now.depends_on_macros)}
+    return _macro_texts(before, called) != _macro_texts(after, called)
+
+
 def _reconfigured_models(before: ProjectSnapshot, after: ProjectSnapshot) -> tuple[str, ...]:
-    """SQL models whose compiled SQL or write configuration differ between revisions."""
+    """SQL models whose code or write configuration differ between revisions."""
 
     def shape(snapshot: ProjectSnapshot, name: str) -> tuple[object, ...] | None:
         model = snapshot.models.get(name)
         if model is None or model.is_seed:
             return None
         return (
-            model.compiled_sql,
             model.relation_name,
             model.materialization,
             model.incremental_strategy,
@@ -203,7 +239,8 @@ def _reconfigured_models(before: ProjectSnapshot, after: ProjectSnapshot) -> tup
         sorted(
             name
             for name in names
-            if shape(after, name) is not None and shape(before, name) != shape(after, name)
+            if shape(after, name) is not None
+            and (shape(before, name) != shape(after, name) or code_changed(name, before, after))
         )
     )
 
@@ -273,12 +310,12 @@ def unexplained_change_findings(
     # the year alters no row count and no monetary sum in the staging model itself,
     # and shifts every figure below it. Requiring an origin to have moved left those
     # six descendants ownerless, so one explained change produced six criticals.
-    origins: set[str] = set()
-    for name in set(before.models) | set(after.models):
-        before_sql = before.models[name].analysable_sql if name in before.models else None
-        after_sql = after.models[name].analysable_sql if name in after.models else None
-        if before_sql != after_sql:
-            origins.add(name)
+    origins: set[str] = {
+        name
+        for name in set(before.models) | set(after.models)
+        if not (after.models.get(name) or before.models[name]).is_seed
+        and code_changed(name, before, after)
+    }
     # A seed whose data changed is an origin too, with no SQL to show for it. Without
     # this every model beneath an edited FX-rate file read as having moved for no
     # reason anyone could name.

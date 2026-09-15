@@ -156,13 +156,16 @@ def build_scenarios(tmp: Path) -> dict[str, str]:
         path.write_text("\n".join([header, ",".join(first), *lines[2:]]) + "\n")
 
     def edit_project_config(project: Path) -> None:
+        # Tags, because they merge with a model's own config. Every demo model sets its
+        # materialization in its own file, which overrides a folder-level one entirely —
+        # a materialization edit here would correctly reach nothing.
         path = project / "dbt_project.yml"
         text = path.read_text()
         assert "    intermediate:\n      +materialized: view" in text
         path.write_text(
             text.replace(
                 "    intermediate:\n      +materialized: view",
-                "    intermediate:\n      +materialized: table",
+                "    intermediate:\n      +materialized: view\n      +tags: ['regulatory']",
             )
         )
 
@@ -329,8 +332,10 @@ def check_reviews(shas: dict[str, str], tmp: Path, env: dict[str, str]) -> None:
     r, doc = review_json(shas["project_config"], tmp, "--no-llm", env=env)
     reviewed = set(doc.get("models_reviewed", []))
     record(
-        "dbt_project.yml edit reaches the models it reconfigured",
-        r.returncode == 0 and {"int_gl_entries_converted", "int_revenue_recognized"} <= reviewed,
+        "dbt_project.yml edit reaches exactly the models it reconfigured",
+        r.returncode == 0
+        and reviewed
+        == {"int_account_activity", "int_gl_entries_converted", "int_revenue_recognized"},
         f"models_reviewed={sorted(reviewed)}",
     )
 
@@ -545,7 +550,7 @@ def check_execution(shas: dict[str, str], tmp: Path, env: dict[str, str]) -> Non
 
 
 def check_persistence_and_models(
-    shas: dict[str, str], tmp: Path, env: dict[str, str], *, ollama: bool
+    shas: dict[str, str], tmp: Path, env: dict[str, str], *, ollama: bool, quick: bool = False
 ) -> None:
     print("\npersistence, the model layer and ask")
     db_env = {**env, "THEMIS_DATABASE_URL": f"sqlite:///{tmp / 'history.db'}"}
@@ -560,8 +565,9 @@ def check_persistence_and_models(
     record("migrations apply to a fresh SQLite", m.returncode == 0, m.stderr[-300:])
 
     if not ollama:
-        skip("review with the model layer", "no Ollama on 11434")
-        skip("ask answers from a stored review", "no Ollama on 11434")
+        why = "--quick" if quick else "no Ollama on 11434"
+        skip("review with the model layer", why)
+        skip("ask answers from a stored review", why)
         return
 
     out = tmp / "llm.json"
@@ -854,7 +860,9 @@ def main() -> int:
         check_analysis(env)
         check_reviews(shas, tmp, env)
         check_execution(shas, tmp, env)
-        check_persistence_and_models(shas, tmp, env, ollama=ollama and not args.quick)
+        check_persistence_and_models(
+            shas, tmp, env, ollama=ollama and not args.quick, quick=args.quick
+        )
         check_service(shas, tmp)
         if args.quick:
             skip("Trino", "--quick")
