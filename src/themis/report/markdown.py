@@ -159,11 +159,20 @@ def render(
     # Models tagged for reconciliation or reporting, so triage can weight what lands
     # in one. Empty means the caller did not say, not that none exist.
     governed_models: frozenset[str] = frozenset(),
+    # Seeds whose data changed, and what is built on them.
+    seed_affected: dict[str, tuple[str, ...]] | None = None,
 ) -> str:
     """Render the full report."""
     # Stage 4. Recall-first rules over-flag on purpose; this is the half that pays for
     # it, by ranking rather than by silence. A demoted finding is still in the report.
-    triaged = triage(findings, governed_models=governed_models)
+    #
+    # A finding a reviewer refuted is set apart the same way, and for the same reason it
+    # is not deleted: SARIF marks it suppressed, so listing it among live findings here
+    # would have the two outputs disagree about the same change.
+    refuted = [f for f in findings if f.suppressed_reason]
+    triaged = triage(
+        [f for f in findings if not f.suppressed_reason], governed_models=governed_models
+    )
     ranked = [t.finding for t in triaged if not t.demoted]
     demoted = [t for t in triaged if t.demoted]
     counts = {severity: 0 for severity in Severity}
@@ -184,6 +193,20 @@ def render(
             f"Macro `{macro}` changed — its compiled SQL reaches "
             f"**{len(models)} model(s)**: {shown}{more}. Those models are reviewed here "
             "even though their own files are unchanged.",
+            "",
+        ]
+
+    for seed, models in sorted((seed_affected or {}).items()):
+        shown = ", ".join(f"`{m}`" for m in models[:10])
+        more = f" and {len(models) - 10} more" if len(models) > 10 else ""
+        reach = f" It feeds **{len(models)} model(s)**: {shown}{more}." if models else ""
+        how = (
+            " What that does to them was measured below."
+            if executed
+            else " No rule can judge a data change — pass `--execute` to measure what it moves."
+        )
+        lines += [
+            f"Seed `{seed}` changed — a data change, with no SQL to review.{reach}{how}",
             "",
         ]
 
@@ -243,6 +266,25 @@ def render(
             lines.append(
                 f"- `{item.finding.rule_id}` on `{item.finding.evidence.model_name}`: "
                 f"{item.finding.title} — covered by `{item.subsumed_by}`"
+            )
+        lines += ["", "</details>"]
+
+    if refuted:
+        lines += [
+            "",
+            "<details><summary>",
+            f"{len(refuted)} finding(s) a reviewer refuted",
+            "</summary>",
+            "",
+            "_A language model judged these safe, citing the evidence it was shown. They "
+            "still count towards `THEMIS_FAIL_ON_SEVERITY`: a merge gate has to be "
+            "deterministic, and a model's verdict is not._",
+            "",
+        ]
+        for finding in refuted:
+            lines.append(
+                f"- `{finding.rule_id}` on `{finding.evidence.model_name}`: {finding.title} — "
+                f"{finding.llm_rationale or finding.suppressed_reason}"
             )
         lines += ["", "</details>"]
 

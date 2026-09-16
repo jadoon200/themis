@@ -174,15 +174,49 @@ class ProjectSnapshot(BaseModel):
     exposures: dict[str, Exposure] = Field(default_factory=dict)
     # model name -> direct children, from the manifest's child_map where available.
     child_map: dict[str, tuple[str, ...]] = Field(default_factory=dict)
+    # What dbt said when the compile that produced this snapshot did not fully succeed.
+    # dbt still writes a manifest when compilation aborts part-way, so a snapshot can
+    # look complete while most of its models have no SQL.
+    compile_error: str | None = None
 
     @property
     def has_compiled_sql(self) -> bool:
-        """Whether the analysis stages can do their real work.
+        """Whether any model has compiled SQL at all.
 
-        False means the manifest came from `dbt parse` rather than `dbt compile`, and
-        the pipeline should say so loudly instead of degrading in silence.
+        False means the manifest came from `dbt parse` rather than `dbt compile`. True
+        does not mean every model has it — see ``models_without_compiled_sql``, which is
+        the question a partial compile actually raises.
         """
         return any(m.compiled_sql is not None for m in self.models.values())
+
+    @property
+    def models_without_compiled_sql(self) -> tuple[str, ...]:
+        """SQL models this snapshot has no compiled SQL for.
+
+        A compile that aborts on one model leaves the rest of the manifest looking
+        valid. Counting only whether *any* model compiled hid exactly that, and every
+        check on the missing ones was skipped under a report that said nothing about it.
+        """
+        return tuple(
+            sorted(
+                name
+                for name, model in self.models.items()
+                if not model.is_seed and model.compiled_sql is None
+            )
+        )
+
+    def node_for_file(self, file_path: str) -> ModelNode | None:
+        """The model or seed defined by a file, by the manifest rather than by folder name.
+
+        dbt lets a project put models anywhere ``model-paths`` says. Deciding that a
+        changed file is a model because it sits under ``models/`` reviewed nothing at all
+        for a project that keeps them in ``transform/``.
+        """
+        wanted = _normalise_path(file_path)
+        for model in self.models.values():
+            if model.file_path and _same_file(wanted, _normalise_path(model.file_path)):
+                return model
+        return None
 
     def downstream_of(self, model_name: str, *, depth: int = 10) -> tuple[str, ...]:
         """Every model reachable downstream, breadth-first with a cycle guard."""

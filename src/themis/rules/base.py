@@ -18,6 +18,8 @@ from dataclasses import dataclass, field
 from themis.analyze.lineage import LineageIndex
 from themis.models import Finding, Grain, Severity
 from themis.snapshot import ModelNode, ProjectSnapshot
+from themis.vocabulary import DEFAULT as DEFAULT_VOCABULARY
+from themis.vocabulary import Vocabulary
 
 
 @dataclass
@@ -42,6 +44,9 @@ class RuleContext:
     via_macro: str | None = None
     # Populated when a schema YAML edit is what pulled it in.
     via_yaml: str | None = None
+    # The names this project uses for money, personal data, reporting tags and published
+    # folders. Defaults to common convention; a run passes what it was configured with.
+    vocabulary: Vocabulary = DEFAULT_VOCABULARY
 
     @property
     def is_new(self) -> bool:
@@ -70,7 +75,7 @@ class RuleContext:
         model = self.after or self.before
         if model is None:
             return False
-        return bool({"regulatory", "recon", "control"} & set(model.tags))
+        return self.vocabulary.is_governed(model.tags)
 
 
 @dataclass
@@ -90,10 +95,21 @@ class Rule(ABC):
         """Return every finding this rule sees. Empty is a normal answer."""
 
     def applies_to(self, ctx: RuleContext) -> bool:
-        """Whether the available grounding supports running this rule at all."""
+        """Whether the available grounding supports running this rule at all.
+
+        Both revisions count. A model that exists on both sides but has compiled SQL on
+        only one is not a new model, and a rule comparing it would read every join and
+        filter as added — a wall of confident findings made from a compile failure.
+        """
         if self.requires_compiled_sql:
             model = ctx.after or ctx.before
             if model is None or model.analysable_sql is None:
+                return False
+            if (
+                ctx.before is not None
+                and ctx.after is not None
+                and (ctx.before.analysable_sql is None or ctx.after.analysable_sql is None)
+            ):
                 return False
         return True
 

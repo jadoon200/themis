@@ -299,3 +299,111 @@ def test_propagation_refuses_a_union_hidden_in_a_cte() -> None:
     child.depends_on_models = ("model.test.stg",)
     parent = {"stg": Grain(model_name="stg", columns=("id",), source=GrainSource.STRUCTURAL)}
     assert _propagate(child, parent, "trino") is None
+
+
+# --- shapes that used to be proven and are not ---------------------------------------
+#
+# Each of these returned a STRUCTURAL grain the rows do not have. STRUCTURAL is proven,
+# F1001 skips a join whose key covers a proven grain without writing anything, and so
+# every one of them was a fan-out that could not be reported.
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        pytest.param(
+            "select a, sum(x) as s from t group by a "
+            "union all select a, sum(x) as s from u group by a",
+            id="top-level union all of two group-bys",
+        ),
+        pytest.param(
+            "with u as (select a, sum(x) as s from t group by a "
+            "union all select a, sum(x) as s from v group by a) select * from u",
+            id="union all in a cte body",
+        ),
+        pytest.param(
+            "select * from (select a from t group by a union all select a from v group by a) x",
+            id="union all in an inline subquery",
+        ),
+        pytest.param(
+            """
+            with ranked as (
+                select *, row_number() over (partition by k order by ts desc) as rn from t
+            ),
+            latest as (select * from ranked where rn = 1)
+            select l.k, o.v from latest l join other o on o.k = l.k
+            """,
+            id="dedup in a cte, then a join that fans out",
+        ),
+        pytest.param(
+            "with r as (select *, row_number() over (partition by k order by ts) as rn from t) "
+            "select * from r where rn = 1 or flag",
+            id="rank pinned only under an OR",
+        ),
+        pytest.param(
+            "with r as (select *, row_number() over (partition by k order by ts) as rn from t) "
+            "select * from r where k in (select k from r where rn = 1)",
+            id="rank pinned only inside a subquery",
+        ),
+        pytest.param(
+            "select entity, period, sum(x) as s from t group by entity, rollup(period)",
+            id="group by with rollup",
+        ),
+        pytest.param(
+            "select a, sum(x) as s from t group by cube(a)",
+            id="group by cube",
+        ),
+        pytest.param(
+            "select a, date_trunc('month', d), sum(x) as s from t "
+            "group by a, date_trunc('month', d)",
+            id="group by an unnamed expression",
+        ),
+        pytest.param(
+            "select distinct a, upper(b) from t", id="distinct over an unnamed expression"
+        ),
+        pytest.param("select sum(x) as s from t group by a", id="group key not emitted"),
+    ],
+)
+def test_a_key_the_rows_do_not_have_is_not_proven(sql: str) -> None:
+    source, _ = _grain_of(sql)
+    assert source is not GrainSource.STRUCTURAL
+
+
+def test_dedup_through_a_chain_of_pass_throughs_is_still_proven() -> None:
+    source, columns = _grain_of(
+        """
+        with ranked as (
+            select *, row_number() over (partition by k order by ts desc) as rn from t
+        ),
+        latest as (select * from ranked where rn = 1)
+        select * from latest
+        """
+    )
+    assert source is GrainSource.STRUCTURAL
+    assert columns == ("k",)
+
+
+def test_dedup_in_an_inline_subquery_is_proven() -> None:
+    source, columns = _grain_of(
+        "select * from (select *, row_number() over (partition by k order by ts) as rn from t) x "
+        "where rn = 1"
+    )
+    assert source is GrainSource.STRUCTURAL
+    assert columns == ("k",)
+
+
+def test_a_grouped_expression_is_keyed_by_its_output_name() -> None:
+    source, columns = _grain_of(
+        "select a, date_trunc('month', d) as period, sum(x) as s from t "
+        "group by a, date_trunc('month', d)"
+    )
+    assert source is GrainSource.STRUCTURAL
+    assert columns == ("a", "period")
+
+
+def test_a_renamed_group_key_is_keyed_by_the_name_it_is_emitted_as() -> None:
+    source, columns = _grain_of(
+        "select e.account_id as acct, sum(x) as s from t e group by account_id"
+    )
+    assert source is GrainSource.STRUCTURAL
+    assert columns == ("acct",)

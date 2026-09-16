@@ -7,7 +7,7 @@ shell, and the eval harness all exercise exactly the same code path.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 import typer
 
@@ -17,6 +17,22 @@ from themis.config import load_settings
 from themis.logging import configure_logging, get_logger
 from themis.models import Backend, Finding, GrainSource, Severity
 from themis.report import markdown
+
+
+def _review_errors() -> tuple[type[Exception], ...]:
+    """Failures that mean a review could not start, as opposed to a bug in THEMIS.
+
+    Reported as one line and exit code 2. A traceback for "that revision does not exist"
+    reads as the tool crashing, and a CI log full of one hides the sentence that matters.
+    """
+    from themis.acquire.dbt_runner import DbtError, UnsafeTargetError
+    from themis.acquire.git import GitError
+    from themis.capabilities import CapabilityError
+
+    return (GitError, DbtError, UnsafeTargetError, CapabilityError)
+
+
+_REVIEW_ERRORS = _review_errors()
 
 app = typer.Typer(
     name="themis",
@@ -114,9 +130,23 @@ def review(
         bool,
         typer.Option("--no-manifest-cache", help="Recompile every revision, ignoring .themis/."),
     ] = False,
+    redact: Annotated[
+        bool,
+        typer.Option(
+            "--redact",
+            help=(
+                "Write SARIF and JSON with no SQL, no measured values and hashed names — "
+                "safe to share outside the team that owns the project."
+            ),
+        ),
+    ] = False,
     verbose: VerboseOpt = False,
 ) -> None:
     """Review the dbt model changes between two revisions.
+
+    Exit codes: 0 pass (or advisory), 1 a finding at or above THEMIS_FAIL_ON_SEVERITY,
+    2 the review could not start, 3 blocking is on and the review is incomplete —
+    grounding degraded, checks skipped, or execution requested and not run.
 
     `--prod-manifest` and `--defer-state` both take production build artifacts and can
     be given the same `target/` directory: the first reads the base from it instead of
@@ -128,19 +158,23 @@ def review(
     settings = load_settings()
     log.info("review.start", project=str(project), base=base, head=head, llm=not no_llm)
 
-    result = run_review(
-        project,
-        base=base,
-        head=head,
-        settings=settings,
-        target=target,
-        run_execution=execute or settings.execute_enabled,
-        run_llm=not no_llm,
-        pr_description=pr_description,
-        prod_manifest=prod_manifest,
-        defer_state=defer_state,
-        use_manifest_cache=not no_manifest_cache,
-    )
+    try:
+        result = run_review(
+            project,
+            base=base,
+            head=head,
+            settings=settings,
+            target=target,
+            run_execution=execute or settings.execute_enabled,
+            run_llm=not no_llm,
+            pr_description=pr_description,
+            prod_manifest=prod_manifest,
+            defer_state=defer_state,
+            use_manifest_cache=not no_manifest_cache,
+        )
+    except _REVIEW_ERRORS as exc:
+        typer.echo(f"Review could not run: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
 
     if result.execution is not None and not result.execution.ran:
         log.warning("review.execution_skipped", reason=result.execution.skipped_reason)
@@ -179,6 +213,7 @@ def review(
             degraded_reason=result.degraded_reason,
             untested_grains=result.untested_grains,
             governed_models=result.governed_models,
+            seed_affected=result.seed_affected,
         )
     )
 
@@ -187,7 +222,12 @@ def review(
 
         sarif.parent.mkdir(parents=True, exist_ok=True)
         sarif.write_text(
-            sarif_report.render(result.findings, governed_models=result.governed_models)
+            sarif_report.render(
+                result.findings,
+                governed_models=result.governed_models,
+                incomplete=result.incomplete,
+                redact=settings.redact_salt if redact else None,
+            )
         )
         log.info("review.sarif_written", path=str(sarif), findings=len(result.findings))
 
@@ -207,14 +247,28 @@ def review(
                 governed_models=result.governed_models,
                 untested_grains=result.untested_grains,
                 llm=result.llm,
+                seed_affected=result.seed_affected,
+                incomplete=result.incomplete,
+                redact=settings.redact_salt if redact else None,
             )
         )
         log.info("review.json_written", path=str(json_out), findings=len(result.findings))
 
     if save:
-        _persist(result, project=str(project), base=base, head=head, execute=execute)
+        _persist(
+            result,
+            project=str(project),
+            base=base,
+            head=head,
+            execute=execute or settings.execute_enabled,
+        )
 
-    raise typer.Exit(code=_gate_exit_code(result.findings, settings.fail_on_severity))
+    code = _review_exit_code(result, settings.fail_on_severity)
+    if code == EXIT_INCOMPLETE:
+        typer.echo("Merge gate: the review is incomplete, so it cannot pass:", err=True)
+        for reason in result.incomplete_reasons:
+            typer.echo(f"  - {reason}", err=True)
+    raise typer.Exit(code=code)
 
 
 @app.command()
@@ -235,14 +289,18 @@ def execute(
     settings = load_settings()
     log.info("execute.start", project=str(project), base=base, head=head)
 
-    result = run_review(
-        project,
-        base=base,
-        head=head,
-        settings=settings,
-        run_execution=True,
-        defer_state=defer_state,
-    )
+    try:
+        result = run_review(
+            project,
+            base=base,
+            head=head,
+            settings=settings,
+            run_execution=True,
+            defer_state=defer_state,
+        )
+    except _REVIEW_ERRORS as exc:
+        typer.echo(f"Execution could not run: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
     run = result.execution
     if run is None or not run.ran:
         reason = run.skipped_reason if run else "execution did not run"
@@ -402,6 +460,61 @@ def suggest_tests_cmd(
         "or an `--execute` run to measure it."
     )
     typer.echo("Re-run with --yaml for a schema.yml fragment.")
+    raise typer.Exit(code=0)
+
+
+@app.command(name="profile")
+def profile_cmd(
+    project: ProjectOpt = Path("demo_project"),
+    as_json: Annotated[bool, typer.Option("--json", help="Print the profile as JSON.")] = False,
+    verbose: VerboseOpt = False,
+) -> None:
+    """Describe a project's shape in counts, naming nothing in it.
+
+    How much of its SQL parses, how deep it goes, how far its macros reach, how much grain
+    and lineage THEMIS can derive, and how often the configured vocabulary matches its
+    columns, tags and folders. Built to be shared from a project whose code cannot be.
+    """
+    import json
+
+    from themis import vocabulary
+    from themis.analyze.grain import infer_grains
+    from themis.analyze.lineage import build_column_graph
+    from themis.analyze.profile import profile
+
+    configure_logging(verbose=verbose)
+    settings = load_settings()
+
+    manifest_path = project / "target" / "manifest.json"
+    if not manifest_path.exists():
+        typer.echo(
+            f"No manifest at {manifest_path}. Run `dbt compile` in {project} first — "
+            "`dbt parse` is not enough, it leaves Jinja unexpanded.",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
+    snapshot = load_manifest(manifest_path, revision="HEAD", backend=Backend.MANIFEST)
+    result = profile(
+        snapshot,
+        infer_grains(snapshot, dialect=settings.dialect),
+        build_column_graph(snapshot, dialect=settings.dialect),
+        vocabulary.from_settings(settings),
+        dialect=settings.dialect,
+    )
+    if as_json:
+        typer.echo(json.dumps(result, indent=2))
+        raise typer.Exit(code=0)
+
+    def emit(section: dict[str, Any], indent: int = 0) -> None:
+        for key, value in section.items():
+            if isinstance(value, dict):
+                typer.echo(f"{'  ' * indent}{key}:")
+                emit(value, indent + 1)
+            else:
+                typer.echo(f"{'  ' * indent}{key}: {value}")
+
+    emit(result)
     raise typer.Exit(code=0)
 
 
@@ -576,7 +689,8 @@ def ask(
             raise typer.Exit(code=2)
 
         facts = gather(session, stored, question)
-        context_is_empty = facts.is_empty
+        # The refusal for an unexamined model already says why the review is silent.
+        context_is_empty = facts.is_empty and not facts.unknown_entities
         run_key = stored.run_key
 
         # Answering happens inside the session because the facts are ORM rows; nothing
@@ -621,7 +735,17 @@ def eval_cmd(
             ),
         ),
     ] = None,
-    base: BaseOpt = "main",
+    base: Annotated[
+        str,
+        typer.Option(
+            "--base",
+            help=(
+                "Revision the mutations are applied to. HEAD by default: the corpus measures "
+                "the reviewer on the demo project as committed, and a branch that changes it "
+                "cannot be measured against another branch's copy."
+            ),
+        ),
+    ] = "HEAD",
     use_llm: Annotated[
         bool,
         typer.Option("--llm", help="Also run the model layer, and report what it added."),
@@ -658,6 +782,11 @@ def eval_cmd(
     Ground truth comes from execution, not from how each mutation was labelled: both
     revisions are built and the results compared, so a change that moves no number is
     treated as behaviour-preserving whatever it was called.
+
+    Exits 1 when the gate fails: a case that could not be scored (degraded grounding, or
+    a build that failed without being meant to), a missed defect, latent case or unruled
+    case, a flagged control, a mislabelled mutation, or — over `--mutations all` — any
+    rule that never fired. Exit 2 means the run could not start.
     """
     from themis.eval.harness import DirtyRepositoryError, run_corpus
     from themis.eval.mutations import Kind, select
@@ -945,19 +1074,28 @@ def eval_cmd(
         typer.echo("")
         typer.echo("Declared kind disagrees with what execution measured:")
         for outcome in report.mislabelled:
-            expected = (
-                "should change results" if outcome.mutation.kind is Kind.DEFECT else "should not"
-            )
-            typer.echo(f"  {outcome.mutation.id}: {expected}, but it did not")
+            if outcome.mutation.kind is Kind.DEFECT:
+                typer.echo(f"  {outcome.mutation.id}: should change results, but it did not")
+            else:
+                typer.echo(f"  {outcome.mutation.id}: should not change results, but it did")
 
     if report.stale:
         typer.echo("")
-        typer.echo("Could not be applied (the demo project has moved on):")
+        typer.echo("Could not be scored:")
         for outcome in report.stale:
             typer.echo(f"  {outcome.mutation.id}: {outcome.error}")
 
-    # A stale corpus silently measuring nothing is the failure mode worth guarding.
-    raise typer.Exit(code=1 if report.stale else 0)
+    # The gate. It used to fail on stale mutations alone, so a corpus reporting 9/29
+    # rule coverage and four missed defects passed CI for ten days.
+    failures = report.gate_failures(full_corpus=mutations == "all")
+    typer.echo("")
+    if failures:
+        typer.echo(f"gate: FAIL ({len(failures)})")
+        for failure in failures:
+            typer.echo(f"  {failure}")
+        raise typer.Exit(code=1)
+    typer.echo("gate: pass")
+    raise typer.Exit(code=0)
 
 
 def _persist(result: object, *, project: str, base: str, head: str, execute: bool) -> None:
@@ -993,6 +1131,27 @@ def _persist(result: object, *, project: str, base: str, head: str, execute: boo
         log.warning("review.not_saved", error=str(exc)[:200])
 
 
+EXIT_INCOMPLETE = 3
+
+
+def _review_exit_code(result: object, fail_on: str | None) -> int:
+    """The merge gate's decision for a whole review, not just its findings.
+
+    A blocking finding wins, because it blocks either way and says more. Otherwise an
+    incomplete review blocks too: the gate used to pass a review that had skipped most of
+    its rules, which is the one outcome a gate exists to prevent. Advisory mode (no
+    threshold set) never blocks, as before.
+    """
+    from themis.pipeline import ReviewResult
+
+    if not fail_on or not isinstance(result, ReviewResult):
+        return 0
+    blocking = _gate_exit_code(result.findings, fail_on)
+    if blocking:
+        return blocking
+    return EXIT_INCOMPLETE if result.incomplete_reasons else 0
+
+
 def _gate_exit_code(findings: list[Finding], fail_on: str | None) -> int:
     """Advisory by default: a review that blocks every merge stops being read.
 
@@ -1008,11 +1167,9 @@ def _gate_exit_code(findings: list[Finding], fail_on: str | None) -> int:
         Severity.LOW,
         Severity.INFO,
     ]
-    try:
-        threshold = order.index(Severity(fail_on))
-    except ValueError:
-        return 0
-
+    # Settings already refuse an unknown severity. Raising here too, rather than
+    # returning 0, keeps a gate that is handed a bad threshold from failing open.
+    threshold = order.index(Severity(fail_on.strip().lower()))
     return int(any(order.index(f.severity) <= threshold for f in findings))
 
 

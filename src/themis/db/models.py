@@ -75,6 +75,10 @@ class ReviewRun(Base):
     # guessing which options were in force.
     execute_requested: Mapped[bool] = mapped_column(default=False)
     llm_requested: Mapped[bool] = mapped_column(default=False)
+    # What the author says the change does. The intent pass has nothing to compare the
+    # SQL against without it, so a queued review could never run the one reviewer that
+    # has no rule behind it.
+    pr_description: Mapped[str | None] = mapped_column(Text, default=None)
 
     backend: Mapped[str | None] = mapped_column(String(32), default=None)
     executed: Mapped[bool] = mapped_column(default=False)
@@ -199,6 +203,10 @@ def fingerprint_finding(
     Deliberately excludes severity, confidence and any measured numbers: those move
     between runs as the code and the data change, and a fingerprint that moves with
     them would make every recurrence look like a new problem.
+
+    The caller passes the evidence's ``identity`` where it has one rather than its note.
+    That exclusion used to be claimed here and not delivered: measured findings put row
+    counts and totals in the note, so every one of them was new on every run.
     """
     # Normalise whitespace so reformatted evidence does not fork the identity.
     note = " ".join((evidence_note or "").split())

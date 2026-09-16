@@ -283,6 +283,132 @@ class TrinoClient:
         self._conn.close()
 
 
+def _belongs_to_run(schema: str, prefixes: tuple[str, ...]) -> bool:
+    """Whether a schema is one this run created.
+
+    dbt appends a model's custom schema to the target schema (``themis_head_1a2b_main``),
+    so a run owns its own names and anything extending them — and nothing else. The run
+    token in the prefix is what keeps this from ever matching a schema somebody uses.
+    """
+    lowered = schema.lower()
+    return any(lowered == p.lower() or lowered.startswith(p.lower() + "_") for p in prefixes)
+
+
+def _duckdb_files(profile: dict[str, Any], project_dir: Path) -> list[Path]:
+    """The database file a DuckDB profile writes to, plus every file it attaches."""
+    candidates: list[str] = [str(profile.get("path", ""))]
+    for entry in profile.get("attach") or []:
+        if isinstance(entry, dict) and entry.get("path"):
+            candidates.append(str(entry["path"]))
+    files: list[Path] = []
+    for raw in candidates:
+        if not raw or raw == ":memory:" or "://" in raw or raw.startswith("md:"):
+            continue
+        path = Path(raw)
+        files.append(path if path.is_absolute() else (project_dir / path).resolve())
+    return [f for f in files if f.exists()]
+
+
+def drop_run_schemas(
+    profile: dict[str, Any], project_dir: Path, prefixes: tuple[str, ...]
+) -> tuple[str, ...]:
+    """Drop the schemas one Stage 3 run built into. Returns what was dropped.
+
+    This is the only write THEMIS makes itself — dbt does every other one — and it is
+    confined to names carrying this run's token. It exists because the alternative is
+    worse in both directions: schemas shared between runs let one run measure another's
+    leftovers, and per-run schemas never removed accumulate a copy of the measured
+    closure per review.
+
+    Best effort. A failure is logged and the review stands: a stray schema costs space,
+    and the measurement already happened against relations this run built.
+    """
+    adapter = str(profile.get("type", "")).lower()
+    dropped: list[str] = []
+    try:
+        if adapter == "duckdb":
+            import duckdb
+
+            for database in _duckdb_files(profile, project_dir):
+                conn = duckdb.connect(str(database))
+                try:
+                    names = [
+                        str(row[0])
+                        for row in conn.execute(
+                            "select schema_name from information_schema.schemata "
+                            "where catalog_name = current_database()"
+                        ).fetchall()
+                    ]
+                    for name in names:
+                        if _belongs_to_run(name, prefixes):
+                            conn.execute(f'drop schema if exists "{name}" cascade')
+                            dropped.append(name)
+                finally:
+                    conn.close()
+        elif adapter == "trino":
+            dropped.extend(_drop_trino_schemas(profile, prefixes))
+        else:
+            log.warning("warehouse.cleanup_unsupported", adapter=adapter)
+    except Exception as exc:
+        log.warning("warehouse.cleanup_failed", error=str(exc)[:300], prefixes=list(prefixes))
+    if dropped:
+        log.info("warehouse.schemas_dropped", schemas=dropped)
+    return tuple(dropped)
+
+
+def _drop_trino_schemas(profile: dict[str, Any], prefixes: tuple[str, ...]) -> list[str]:
+    """Drop a run's schemas on Trino, relation by relation.
+
+    ``DROP SCHEMA ... CASCADE`` is not supported by every connector, so the relations
+    are dropped first and the schema after — which works on all of them.
+    """
+    import trino
+
+    catalog = str(profile.get("database") or profile.get("catalog") or "")
+    password = profile.get("password")
+    connect: Any = trino.dbapi.connect
+    conn = connect(
+        host=str(profile.get("host", "")),
+        port=int(profile.get("port", 8080)),
+        user=str(profile.get("user", "themis")),
+        catalog=catalog,
+        http_scheme=str(profile.get("http_scheme", "http")),
+        auth=trino.auth.BasicAuthentication(str(profile.get("user")), password)
+        if password
+        else None,
+    )
+
+    def run(sql: str) -> list[tuple[Any, ...]]:
+        cursor = conn.cursor()
+        cursor.execute(sql)
+        return [tuple(row) for row in cursor.fetchall()]
+
+    def quote(identifier: str) -> str:
+        return '"' + identifier.replace('"', '""') + '"'
+
+    dropped: list[str] = []
+    try:
+        schemas = [
+            str(row[0])
+            for row in run(f"select schema_name from {quote(catalog)}.information_schema.schemata")
+        ]
+        for schema in schemas:
+            if not _belongs_to_run(schema, prefixes):
+                continue
+            relations = run(
+                f"select table_name, table_type from {quote(catalog)}.information_schema.tables "
+                f"where table_schema = '{schema}'"
+            )
+            for name, kind in relations:
+                statement = "drop view" if str(kind).upper() == "VIEW" else "drop table"
+                run(f"{statement} if exists {quote(catalog)}.{quote(schema)}.{quote(str(name))}")
+            run(f"drop schema if exists {quote(catalog)}.{quote(schema)}")
+            dropped.append(schema)
+    finally:
+        conn.close()
+    return dropped
+
+
 def client_for_profile(profile: dict[str, Any], project_dir: Path) -> WarehouseClient | None:
     """Build a client from a resolved dbt profile output, or None if unsupported."""
     adapter = str(profile.get("type", "")).lower()

@@ -132,6 +132,21 @@ def answer_question(
     """Answer from the stored facts, or refuse."""
     from themis.review.selfcheck import quote_is_grounded
 
+    # A question about nothing but models this review never examined is settled before
+    # the model is asked. The honest answer is already known, and leaving it to the model
+    # made it a matter of phrasing: qwen answered "nothing was found about it", quoted
+    # the absence notice, and passed the grounding check as an *answer* — exit 0, the
+    # code a script reads as "the review covered this".
+    if facts.unknown_entities and not facts.models_mentioned and not facts.rules_mentioned:
+        names = ", ".join(facts.unknown_entities)
+        return Answer(
+            text="",
+            grounded=False,
+            refusal_reason=(
+                f"this review did not examine {names}, so it cannot say anything about it"
+            ),
+        )
+
     context = render_facts(facts)
     prompt = f"{context}\n\n## The question\n{question}"
 
@@ -161,8 +176,20 @@ def answer_question(
         )
 
     # The same verification the specialists get. An answer citing something absent from
-    # the facts is the failure this whole lane exists to prevent.
-    if quote and not quote_is_grounded(quote, context):
+    # the facts is the failure this whole lane exists to prevent — and so is an answer
+    # citing nothing. The check used to run only when a quote was present, so a model
+    # that left the quote blank had its answer shown as grounded without any check.
+    if not quote:
+        log.warning("ask.unquoted", answer=text[:120])
+        return Answer(
+            text="",
+            grounded=False,
+            refusal_reason=(
+                "the answer quoted nothing from the stored review, so there was nothing to "
+                "check it against and it was discarded rather than shown"
+            ),
+        )
+    if not quote_is_grounded(quote, context):
         log.warning("ask.ungrounded", quote=quote[:120])
         return Answer(
             text="",

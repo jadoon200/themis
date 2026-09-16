@@ -9,11 +9,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from themis import vocabulary
 from themis.acquire.snapshot_builder import AcquireResult, acquire
 from themis.analyze.grain import infer_grains
 from themis.analyze.lineage import LineageIndex
 from themis.analyze.suggest import suggest_tests
-from themis.capabilities import Capability
+from themis.capabilities import Capability, require
 from themis.config import Settings
 from themis.execute.runner import ExecutionResult, execute
 from themis.logging import get_logger
@@ -29,6 +30,8 @@ from themis.rules.base import RuleContext, SkippedRule
 from themis.rules.registry import run_rules
 from themis.snapshot import ProjectSnapshot
 from themis.triage.rubric import calibrate
+from themis.vocabulary import DEFAULT as DEFAULT_VOCABULARY
+from themis.vocabulary import Vocabulary
 
 log = get_logger(__name__)
 
@@ -42,6 +45,9 @@ class ReviewResult:
     grains: dict[str, Grain] = field(default_factory=dict)
     models_reviewed: tuple[str, ...] = ()
     macro_affected: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    # Seeds whose data changed, and every model built on them. A data change reviews no
+    # SQL, so without this a PR editing only an FX-rate file reported zero changed models.
+    seed_affected: dict[str, tuple[str, ...]] = field(default_factory=dict)
     degraded_reason: str | None = None
     executed: bool = False
     execution: ExecutionResult | None = None
@@ -53,10 +59,50 @@ class ReviewResult:
     # Reported as one line rather than a finding each: on a project with no test
     # coverage a per-model finding would fire on everything and bury the real ones.
     untested_grains: tuple[str, ...] = ()
+    # Whether the caller asked for Stage 3, so a review that wanted measurement and did
+    # not get it can say so rather than passing as an inference-only review by choice.
+    execution_requested: bool = False
+
+    @property
+    def incomplete(self) -> tuple[tuple[str, str], ...]:
+        """Every way this review checked less than it was asked to, as (kind, reason).
+
+        The merge gate used to read findings alone, so a review with most of its rules
+        skipped, or one that asked for execution and never built anything, exited 0 when
+        it found nothing — the same failure as the corpus job that measured 9/29 rules
+        and passed. A report can carry a banner; a gate only reads an exit code.
+
+        The kind is stable and carries no project detail, so it survives redaction.
+        """
+        items: list[tuple[str, str]] = []
+        if self.degraded_reason:
+            items.append(("grounding_degraded", f"grounding degraded: {self.degraded_reason}"))
+        if self.execution_requested and not self.executed:
+            why = self.execution.skipped_reason if self.execution else "it did not run"
+            items.append(("execution_not_run", f"execution was requested and did not run: {why}"))
+        if self.skipped:
+            rules = sorted({s.rule_id for s in self.skipped})
+            items.append(
+                (
+                    "checks_skipped",
+                    f"{len(self.skipped)} check(s) could not run ({', '.join(rules[:8])}"
+                    + (" and more" if len(rules) > 8 else "")
+                    + ")",
+                )
+            )
+        return tuple(items)
+
+    @property
+    def incomplete_reasons(self) -> tuple[str, ...]:
+        return tuple(reason for _, reason in self.incomplete)
 
 
 def build_contexts(
-    result: AcquireResult, grains: dict[str, Grain], *, dialect: str
+    result: AcquireResult,
+    grains: dict[str, Grain],
+    *,
+    dialect: str,
+    vocab: Vocabulary = DEFAULT_VOCABULARY,
 ) -> list[RuleContext]:
     """One context per model the change actually affects.
 
@@ -82,6 +128,14 @@ def build_contexts(
         for model in result.after.models_using_macro_file(macro_file):
             if model not in directly_changed:
                 via_macro.setdefault(model, label)
+
+    # dbt_project.yml carries folder-level configs and vars, so one line there can
+    # re-materialize or re-filter a whole directory while no model file changes. The
+    # models it reached are the ones whose compiled SQL or configuration now differ.
+    if result.changed_project_config:
+        for model in _reconfigured_models(result.before, result.after):
+            if model not in directly_changed and model not in via_macro:
+                via_yaml.setdefault(model, "dbt_project.yml")
 
     affected = directly_changed | set(via_macro) | set(via_yaml)
 
@@ -117,9 +171,78 @@ def build_contexts(
                 lineage=lineage,
                 via_macro=via_macro.get(name),
                 via_yaml=via_yaml.get(name),
+                vocabulary=vocab,
             )
         )
     return contexts
+
+
+def _macro_texts(snapshot: ProjectSnapshot, names: set[str]) -> dict[str, str]:
+    """The source of these macros and every macro they call, transitively."""
+    seen: dict[str, str] = {}
+    pending = list(names)
+    while pending:
+        name = pending.pop()
+        if name in seen:
+            continue
+        macro = snapshot.macros.get(name)
+        seen[name] = macro.raw_sql if macro else ""
+        if macro:
+            pending.extend(ref.split(".")[-1] for ref in macro.depends_on_macros)
+    return seen
+
+
+def code_changed(name: str, before: ProjectSnapshot, after: ProjectSnapshot) -> bool:
+    """Whether a model's code differs between revisions.
+
+    Compiled SQL answers that for most models. It cannot for a model whose SQL is built
+    from query results: two compiles of identical code differ whenever the rows come back
+    differently — including merely in a different order, which an unordered query does
+    between one compile and the next. The demo project's own generated model did exactly
+    that, so it read as changed in every review. For such a model the code is its raw SQL
+    and the macros it calls.
+    """
+    was, now = before.models.get(name), after.models.get(name)
+    if was is None or now is None:
+        return (was is None) != (now is None)
+    generated = set(before.data_dependent_models()) | set(after.data_dependent_models())
+    if name not in generated:
+        return was.analysable_sql != now.analysable_sql
+    if was.raw_sql != now.raw_sql:
+        return True
+    called = {ref.split(".")[-1] for ref in (*was.depends_on_macros, *now.depends_on_macros)}
+    return _macro_texts(before, called) != _macro_texts(after, called)
+
+
+def _reconfigured_models(before: ProjectSnapshot, after: ProjectSnapshot) -> tuple[str, ...]:
+    """SQL models whose code or write configuration differ between revisions."""
+
+    def shape(snapshot: ProjectSnapshot, name: str) -> tuple[object, ...] | None:
+        model = snapshot.models.get(name)
+        if model is None or model.is_seed:
+            return None
+        return (
+            model.relation_name,
+            model.materialization,
+            model.incremental_strategy,
+            model.unique_key,
+            model.on_schema_change,
+            model.tags,
+            model.contract_enforced,
+            tuple(sorted(model.properties.items())),
+            model.pre_hooks,
+            model.post_hooks,
+        )
+
+    names = set(before.models) | set(after.models)
+    return tuple(
+        sorted(
+            name
+            for name in names
+            if shape(after, name) is not None
+            and (shape(before, name) != shape(after, name) or code_changed(name, before, after))
+        )
+    )
 
 
 def attach_execution(findings: list[Finding], result: ExecutionResult) -> list[Finding]:
@@ -132,7 +255,10 @@ def attach_execution(findings: list[Finding], result: ExecutionResult) -> list[F
     attached: list[Finding] = []
     for finding in findings:
         delta = result.deltas.get(finding.evidence.model_name)
-        if delta is None or not delta.is_material:
+        # A build failure is not a measurement of what the rule describes. It is its own
+        # finding (X0002); promoting a grain-change prediction to MEASURED because the
+        # model did not compile would claim evidence nobody has.
+        if delta is None or not delta.is_material or delta.build_error is not None:
             attached.append(finding)
             continue
         attached.append(
@@ -151,6 +277,8 @@ def unexplained_change_findings(
     findings: list[Finding],
     before: ProjectSnapshot,
     after: ProjectSnapshot,
+    changed_seeds: tuple[str, ...] = (),
+    vocab: Vocabulary = DEFAULT_VOCABULARY,
 ) -> list[Finding]:
     """Report models whose results moved with no rule explaining why.
 
@@ -182,12 +310,16 @@ def unexplained_change_findings(
     # the year alters no row count and no monetary sum in the staging model itself,
     # and shifts every figure below it. Requiring an origin to have moved left those
     # six descendants ownerless, so one explained change produced six criticals.
-    origins: set[str] = set()
-    for name in set(before.models) | set(after.models):
-        before_sql = before.models[name].analysable_sql if name in before.models else None
-        after_sql = after.models[name].analysable_sql if name in after.models else None
-        if before_sql != after_sql:
-            origins.add(name)
+    origins: set[str] = {
+        name
+        for name in set(before.models) | set(after.models)
+        if not (after.models.get(name) or before.models[name]).is_seed
+        and code_changed(name, before, after)
+    }
+    # A seed whose data changed is an origin too, with no SQL to show for it. Without
+    # this every model beneath an edited FX-rate file read as having moved for no
+    # reason anyone could name.
+    origins.update(changed_seeds)
 
     attributed: dict[str, list[str]] = {origin: [] for origin in origins}
     roots = moved & origins
@@ -234,6 +366,7 @@ def unexplained_change_findings(
                 after=after,
                 consequences=consequences,
                 is_root=name in roots,
+                vocab=vocab,
             )
         )
     return out
@@ -262,6 +395,7 @@ def _unexplained_finding(
     after: ProjectSnapshot,
     consequences: tuple[str, ...],
     is_root: bool,
+    vocab: Vocabulary = DEFAULT_VOCABULARY,
 ) -> Finding:
     from themis.models import Evidence, Severity
 
@@ -279,7 +413,7 @@ def _unexplained_finding(
         reached_name
         for reached_name in reached
         if (reached_model := after.models.get(reached_name))
-        and {"regulatory", "recon", "control"} & set(reached_model.tags)
+        and vocab.is_governed(reached_model.tags)
     )
     severity = Severity.CRITICAL if (moved and governed_models) else Severity.HIGH
 
@@ -293,13 +427,23 @@ def _unexplained_finding(
     if consequences:
         detail.append(f"same change reaches {len(consequences)} downstream model(s)")
 
-    origin = (
-        "Building both revisions produced different results for this model, and none "
-        "of the checks accounts for the difference."
-        if is_root
-        else "This model's results changed although its own SQL did not, and nothing "
-        "upstream that changed accounts for it."
-    )
+    seed = after.models.get(name)
+    if seed is not None and seed.is_seed:
+        origin = (
+            "This seed's data changed. No rule can judge a data change — there is no SQL "
+            "in it — so what it does to the figures built on it has been measured, not "
+            "assessed."
+        )
+    elif is_root:
+        origin = (
+            "Building both revisions produced different results for this model, and none "
+            "of the checks accounts for the difference."
+        )
+    else:
+        origin = (
+            "This model's results changed although its own SQL did not, and nothing "
+            "upstream that changed accounts for it."
+        )
     reach = f" The same movement carries into {', '.join(consequences)}." if consequences else ""
 
     return Finding(
@@ -308,7 +452,8 @@ def _unexplained_finding(
         title=f"`{name}` changed and no rule explains why",
         severity=severity,
         confidence=Confidence.MEASURED,
-        evidence=Evidence(model_name=name, note="; ".join(detail)),
+        # The note is what moved and by how much; the issue is that this model moved.
+        evidence=Evidence(model_name=name, note="; ".join(detail), identity=""),
         consequence=(
             origin + " That means the change is outside every defect class this tool knows "
             "about — so it has not been assessed, only observed."
@@ -330,6 +475,74 @@ def _unexplained_finding(
         blast_radius=after.downstream_of(name),
         execution_delta=delta,
     )
+
+
+def build_failure_findings(result: ExecutionResult, after: ProjectSnapshot) -> list[Finding]:
+    """Report a head revision that no longer builds.
+
+    Before this existed a build failure was only ever evidence attached to some other
+    rule's finding, and the net for unexplained movement deliberately ignores it. So a
+    change whose head failed to build, and which no rule happened to describe, came back
+    as "No findings" — the review had watched the build fail and said nothing.
+
+    One finding per model that failed itself, not per model skipped behind it: the
+    model that broke is where to look, and the ones that never ran are its consequence.
+    A model that failed on the base too is not this change's doing and is left out.
+    """
+    from themis.models import Evidence, Severity
+
+    head, base = result.head_build, result.base_build
+    unbuilt_downstream = sorted(
+        name
+        for name, delta in result.deltas.items()
+        if delta.failed_revision == "head" and delta.build_skipped
+    )
+
+    if head.statuses:
+        roots = [name for name in head.errored if name not in base.errored]
+    elif head.error is not None:
+        # dbt recorded no per-node statuses, so the model that broke cannot be told apart
+        # from the ones skipped behind it. Name every measured model the head lost.
+        roots = sorted(
+            name for name, delta in result.deltas.items() if delta.failed_revision == "head"
+        )
+        unbuilt_downstream = []
+    else:
+        roots = []
+
+    findings: list[Finding] = []
+    for name in roots:
+        model = after.models.get(name)
+        downstream = [m for m in unbuilt_downstream if m != name]
+        findings.append(
+            Finding(
+                rule_id="X0002",
+                family="X",
+                title=f"`{name}` does not build at the head revision",
+                severity=Severity.HIGH,
+                confidence=Confidence.MEASURED,
+                evidence=Evidence(
+                    model_name=name,
+                    file_path=model.file_path if model else None,
+                    # The dbt error text can carry run-specific detail; the issue is the model.
+                    identity="",
+                    note=(head.error or "dbt reported the model as failed")[:600],
+                ),
+                consequence=(
+                    "Building the proposed change failed on this model, while the base "
+                    "revision built it. Nothing downstream of it can be measured, and "
+                    "merged as-is the next production run fails here."
+                    + (f" Not built as a result: {', '.join(downstream)}." if downstream else "")
+                ),
+                suggestion=(
+                    "Fix the error above and re-run. If the change was meant to remove "
+                    "something a downstream model still reads, update that model in the "
+                    "same change."
+                ),
+                blast_radius=after.downstream_of(name),
+            )
+        )
+    return findings
 
 
 def measured_grain_findings(result: ExecutionResult, inferred: dict[str, Grain]) -> list[Finding]:
@@ -361,7 +574,12 @@ def measured_grain_findings(result: ExecutionResult, inferred: dict[str, Grain])
                 title=f"`{name}` is not unique on its derived key",
                 severity=Severity.HIGH,
                 confidence=Confidence.MEASURED,
-                evidence=Evidence(model_name=name, note=measured.note),
+                evidence=Evidence(
+                    model_name=name,
+                    note=measured.note,
+                    # The multiplier is data; the issue is duplication on this key.
+                    identity=",".join(measured.columns),
+                ),
                 consequence=(
                     f"The key ({', '.join(measured.columns)}) was derived as this "
                     f"model's grain [{source}], but the built table has "
@@ -406,6 +624,15 @@ def review(
     The model review (stages 4-5) layers on top of this; the deterministic core stands
     alone and is useful without it.
     """
+    if capabilities is not None:
+        # Every stage a run needs is checked before any of it starts. A worker declared
+        # without COMPILE used to compile anyway, with the warehouse credentials that
+        # implies, because only EXECUTE was ever looked at.
+        require(capabilities, Capability.COMPILE, what="compiling the revisions under review")
+        require(capabilities, Capability.ANALYSE, what="running the rules")
+        if run_llm:
+            require(capabilities, Capability.REVIEW, what="the model review")
+
     acquired = acquire(
         project_dir,
         base=base,
@@ -421,19 +648,23 @@ def review(
     )
 
     grains = infer_grains(acquired.after, dialect=settings.dialect)
-    contexts = build_contexts(acquired, grains, dialect=settings.dialect)
+    vocab = vocabulary.from_settings(settings)
+    contexts = build_contexts(acquired, grains, dialect=settings.dialect, vocab=vocab)
     findings, skipped = run_rules(contexts)
 
     macro_affected = {
         macro: acquired.after.models_using_macro(macro) for macro in acquired.changed_macros
     }
+    seed_affected = {seed: acquired.after.downstream_of(seed) for seed in acquired.changed_seeds}
 
     execution: ExecutionResult | None = None
     if run_execution:
         # Measure descendants as well as the changed models themselves. A fan-out in an
         # intermediate model is invisible in its own row count when the join is the last
         # step, but shows up unmistakably as an inflated SUM in the mart below it.
-        changed = {c.model_name for c in contexts}
+        # Changed seeds join the selection with everything built on them: a data change
+        # has no SQL for a rule to read, so measuring is the only way it is reviewed.
+        changed = {c.model_name for c in contexts} | set(seed_affected)
         targets = set(changed)
         for name in changed:
             targets.update(acquired.after.downstream_of(name))
@@ -460,13 +691,22 @@ def review(
             incremental_models=incremental_models,
             defer_state=defer_state,
             capabilities=capabilities,
+            data_anchor=data_anchor,
         )
         if execution.ran:
             findings = attach_execution(findings, execution)
+            findings.extend(build_failure_findings(execution, acquired.after))
             findings.extend(measured_grain_findings(execution, grains))
             # Runs after the others so "explained" reflects everything already found.
             findings.extend(
-                unexplained_change_findings(execution, findings, acquired.before, acquired.after)
+                unexplained_change_findings(
+                    execution,
+                    findings,
+                    acquired.before,
+                    acquired.after,
+                    changed_seeds=acquired.changed_seeds,
+                    vocab=vocab,
+                )
             )
             grains = {**grains, **execution.measured_grains}
         else:
@@ -533,15 +773,15 @@ def review(
         skipped=skipped,
         grains=grains,
         governed_models=frozenset(
-            name
-            for name, model in acquired.after.models.items()
-            if {"regulatory", "recon", "control"} & set(model.tags)
+            name for name, model in acquired.after.models.items() if vocab.is_governed(model.tags)
         ),
         untested_grains=untested,
         models_reviewed=tuple(c.model_name for c in contexts),
         macro_affected=macro_affected,
+        seed_affected=seed_affected,
         degraded_reason=acquired.degraded_reason,
         executed=bool(execution and execution.ran),
         execution=execution,
+        execution_requested=run_execution,
         llm=llm_summary,
     )

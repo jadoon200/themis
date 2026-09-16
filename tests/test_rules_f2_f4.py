@@ -186,3 +186,29 @@ def test_a_genuinely_hardcoded_three_part_name_still_fires() -> None:
 
     refs = HardcodedTableReferenceRule()._literal_refs('select a from "proj"."main"."int_x"')
     assert refs
+
+
+def test_renaming_an_alias_in_a_filter_is_not_a_filter_change() -> None:
+    """A pure refactor renaming `accounts` to `coa` reported four filter changes."""
+    from themis.rules.families.f2_filters import _predicates
+
+    before = _predicates(
+        "with accounts as (select * from stg_accounts) "
+        "select a.id from entries e join accounts a on a.id = e.id "
+        "where a.account_type = 'revenue' and not a.is_intercompany",
+        "trino",
+    )
+    renamed = _predicates(
+        "with chart as (select * from stg_accounts) "
+        "select coa.id from entries e join chart coa on coa.id = e.id "
+        "where coa.account_type = 'revenue' and not coa.is_intercompany",
+        "trino",
+    )
+    changed = _predicates(
+        "with chart as (select * from stg_accounts) "
+        "select coa.id from entries e join chart coa on coa.id = e.id "
+        "where coa.account_type = 'expense' and not coa.is_intercompany",
+        "trino",
+    )
+    assert set(before) == set(renamed)
+    assert set(before) != set(changed)

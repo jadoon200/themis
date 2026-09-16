@@ -63,6 +63,7 @@ extend-immutable-calls = [
     "typer.Argument",
     "fastapi.Depends",
     "fastapi.Query",
+    "fastapi.Header",
 ]
 
 [tool.mypy]

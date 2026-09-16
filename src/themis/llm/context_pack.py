@@ -20,6 +20,7 @@ from themis.analyze.lineage import ColumnGraph
 from themis.analyze.parse import ParseError, parse_sql
 from themis.models import Finding, Grain
 from themis.snapshot import ModelNode, ProjectSnapshot
+from themis.vocabulary import GOVERNED_TAGS
 
 # Roughly four characters per token. Deliberately crude — the budget exists to stop a
 # pack becoming a file, and precision would imply a control we do not have.
@@ -302,6 +303,7 @@ def build_intent_pack(
     changed_models: tuple[str, ...],
     pr_description: str,
     snapshot: ProjectSnapshot,
+    governed_tags: tuple[str, ...] = GOVERNED_TAGS,
 ) -> ContextPack | None:
     """A single pack describing the whole change, for the intent pass.
 
@@ -335,7 +337,7 @@ def build_intent_pack(
             continue
         if model.materialization == "incremental":
             notable.append(f"- {name} is incremental (strategy: {model.incremental_strategy})")
-        if {"regulatory", "recon", "control"} & set(model.tags):
+        if {t.lower() for t in governed_tags} & {t.lower() for t in model.tags}:
             notable.append(f"- {name} is tagged {', '.join(model.tags)}")
     if notable:
         lines += ["", "## Worth knowing about these models", *notable]

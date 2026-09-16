@@ -10,7 +10,7 @@
 
 {% macro entity_label_case(column) %}
     {%- set rows = run_query(
-        "select entity_code, account_name from " ~ ref('stg_accounts') ~ " group by 1, 2"
+        "select entity_code, account_name from " ~ ref('stg_accounts') ~ " group by 1, 2 order by 1, 2"
     ) -%}
     {%- set ns = namespace(result='') -%}
     {%- if execute -%}

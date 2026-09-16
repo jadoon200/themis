@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from themis import vocabulary
 
 
 class Settings(BaseSettings):
@@ -20,7 +23,9 @@ class Settings(BaseSettings):
     dialect: str = "trino"
 
     # --- LLM -----------------------------------------------------------------
-    llm_provider: str = "ollama"  # ollama | openai_compatible
+    # Only "ollama" is implemented. The setting exists so a second provider is a new
+    # class plus a config edit, not a change to every caller.
+    llm_provider: str = "ollama"
     llm_base_url: str = "http://127.0.0.1:11434"
     # High-volume, narrow, JSON-schema'd specialist calls.
     llm_specialist_model: str = "qwen3:8b"
@@ -31,6 +36,10 @@ class Settings(BaseSettings):
     # a decision for the eval to make, not an assumption to ship.
     llm_supervisor_model: str = "qwen3:8b"
     llm_timeout_s: float = 120.0
+    # Retries after a transient failure — timeout, dropped connection, 5xx, a body that is
+    # not JSON — with a linear backoff. A 4xx is never retried.
+    llm_retries: int = 2
+    llm_retry_backoff_s: float = 1.0
     # Sampling. Zero by default because a verdict is not a creative task and two runs
     # of one review should agree; exposed so that claim can be measured rather than
     # assumed. `num_predict` caps the reply — too low truncates a quote mid-token and
@@ -42,9 +51,12 @@ class Settings(BaseSettings):
 
     # --- execution (Stage 3) -------------------------------------------------
     execute_enabled: bool = False
-    # Schemas the base and head builds land in. Never production.
+    # Prefixes for the schemas the base and head builds land in. Never production. Each
+    # run appends its own token, so no two runs — and no two workers — share one.
     execute_base_schema: str = "themis_base"
     execute_head_schema: str = "themis_head"
+    # Leave a run's schemas in place instead of dropping them, to inspect what was built.
+    execute_keep_schemas: bool = False
     execute_timeout_s: float = 900.0
     # Skip models above this many rows rather than blowing the time budget.
     execute_max_rows: int = 5_000_000
@@ -59,6 +71,15 @@ class Settings(BaseSettings):
         "local",
     )
 
+    # --- vocabulary ----------------------------------------------------------
+    # The names checks match on. Each replaces its default outright — set it as a JSON
+    # list, e.g. THEMIS_MONEY_COLUMN_HINTS='["amount","ntnl","mtm","pnl"]' — and
+    # `themis profile` shows how often each matches a project. See themis/vocabulary.py.
+    money_column_hints: tuple[str, ...] = vocabulary.MONEY_HINTS
+    sensitive_column_hints: tuple[str, ...] = vocabulary.SENSITIVE_HINTS
+    governed_tags: tuple[str, ...] = vocabulary.GOVERNED_TAGS
+    published_folders: tuple[str, ...] = vocabulary.PUBLISHED_FOLDERS
+
     # --- manifest cache ------------------------------------------------------
     # Compiled manifests are content-addressed by git revision, so the base compile a
     # review repeats every time is paid once. Refused automatically for projects whose
@@ -69,6 +90,26 @@ class Settings(BaseSettings):
     # --- gate ----------------------------------------------------------------
     # Advisory by default. Blocking is opt-in, per severity.
     fail_on_severity: str | None = None
+
+    @field_validator("fail_on_severity", mode="before")
+    @classmethod
+    def _known_severity(cls, value: object) -> str | None:
+        """Refuse a severity the gate cannot apply, instead of silently never blocking.
+
+        ``THEMIS_FAIL_ON_SEVERITY=HIGH`` used to leave every merge unblocked: the value
+        did not parse, and an unparseable threshold returned exit code 0. A gate that
+        fails open on a typo is advisory in a way nobody chose.
+        """
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return None
+        normalised = str(value).strip().lower()
+        allowed = ("critical", "high", "medium", "low", "info")
+        if normalised not in allowed:
+            raise ValueError(
+                f"THEMIS_FAIL_ON_SEVERITY={value!r} is not a severity; "
+                f"use one of {', '.join(allowed)}"
+            )
+        return normalised
 
     # --- artifacts -----------------------------------------------------------
     run_dir: str = ".themis/runs"
@@ -83,6 +124,16 @@ class Settings(BaseSettings):
     worker_poll_interval_s: float = 5.0
     api_host: str = "127.0.0.1"
     api_port: int = 8040
+    # A bearer token every endpoint but /health requires. Unset means no check, which is
+    # only reasonable while the API is bound to the loopback interface.
+    api_token: str | None = None
+    # Directories a queued review's project must live under. Empty means relative paths
+    # only, resolved against the worker's working directory. A review runs dbt — and so
+    # the project's own macros and hooks — on whatever path it is given.
+    project_roots: tuple[str, ...] = ()
+    # Mixed into the hashes `--redact` puts in place of model and column names. Without one,
+    # anyone holding a list of likely names can hash them and match. Keep it private.
+    redact_salt: str = ""
 
 
 def load_settings() -> Settings:

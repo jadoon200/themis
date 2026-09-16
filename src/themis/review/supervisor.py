@@ -285,6 +285,7 @@ def _intent_pass(
         changed_models=changed_models,
         pr_description=pr_description,
         snapshot=snapshot,
+        governed_tags=settings.governed_tags,
     )
     if pack is None:
         return []

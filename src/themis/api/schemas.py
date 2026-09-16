@@ -6,19 +6,41 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field
 
+# A git revision as a person or a CI system would name one. Never starting with "-",
+# which git reads as an option — `git diff --output=<file>` writes wherever it is told.
+_REVISION = r"^[^\s\-][^\s]*$"
+
 
 class ReviewRequest(BaseModel):
     """Ask for a review. Returns immediately with a run key."""
 
-    project: str = Field(description="Path to the dbt project, relative to the worker.")
-    base_ref: str = Field(default="main")
-    head_ref: str = Field(default="HEAD")
+    project: str = Field(
+        description=(
+            "Path to the dbt project on the worker: relative to its working directory, or "
+            "absolute under THEMIS_PROJECT_ROOTS."
+        ),
+        max_length=255,
+    )
+    base_ref: str = Field(default="main", pattern=_REVISION, max_length=255)
+    head_ref: str = Field(
+        default="HEAD",
+        pattern=_REVISION,
+        max_length=255,
+        description=(
+            "The revision reviewed. Built from that commit, not from the worker's checkout."
+        ),
+    )
     repo: str | None = None
     execute: bool = Field(
         default=False,
         description="Build both revisions and measure the difference. Slower, far stronger.",
     )
     use_llm: bool = False
+    pr_description: str | None = Field(
+        default=None,
+        max_length=20_000,
+        description="What the author says the change does. Enables the intent pass.",
+    )
     pr_number: int | None = None
     pr_url: str | None = None
 

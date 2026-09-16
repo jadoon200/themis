@@ -63,21 +63,65 @@ class ChangedFile:
         return Path(self.path).stem
 
 
+def validate_revision(revision: str) -> str:
+    """Refuse a revision string git would read as an option.
+
+    Revisions arrive from the API as well as from a person at a terminal. One beginning
+    with ``-`` is parsed by git as a flag — ``git diff`` accepts ``--output=<file>`` —
+    so it is rejected before it reaches any command rather than escaped at each one.
+    """
+    if not revision or revision.startswith("-") or any(c in revision for c in "\x00\n\r"):
+        raise GitError(f"not a usable revision: {revision!r}")
+    return revision
+
+
 def resolve_revision(repo: Path, revision: str) -> str:
-    """Resolve a revision to a full SHA, so a run is reproducible after the fact."""
-    return _git(repo, "rev-parse", revision).strip()
+    """Resolve a revision to a full commit SHA, so a run is reproducible after the fact."""
+    validate_revision(revision)
+    try:
+        return _git(repo, "rev-parse", "--verify", "--quiet", f"{revision}^{{commit}}").strip()
+    except GitError as exc:
+        # `--quiet` leaves stderr empty, so the default message would name nothing.
+        raise GitError(f"{revision!r} does not name a commit in {repo}") from exc
 
 
-def changed_files(repo: Path, base: str, head: str) -> tuple[ChangedFile, ...]:
+def is_working_tree(repo: Path, revision: str, path: Path | None = None) -> bool:
+    """Whether a revision names what is on disk, so the working tree can stand in for it.
+
+    ``HEAD`` always does: reviewing the working tree against a base is what someone at a
+    terminal means by it, uncommitted edits included. Any other name does only when it
+    resolves to the checked-out commit *and* nothing is modified — otherwise the files on
+    disk are not that revision, and compiling them in its place reviews the wrong code
+    under the right SHA.
+    """
+    if revision == "HEAD":
+        return True
+    return resolve_revision(repo, revision) == resolve_revision(repo, "HEAD") and is_clean(
+        repo, path
+    )
+
+
+def changed_files(
+    repo: Path, base: str, head: str, *, working_tree: bool = False
+) -> tuple[ChangedFile, ...]:
     """Files differing between two revisions.
 
     Uses the merge base rather than a direct comparison: a long-lived branch would
     otherwise report every change that landed on main since it forked, burying the
     reviewer's actual change in unrelated noise.
+
+    ``working_tree`` compares against the files on disk rather than ``head``'s commit,
+    untracked files included. It must match what gets compiled: comparing commits while
+    compiling the working tree left uncommitted edits compiled into the snapshot and
+    absent from the change set, so they were never reviewed.
     """
     merge_base = _git(repo, "merge-base", base, head).strip()
-    raw = _git(repo, "diff", "--name-status", "--find-renames", merge_base, head)
+    if working_tree:
+        raw = _git(repo, "diff", "--name-status", "--find-renames", merge_base)
+    else:
+        raw = _git(repo, "diff", "--name-status", "--find-renames", merge_base, head)
     changes: list[ChangedFile] = []
+    seen: set[str] = set()
     for line in raw.splitlines():
         if not line.strip():
             continue
@@ -86,6 +130,12 @@ def changed_files(repo: Path, base: str, head: str) -> tuple[ChangedFile, ...]:
         # A rename reports both paths; the new one is what the reviewer is looking at.
         path = parts[-1]
         changes.append(ChangedFile(path=path, status=status))
+        seen.add(path)
+    if working_tree:
+        # A new model not yet added to git is part of the working tree too.
+        for path in _git(repo, "ls-files", "--others", "--exclude-standard").splitlines():
+            if path.strip() and path not in seen:
+                changes.append(ChangedFile(path=path.strip(), status="A"))
     log.debug("git.changed_files", count=len(changes), merge_base=merge_base[:8])
     return tuple(changes)
 

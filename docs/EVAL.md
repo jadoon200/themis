@@ -4,10 +4,64 @@ Numbers here come from running THEMIS, not from reasoning about it. Where it doe
 worse than it looks like it should, that is recorded rather than dropped — a reviewer
 tool whose limits are undocumented is one whose clean results cannot be trusted.
 
-Full precision and recall arrive with the mutation harness (M3). What follows is what
-is measurable today.
+The sections below are in the order the work happened, and a number in an earlier section
+describes the project as it was then. Where later work changed a number, the section says
+so. **The current figures are in [Where it stands](#where-it-stands), immediately below.**
+
+## Where it stands
+
+Measured 2026-09-15 on the 44-case corpus, after the fixes described in
+[A review of the review](#a-review-of-the-review). Every figure below is from a run whose
+gate passed: no case unscorable, no defect missed or caught only by the wrong family, no
+control flagged, every rule fired. **CI's own corpus job now reproduces the testless column
+exactly** — the first time it has matched anything in this file.
+
+| | testless (the default) | `--variant tested` |
+|---|---|---|
+| recall | **100%** (18/18) | **100%** (18/18) |
+| false negatives | 0 | 0 |
+| benign cases flagged | **4 / 4** | **3 / 4** |
+| controls flagged | 0 / 7 | 0 / 7 |
+| precision | 82% | 86% |
+| false-positive rate | 36% (4/11) | 27% (3/11) |
+| latent defects reported | 14 / 14 | 14 / 14 |
+| unruled defect reported | 1 / 1 | 1 / 1 |
+| rules firing | 29 / 29 | 29 / 29 |
+| findings per flagged change | median 2, worst 3 | median 2, worst 4 |
+
+**Declaring keys costs no recall and buys one benign case.** With the tested variant's
+keys merged in, `dim_accounts` inherits a proven key from `stg_accounts`, and a join onto it
+stops being reported — the only one of the four benign cases a declared test can settle.
+The other three are a filter, a join-type flip and a widened window, and no uniqueness
+test says anything about those. The earlier claim that declaring keys *halves* the
+false-positive rate was measured on a benign case whose query did not build.
+
+**Read the benign row, not precision.** Precision and the false-positive rate are
+properties of the corpus as much as of the tool: every benign case added lowers them, and
+every control added raises them. The rate reads 36% rather than the 25% the README once
+quoted because benign cases were added after that figure was taken and it was never
+re-measured. Nothing regressed; the denominator moved.
+
+The model layer, on the testless run with `--llm` (`qwen3:8b`): 52 calls, 37,058 tokens,
+279 seconds. It suppressed nothing, proposed a cause for the one unruled defect, and had
+one answer rejected as ungrounded. Intent caught **6 of 6** misleading descriptions — the
+new UNION ALL case among them — with one false alarm on three honest ones; fixes came back
+for **18 of 27** findings, none malformed.
+
+Median findings per flagged change is 2. That is `X0002` — a head that no longer builds —
+reported beside the rule that predicted the breakage, and a new join reported on the
+corrected PII case, which genuinely adds one.
+
+**Until 2026-09-13 CI never reproduced any of these numbers.** Its corpus job ran against
+a seeded, unbuilt project and measured 9/29 rules and 76% recall on every run for ten days
+while passing. Figures in this file before that date came from local runs where the
+project happened to be built.
 
 ## Grain derivation coverage
+
+*First measured on 9 models. The project is now 16 SQL models and 4 seeds, of which 7 are
+proven, 3 heuristic and 6 unknown — `themis grain --project demo_project` prints it, and
+`themis profile` the rest of the project's shape.*
 
 THEMIS is built for projects that declare no uniqueness tests, so grain is derived
 from the SQL rather than read. On the demo project (9 models, 4 seeds), which is
@@ -76,7 +130,10 @@ the truth. A change that moves no number is treated as behaviour-preserving what
 was labelled — so the corpus labels itself, and the author's belief about what *should*
 be caught never enters the scoring.
 
-Current corpus: **15 defects, 10 latent, 1 unruled, 6 controls** — at least one case for
+*The first version of the corpus. It has since grown to 42 cases and 29 rules; see
+[Where it stands](#where-it-stands).*
+
+The corpus then: **15 defects, 10 latent, 1 unruled, 6 controls** — at least one case for
 every rule family, and **every one of the 28 rules exercised by at least one case**.
 
 | | |
@@ -222,43 +279,6 @@ counting them as clean would be wrong too.
 
 ### Read the headline number carefully
 
-## Mutations nobody chose
-
-Every hand-written case above is a defect class somebody wrote a rule for, so the rules
-always win on them. `themis eval --mutations generated` breaks that: it walks each
-model's own source and applies mechanical edits wherever they fit — tightening a join,
-flipping a boundary, swapping an aggregate, dropping a `COALESCE`. What gets produced is
-determined by what is *in the SQL*, not by what anyone thought to check, and execution
-decides which of them are defects.
-
-Twelve requested, eleven producible, seed 1:
-
-| | |
-|---|---|
-| moved the numbers | **7** |
-| of those, reported | **7** |
-| **missed** | **0** |
-| reported but moved nothing | 3 |
-| inert and silent | 1 |
-
-Seven, up from four, after the seed data was regenerated to be awkward rather than
-tidy. Dropping a `DISTINCT`, loosening a join and removing a `COALESCE` were all inert
-against data where every row matched and no key repeated; against data with duplicate
-keys, unmatched rows and NULLs in join columns, they bite. The corpus can now judge
-seven of eleven cases instead of four, on the same mutations.
-
-**Nothing that changed the numbers went unreported.** That is the result worth having,
-because these cases were not selected with any knowledge of the rules.
-
-The three reported-but-inert cases are the interesting half. Two loosened an inner join
-to a left join and one made a range boundary exclusive — all real semantic changes that
-happen not to bite on this data, because every row has a match and nothing sits on the
-boundary. They are the same category as the hand-written `latent` cases, except the
-generator cannot know that in advance. Counting them as false positives would be wrong;
-counting them as clean would be wrong too.
-
-### Read the headline number carefully
-
 **100% here means the corpus is calibrated to the rules, not that the reviewer is
 complete.** Three reasons to discount it:
 
@@ -341,7 +361,11 @@ Not the score — the seven defects it found in the reviewer itself, none of whi
 
 ## What is verified today
 
-End-to-end against the demo project, both scenarios reproducible from a clean `main`:
+End-to-end against the demo project, from the local `fixture/*` branches — rebuilt on the
+current project on 2026-09-15, which is how the alias-rename false positive in F2001 was
+found. They never reached the remote; the same cases are in the corpus as
+`fanout_drop_join_predicate`, `money_cast_to_double` and the controls, and
+`themis eval --mutations <id>` reproduces each from any checkout:
 
 | Scenario | Result |
 |---|---|
@@ -422,7 +446,9 @@ literal-name match — luck rather than design, so there is now a test holding i
 **Dynamic SQL generated from data.** A macro that reads a table at compile time and
 builds a `CASE` expression from its rows means the compiled SQL changes when the *data*
 changes, not only the code. THEMIS would report that as a large semantic diff with no
-code change behind it. Not yet handled, and recorded below.
+code change behind it. Since handled in part: such models are detected from the manifest,
+a change touching one is flagged (`generated_sql_model_touched` covers it), and the
+manifest cache refuses the project outright — see the limitation at the end.
 
 ## Column lineage, and what it changes
 
@@ -472,11 +498,16 @@ part worth measuring.
 
 On the demo project (18 nodes, 14 SQL models, 4 seeds, zero declared tests):
 
-| | |
-|---|---|
-| Tests suggested | 5 |
-| Suggested tests that pass when run | **5** |
-| SQL models offered nothing | 9 |
+| | first measured | 2026-09-15 |
+|---|---|---|
+| Tests suggested | 5 | 7 |
+| Suggested tests that pass when run | **5** | **7** |
+| SQL models offered nothing | 9 | 9 |
+
+The sixth arrived when a propagated grain became proof: `dim_entity_contract` passes
+`stg_entity_reference` through, and inherits its key. The seventh is the new
+`fct_account_period_summary`, a GROUP BY. Both hold on the built tables. The UNION ALL
+model beside it is offered nothing, which is the point of it.
 
 The five were checked by counting `count(*)` against `count(distinct key)` on the
 built tables, which is what the test would assert. Two of the nine refusals are worth
@@ -692,6 +723,10 @@ opposite of what the comment above them claimed.
 
 ## The honest headline
 
+*Superseded. One of the two false positives here, `benign_join_to_a_unique_dimension`, did
+not build — see [A review of the review](#a-review-of-the-review). The corrected case is
+still a false positive, for the right reason, and the current figures are at the top.*
+
 Adding two benign mutations — safe changes that trip a rule — changed the numbers the
 project had been reporting since the corpus existed:
 
@@ -736,9 +771,15 @@ pass, which needs a pull-request description the corpus does not supply.
 The test that would settle it is the `variants/tested` project, where declared tests
 make grain `proven` and refutation becomes possible at all. That is also the compounding
 claim `themis suggest-tests` makes: accept the suggested tests and the adjudicator gains
-something to reason from. Not yet run.
+something to reason from. It was run next, in the section that follows.
 
 ## Tested against testless, measured at last
+
+*Superseded in its numbers. The one benign case that flipped from false positive to true
+negative here was the one whose query did not build, so the flip was measured on SQL that
+never ran; and the tested variant could not measure a fan-out at all while `dbt build` ran
+the declared tests. Both are fixed, the flip reproduces on the corrected case, and the
+current comparison is at the top. The reasoning below stands.*
 
 The plan asked how much **recall** derivation costs against having declared tests. The
 variant that would answer it sat in the repository as a file nothing read, and the flag
@@ -952,22 +993,143 @@ Detection belongs to the rules. Where the model earns its place is where no rule
 exist: reading a claim against a change, naming a cause for a movement nobody
 anticipated, and writing the correction.
 
+## A review of the review
+
+A full review of the project, reading CI logs rather than badges and re-running each
+suspicion before believing it, found that several of the numbers above rested on
+measurements that were not measuring what they said. Each item was reproduced first.
+
+**The corpus job measured nothing, and passed.** CI seeded the demo project without
+building it. `dim_entities` builds a `CASE` expression from a query against `stg_accounts`
+at compile time; that table did not exist, every compile aborted, and twenty of twenty-nine
+rules skipped on every mutation. The job's own log said `rule coverage: 9/29` and
+`recall 76%`. It exited 0 because the exit code depended on stale mutations alone, and an
+outcome never recorded that its checks had not run — so X0001 firing on a review with no
+compiled SQL counted as a detection. The job now builds the project, and the corpus fails
+on a gate: an unscorable case, a missed defect, a flagged control, a mislabelled mutation,
+or a rule that never fires.
+
+**Stage 3 measured tables it had not built.** Builds went into fixed schemas that were
+never cleared, and a model was measured if its relation existed. Reproduced: a fan-out
+review, then a GROUP BY change whose head failed to build. The second review attached the
+first one's numbers — `revenue_usd` 334.6M → 2,009.8M — to the GROUP BY change at MEASURED
+confidence. Each run now builds into schemas carrying its own token and drops them
+afterwards, and dbt's `run_results.json` decides what was built. A head that no longer
+builds is its own finding, `X0002`; before it, such a change with no rule firing came back
+as "No findings", because the net for unexplained movement ignores build errors by design.
+
+**Four mutations were invalid SQL scoring as caught defects.** An oracle asking whether
+anything moved sees a build failure as movement. `grain_drop_group_by_key` left
+`currency_code` selected but not grouped, so currencies were never mixed;
+`pii_column_exposed` selected a column the mart cannot see; `not_in_nullable_subquery`
+used a construct DuckDB cannot execute and compared contract ids to customer ids, which
+never match; and `benign_join_to_a_unique_dimension` made `account_id` ambiguous. The last
+was scored as one of the two false positives behind the old 25% rate and the single case
+behind "declaring keys halves it" — while its query never ran. The mislabel check skipped
+benign cases entirely, which is how it went unseen. Each case now does what its
+description says, and a case whose breakage is the point declares it (`build_fails`).
+
+**Four shapes were proven unique when they are not.** A top-level `UNION ALL`, a `UNION
+ALL` in a CTE, a `ROW_NUMBER` dedup in a CTE followed by a join that fans out, and a GROUP
+BY with `ROLLUP` all derived a STRUCTURAL grain, and F1001 writes nothing at all for a join
+whose key covers a proven grain. The dedup case is the commonest staging shape there is. So
+did GROUP BY and DISTINCT over an expression they could not name: the expression was
+dropped, and `group by a, date_trunc(...)` was proven unique on `(a)`. The UNION ALL guard
+added the week before had covered propagation only. The demo project derives exactly what
+it did before; the difference is entirely in shapes the demo does not contain.
+
+**`--head` was ignored.** The head was compiled from the working tree whatever it named and
+labelled with the requested SHA. From a checkout of `main`, a review with `--head` naming a
+real fan-out branch reported "No findings". The API's `head_ref` invited exactly this. Any
+head other than the working tree is now compiled and built from a worktree at that commit.
+
+**The tested variant could not measure a fan-out.** Found by the new gate on its first run:
+with declared tests merged in, `dbt build` ran them, the `unique` test failed on the
+fanned-out model, and dbt skipped everything below it. The two fan-out cases became
+unscorable and F8002 fell out of coverage. Stage 3 now builds without data tests;
+measurement must not depend on what the tests conclude.
+
+**Smaller, all reproduced.** A queued review never ran the model layer (`llm_requested` was
+stored and not read). Only the EXECUTE capability was enforced. A reclaimed run could be
+written by two workers. `ask` showed an answer that quoted nothing as grounded.
+`THEMIS_FAIL_ON_SEVERITY=HIGH` never blocked anything. A seed data change reviewed zero
+models. A partial compile was reported only when *no* model compiled.
+
+What the list has in common is the lesson this file keeps relearning: **a check that
+cannot fail is not a check.** Coverage that could not drop, a build that could not fail,
+a proof that could not be wrong, a flag that could not be set.
+
+### The second pass
+
+Closing the first list turned up four more of the same kind.
+
+**The review's own gate passed an unfinished review.** Its exit code read findings alone,
+so with blocking on, a review that skipped most of its rules — the corpus job's failure,
+inside the product — exited 0 when it found nothing. It now exits 3, naming each reason,
+and SARIF marks the run unsuccessful.
+
+**Measured findings were new on every run.** A fingerprint hashed the evidence note, and a
+measured finding's note carries its row counts and totals. History and dismissal rates are
+built on fingerprints, so they never accumulated against the findings that most deserve a
+history. The fingerprint's own docstring said measured numbers were excluded.
+
+**A pure refactor raised four filter findings.** Rebuilding the stale local fixture branches
+on the current project found F2001 comparing predicates as rendered text: renaming
+`accounts` to `coa` read as two filters removed and two added. "Pure reformatting yields no
+findings" had been written before F2 existed and never re-checked. Predicates are now keyed
+by the model a qualifier reads, and `control_rename_alias_in_filter` holds it.
+
+**Detected is not detected by the right rule.** The UNION ALL false negative now has a
+corpus case, on a demo model that keeps postings and reversals as separate rows — and the
+case shows why it had to be gated differently. The derivation from before the fix proves
+`(account_id, period_month)` for that union; F1001 then says nothing while execution still
+catches the fan-out, so the case would have scored as detected. The gate now fails a defect
+caught only by a family other than its own.
+
+Also closed: model calls retry transient failures, the names checks match on are settings,
+`--redact` and `themis profile` let evidence leave a project whose code cannot, and CI
+reviews a fan-out on a live Trino end to end.
+
+### Running it all, repeatably
+
+The afternoon of component runs above was done by hand, once. `scripts/component_check.py`
+makes it a command: 47 checks against the real CLI, a real Postgres, the HTTP app and a
+worker, Ollama, a live Trino, and corpus subsets, over five scenario commits built on HEAD in
+a throwaway worktree. Its first full run found three defects that 448 passing tests did not.
+
+| defect | why no test could see it |
+|---|---|
+| every log line went to stdout, into `--yaml`, `--json` and piped reports | no test parsed a real command's stdout |
+| `dim_entities` read as changed on every review | its SQL comes from a query with no ORDER BY; two compiles of one commit differed |
+| `ask` about a model the review never saw exited 0 | the reply was true and quoted the absence notice, so grounding passed; only the exit code was wrong |
+
+The third is the subtle one. The model did nothing wrong — it said nothing was found and
+cited the line that says so. But a script reads exit 0 as "the review covered this", and
+whether it got that exit code depended on how the model chose to phrase a known answer. The
+refusal is now made by code, before any model call.
+
+Current result, on `fix/poc-base`: **47 of 47**, none skipped, 459 s; CI green on all four
+jobs, with the corpus job reproducing the numbers at the top of this file.
+
 ## Known limitations
 
 Kept current. Several entries here were closed and are gone rather than left standing —
 a limitations list that lags the code is worse than none, because it teaches the reader
 to discount the rest of it.
 
-- **The corpus has no set-operation mutation, and a real false negative hid there.**
-  Grain propagation inherited a proven key across `UNION ALL` — one dependency, no join,
-  a projection carrying the key straight through, every pass-through condition satisfied,
-  and every row doubled. Because `PROPAGATED` counts as proven, `F1` read the inherited
-  key as covering the join keys and returned before writing a finding: not a demotion, no
-  finding at all. Forty-two mutations, 29/29 rule coverage and 100% recall could not see
-  it, because none of them unions anything. It is guarded and unit-tested now, and the
-  corpus gap is the honest part of the entry — a mutation for it would have to be written
-  against a demo model that unions, and inventing one to close a gap discovered by
-  reading is how a corpus starts measuring its author's imagination instead of the tool.
+- **The set-operation case was written after the bug it tests was found by reading.**
+  Grain propagation, and then structural derivation, inherited a proven key across `UNION
+  ALL`, and F1 wrote nothing for a join it covered. Forty-two mutations, 29/29 rule coverage
+  and 100% recall could not see it, because none of them unioned anything. The corpus now
+  has `union_joined_as_one_row_per_period`, on a demo model that keeps postings and
+  reversals as separate rows — a real ledger shape — but a case added for a known gap is
+  weaker evidence than one that found a gap, and it should be read that way.
+- **Stage 3 does not run the project's declared tests.** It builds without them so a
+  failing test cannot stop the models below it being measured. A test that passes on the
+  base and fails on the head is therefore not yet reported as a finding of its own, though
+  the measured duplication it would have caught is.
+- **A seed data change is reviewed only with `--execute`.** There is no SQL in it for a rule
+  to read. Without execution the report names the seed and what it feeds, and says so.
 - **The Trino demo build is only idempotent under `--full-refresh`.** All eighteen
   models build on Trino from cold, which is what CI does — a fresh service container
   every run. A *second* incremental run of the same table fails: the memory connector
@@ -983,9 +1145,7 @@ to discount the rest of it.
   federated pushdown) is reasoned about and never executed.
 - **The corpus is fitted**, though generated mutations offset this in part. The
   generator only applies transformations someone wrote down; it reaches cases nobody
-  chose, not cases nobody could imagine.
-- **The generator only applies transformations someone wrote down.** It reaches cases
-  nobody chose, which is the point, but not cases nobody could imagine.
+  chose, which is the point, but not cases nobody could imagine.
 - **Column lineage stops at the project boundary.** A column read from a `source()`
   whose columns nothing declares leaves that model unresolved, and unresolved models
   fall back to the name search. On the demo project this never happens; on a project

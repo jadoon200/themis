@@ -122,11 +122,13 @@ jobs:
     # did not, including two rules that had never fired at all. It is slower than the
     # other jobs because every mutation builds the project twice, and worth it.
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    # 43 cases, each building both revisions. It took 18 minutes when most rules were
+    # skipped; with every rule running it needs the headroom.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v5
         with:
-          # The harness diffs against main and needs real history to do it.
+          # The harness builds worktrees at the base revision and needs its history.
           fetch-depth: 0
 
       - uses: actions/setup-python@v6
@@ -144,9 +146,47 @@ jobs:
           git config user.email "ci@example.invalid"
           git config user.name "themis-ci"
 
-      - name: Seed the demo project
+      - name: Build the demo project
+        # Built, not just seeded. `dim_entities` generates SQL from a query against
+        # `stg_accounts` at compile time; with only seeds loaded that table does not
+        # exist, every compile aborts, and twenty of twenty-nine rules skip on every
+        # mutation. This job reported 9/29 rule coverage and passed for ten days that way.
         working-directory: demo_project
-        run: dbt seed --profiles-dir . --project-dir . --target dev
+        run: dbt build --profiles-dir . --project-dir . --target dev
 
       - name: Run the mutation corpus
-        run: themis eval --project demo_project --mutations all --base origin/main
+        # Fails on the gate: an unscorable case, a missed defect, a flagged control, or a
+        # rule that never fired. `themis eval --help` lists what it checks.
+        run: themis eval --project demo_project --mutations all --base HEAD
+
+  trino-review:
+    # The engine this tool targets, end to end: dbt-trino compiles and builds the demo
+    # project, a fan-out is reviewed with execution against Trino, and the run's schemas
+    # must be gone afterwards. The `check` job only ever exercised the Trino client.
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      trino:
+        image: trinodb/trino:latest
+        ports:
+          - 8085:8080
+        options: >-
+          --health-cmd "curl -sf http://localhost:8080/v1/info || exit 1"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip uv
+          uv pip install --system -r requirements.txt "dbt-trino>=1.10,<1.11"
+          uv pip install --system -e . --no-deps
+
+      - name: Review a fan-out on Trino
+        run: python scripts/trino_smoke.py

@@ -22,6 +22,7 @@ import json
 from typing import Any
 
 from themis.models import Finding, Severity
+from themis.report import redact as redaction
 from themis.triage.rubric import triage
 
 SCHEMA = (
@@ -100,18 +101,62 @@ def _result(finding: Finding, *, demoted_by: str | None = None) -> dict[str, Any
     return result
 
 
+def _redacted_result(finding: Finding, *, demoted_by: str | None, salt: str) -> dict[str, Any]:
+    """A result carrying no SQL, no prose and no names — see `report.redact`."""
+    result: dict[str, Any] = {
+        "ruleId": finding.rule_id,
+        "level": _LEVEL.get(finding.severity, "warning"),
+        "message": {
+            "text": f"{finding.rule_id} ({finding.severity.value}, {finding.confidence.value})"
+        },
+        "properties": {
+            "severity": finding.severity.value,
+            "confidence": finding.confidence.value,
+            "family": finding.family,
+            "model": redaction.token(finding.evidence.model_name, salt),
+            "blastRadiusCount": len(finding.blast_radius),
+        },
+    }
+    if finding.suppressed_reason or demoted_by:
+        result["suppressions"] = [{"kind": "external"}]
+    return result
+
+
 def render(
     findings: list[Finding],
     *,
     governed_models: frozenset[str] = frozenset(),
     tool_version: str = "0.1.0",
+    # (kind, reason) for every way the review checked less than it was asked to.
+    incomplete: tuple[tuple[str, str], ...] = (),
+    # A salt to redact with, or None for the full log.
+    redact: str | None = None,
 ) -> str:
-    """A SARIF 2.1.0 log for one review, carrying the same triage the report shows."""
+    """A SARIF 2.1.0 log for one review, carrying the same triage the report shows.
+
+    An incomplete review is marked `executionSuccessful: false`, with one notification per
+    reason. A viewer showing no annotations for a review that skipped its rules is showing
+    a clean result nobody checked, and SARIF has a place to say so.
+    """
     triaged = triage(findings, governed_models=governed_models)
 
     seen: dict[str, dict[str, Any]] = {}
     for item in triaged:
-        seen.setdefault(item.finding.rule_id, _rule_descriptor(item.finding))
+        if redact is None:
+            seen.setdefault(item.finding.rule_id, _rule_descriptor(item.finding))
+        else:
+            seen.setdefault(
+                item.finding.rule_id,
+                {"id": item.finding.rule_id, "properties": {"family": item.finding.family}},
+            )
+
+    if redact is None:
+        results = [_result(item.finding, demoted_by=item.subsumed_by) for item in triaged]
+    else:
+        results = [
+            _redacted_result(item.finding, demoted_by=item.subsumed_by, salt=redact)
+            for item in triaged
+        ]
 
     log: dict[str, Any] = {
         "$schema": SCHEMA,
@@ -126,7 +171,20 @@ def render(
                         "rules": [seen[key] for key in sorted(seen)],
                     }
                 },
-                "results": [_result(item.finding, demoted_by=item.subsumed_by) for item in triaged],
+                "invocations": [
+                    {
+                        "executionSuccessful": not incomplete,
+                        "toolExecutionNotifications": [
+                            {
+                                "level": "error",
+                                "descriptor": {"id": kind},
+                                "message": {"text": kind if redact is not None else reason},
+                            }
+                            for kind, reason in incomplete
+                        ],
+                    }
+                ],
+                "results": results,
             }
         ],
     }
