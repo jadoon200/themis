@@ -691,9 +691,7 @@ def check_learning_loop(
 
     third, doc = fanout_review(tmp / "loop3.json", "--no-llm")
     after = {f["rule_id"]: f["triage"]["score"] for f in doc.get("findings", [])}
-    history = next(
-        (f["history"] for f in doc.get("findings", []) if f["rule_id"] == "F1001"), None
-    )
+    history = next((f["history"] for f in doc.get("findings", []) if f["rule_id"] == "F1001"), None)
     record(
         "the next review reads the judgements back",
         bool(history) and history.get("dismissed", 0) >= 2,

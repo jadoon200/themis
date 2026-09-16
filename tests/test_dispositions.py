@@ -114,9 +114,7 @@ def test_a_repeatedly_dismissed_finding_ranks_below_an_identical_one() -> None:
 
 
 def test_the_demotion_says_so_in_words() -> None:
-    ranked = triage(
-        [_finding(history=FindingHistory(occurrences=4, dismissed=3, accepted=1))]
-    )
+    ranked = triage([_finding(history=FindingHistory(occurrences=4, dismissed=3, accepted=1))])
     assert "dismissed by a reviewer in 3 of 4" in ranked[0].reason
 
 
@@ -314,8 +312,7 @@ def test_a_quote_from_the_precedent_is_rejected_by_the_selfcheck() -> None:
 
     pack = ContextPack(
         text=(
-            "## The finding\nthe join key is not unique\n\n"
-            "## Precedent\na reviewer dismissed this"
+            "## The finding\nthe join key is not unique\n\n## Precedent\na reviewer dismissed this"
         ),
         quotable_text="## The finding\nthe join key is not unique",
     )

@@ -162,9 +162,7 @@ def test_the_export_can_keep_only_what_a_human_ruled_on(session: Session) -> Non
             ModelCall(seat="filters", model="m", context="c", system="s", finding=other),
         ],
     )
-    first = session.execute(
-        select(FindingRow).where(FindingRow.rule_id == "F1001")
-    ).scalars().one()
+    first = session.execute(select(FindingRow).where(FindingRow.rule_id == "F1001")).scalars().one()
     first.disposition = "accepted"
     first.disposition_at = utcnow()
     session.flush()

@@ -11,6 +11,7 @@ install:
 
 lint:
 	PYTHONPATH=src ruff check src tests
+	PYTHONPATH=src ruff format --check src tests
 
 format:
 	PYTHONPATH=src ruff format src tests

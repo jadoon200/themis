@@ -605,9 +605,7 @@ def measured_grain_findings(result: ExecutionResult, inferred: dict[str, Grain])
 HistoryLookup = Callable[[list[Finding]], Sequence[FindingHistory | None]]
 
 
-def attach_history(
-    findings: list[Finding], lookup: HistoryLookup | None
-) -> list[Finding]:
+def attach_history(findings: list[Finding], lookup: HistoryLookup | None) -> list[Finding]:
     """Hang each finding's own history on it, if anything can supply one.
 
     Deliberately before the model layer and the ranking, because both read it: the
