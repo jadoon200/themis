@@ -14,6 +14,7 @@ from themis import vocabulary
 from themis.acquire.snapshot_builder import AcquireResult, acquire
 from themis.analyze.grain import infer_grains
 from themis.analyze.lineage import LineageIndex
+from themis.analyze.positioning import position_findings
 from themis.analyze.suggest import suggest_tests
 from themis.capabilities import Capability, require
 from themis.config import Settings
@@ -879,6 +880,9 @@ def review(
     # A critical that execution demonstrated keeps its level; one that is still a
     # prediction does not.
     findings = calibrate(findings)
+    # Last of all, so every finding — measured, adjudicated, or neither — is placed on the
+    # line of the file a reviewer will be reading, where its evidence allows.
+    findings = position_findings(findings, acquired.after)
 
     reviewed = {c.model_name for c in contexts}
     untested = tuple(
