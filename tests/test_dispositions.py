@@ -302,3 +302,40 @@ def test_the_json_carries_counts_and_not_the_note() -> None:
         "deferred": 0,
     }
     assert "secret" not in json_lib.dumps(payload)
+
+
+def test_a_quote_from_the_precedent_is_rejected_by_the_selfcheck() -> None:
+    """The guard that keeps retrieval from teaching the model to refute: what people
+    decided about other changes is context, never evidence about this one."""
+    from themis.llm.context_pack import ContextPack
+    from themis.llm.provider import Usage
+    from themis.review import selfcheck
+    from themis.review.specialists import GRAIN, Adjudication
+
+    pack = ContextPack(
+        text=(
+            "## The finding\nthe join key is not unique\n\n"
+            "## Precedent\na reviewer dismissed this"
+        ),
+        quotable_text="## The finding\nthe join key is not unique",
+    )
+    from_precedent = Adjudication(
+        verdict="refute",
+        severity="high",
+        rationale="it was dismissed before",
+        evidence_quote="a reviewer dismissed this",
+        specialist=GRAIN.name,
+        usage=Usage(),
+    )
+    result = selfcheck.check(from_precedent, pack)
+    assert not result.ok
+
+    from_evidence = Adjudication(
+        verdict="refute",
+        severity="high",
+        rationale="the key is unique upstream",
+        evidence_quote="the join key is not unique",
+        specialist=GRAIN.name,
+        usage=Usage(),
+    )
+    assert selfcheck.check(from_evidence, pack).ok

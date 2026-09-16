@@ -119,7 +119,7 @@ def check(adjudication: Adjudication, pack: ContextPack) -> CheckResult:
             ok=False, reason=f"evidence quote too short to prove anything ({len(quote)} chars)"
         )
 
-    if not quote_is_grounded(quote, pack.text):
+    if not quote_is_grounded(quote, pack.evidence_text):
         return CheckResult(
             ok=False,
             reason="evidence quote does not appear in the context it was given",

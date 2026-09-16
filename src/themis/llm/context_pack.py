@@ -67,6 +67,15 @@ class ContextPack:
 
     text: str
     finding: Finding | None = None
+    # The part of the pack a quote may come from. Past judgements are shown to the
+    # specialist but are not evidence about the change in front of it, so they are
+    # excluded here — otherwise a reviewer could refute a finding by quoting someone
+    # who once dismissed a different one, and the self-check would call that grounded.
+    quotable_text: str | None = None
+
+    @property
+    def evidence_text(self) -> str:
+        return self.text if self.quotable_text is None else self.quotable_text
 
     @property
     def approx_tokens(self) -> int:
@@ -294,7 +303,53 @@ def build_pack(
     if pr_description:
         sections += ["", "## What the author said this change does", pr_description[:600]]
 
-    return ContextPack(finding=finding, text="\n".join(sections))
+    # Everything above is evidence about this change. What follows is precedent — kept
+    # apart so a quote can never come from it.
+    body = "\n".join(sections)
+    precedent = _precedent_section(finding)
+    return ContextPack(
+        finding=finding,
+        text=body + precedent,
+        quotable_text=body if precedent else None,
+    )
+
+
+def _precedent_section(finding: Finding) -> str:
+    """How people ruled on findings like this one, if the store had any.
+
+    This is the cheap half of learning from use: behaviour changes as soon as someone
+    dispositions a finding, it is reversible by setting
+    ``THEMIS_PRIOR_JUDGEMENT_EXAMPLES=0``, and the pack records exactly what the model
+    was shown — which a set of tuned weights never could.
+
+    The framing matters as much as the content. A model shown three dismissals and
+    asked for a verdict will read them as the answer, and refuting findings is the one
+    thing this layer must not learn to do for free. So the precedent is labelled as
+    other people's decisions about other changes, and the instruction is explicit that
+    it settles nothing here.
+    """
+    history = finding.history
+    if history is None or not history.examples:
+        return ""
+
+    lines = [
+        "",
+        "",
+        "## How reviewers ruled on findings like this one, previously",
+        "",
+        "These are judgements people made about *other* changes. They are context for "
+        "how this rule tends to land in this project, not a verdict on the SQL above, "
+        "and they are not evidence: your quote must come from the sections before this "
+        "one. A finding dismissed elsewhere can still be real here.",
+        "",
+    ]
+    for example in history.examples:
+        where = "on this model" if example.same_model else f"on `{example.model_name}`"
+        line = f"- {example.rule_id} {where}: a reviewer marked it **{example.disposition}**"
+        if example.note:
+            line += f' — "{example.note[:240]}"'
+        lines.append(line)
+    return "\n".join(lines)
 
 
 def build_intent_pack(
