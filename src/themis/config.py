@@ -135,6 +135,13 @@ class Settings(BaseSettings):
     # anyone holding a list of likely names can hash them and match. Keep it private.
     redact_salt: str = ""
 
+    # --- learning from what reviewers decided ---------------------------------
+    # How many past judgements on the same rule a specialist is shown. 0 turns the
+    # retrieval off entirely and leaves the ranking's use of dispositions untouched —
+    # the two are separate levers on purpose, because one changes what a model reads
+    # and the other changes only the order of a list.
+    prior_judgement_examples: int = 3
+
 
 def load_settings() -> Settings:
     return Settings()

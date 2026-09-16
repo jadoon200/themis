@@ -70,6 +70,12 @@
 - **Report.** Ranked Markdown, macro attribution, measured deltas where present; SARIF
   for inline annotations, carrying the same triage; and JSON for anything that is not a
   person — the measured deltas, the derived grain, and the checks that could not run.
+- **Learning from what reviewers decided.** A finding reviewers keep dismissing is ranked
+  down, visibly and never off the page; specialists are shown how the same rule was ruled on
+  before, as precedent that is explicitly not quotable as evidence; and every model call is
+  stored with its pack, its answer and whether the self-check accepted it, exported by
+  `themis dataset` and joined to the human judgement by fingerprint. Weights do not move —
+  see "Tuning the model" for why that is the last step and not the first.
 - **Demo project.** A financial dbt project on DuckDB — general ledger, FX conversion,
   revenue recognition, regulatory mart. Macro-using and, deliberately, test-free.
 
@@ -112,8 +118,9 @@ come from a real warehouse. After that, in rough order of what it would change:
 - **A declared test that newly fails, as its own finding.** Stage 3 builds without tests
   so a failing one cannot hide the models below it; running them afterwards against both
   revisions would turn their verdicts into evidence.
-- **Learning from dispositions.** Stable fingerprints make "raised and dismissed six times"
-  answerable; nothing yet acts on it. See the note on model tuning below.
+- **A second project.** Everything about learning from dispositions is now measured on one
+  synthetic corpus and one real judgement; the next number that matters comes from a project
+  nobody here wrote.
 - **The MCP server** exposing the `ask` lane, and **counterfactual questions** that
   re-run the rules against a hypothetical declared test.
 
@@ -148,23 +155,40 @@ And in a regulated environment a model whose weights keep changing needs revalid
 every change: "evolving" has to mean discrete, versioned, evaluated releases recorded
 against the reviews that used them, never learning online.
 
-**The order it should evolve in.**
+**The order it should evolve in.** Steps 1 to 4 are built; step 5 is still gated on the
+same measurement it always was.
 
-1. *Every miss becomes a corpus case*, and a rule where the defect class is anticipable.
-   The gate stops it regressing. This loop exists and CI now enforces it.
-2. *Dispositions act.* A finding dismissed on many runs is ranked down — visibly, never
-   deleted. Stable fingerprints made this possible; nothing uses them yet.
-3. *Past judgements as examples.* Retrieve dispositioned findings like the one under review
-   into the specialist's context. Behaviour changes at once, reversibly, and the pack records
-   exactly what the model was shown.
-4. *Capture the dataset.* Persist each model call's context pack, its answer, and the human
-   disposition that later settled it. Today the pack is not stored, so no training set can
-   be assembled even in principle.
-5. *Then an adapter.* A LoRA adapter on the local model, trained and served for free — on
+1. ✅ *Every miss becomes a corpus case*, and a rule where the defect class is anticipable.
+   The gate stops it regressing. CI enforces it.
+2. ✅ *Dispositions act.* A finding whose fingerprint reviewers have dismissed twice or more
+   is ranked down, by a bounded penalty that scales with the dismissal rate, and the report
+   says so in words on the finding itself. Two guards, both deliberate: one judgement moves
+   nothing, and a measured finding is exempt — dismissing a measurement is a statement about
+   a change someone accepted, not about a rule that over-flags, and a tool that learns to go
+   quiet on measurements is worse than one that learned nothing.
+3. ✅ *Past judgements as examples.* The specialist's pack carries how reviewers ruled on
+   findings of the same rule, the same model first, with their notes. Reversible with
+   `THEMIS_PRIOR_JUDGEMENT_EXAMPLES=0`, and the pack records exactly what was shown.
+   Precedent is deliberately **not quotable**: it sits outside the text the self-check
+   grounds a quote in, so a specialist cannot refute a finding by citing someone who once
+   dismissed a different one.
+4. ✅ *Capture the dataset.* Every model call — specialist, intent, fix, explain — is stored
+   with its pack verbatim, its instructions, its parsed answer, and whether the self-check
+   accepted it. Rejected answers are kept; they are the clearest label for what this lane
+   must not produce. `themis dataset` exports it as JSONL, joining each call to the human
+   judgement that later settled the finding, by fingerprint.
+5. ⬜ *Then an adapter.* A LoRA adapter on the local model, trained and served for free — on
    Apple silicon an 8B model quantised to 4 bits fits the 18 GB development machine,
    slowly. Worth doing once there are hundreds of real dispositions across more than one
    project, a held-out set of real pull requests to judge it on, and evidence that step 3
-   has stopped improving on that set.
+   has stopped improving on that set. `themis dataset` prints the distance to that bar
+   rather than an opinion about it; today it is one real disposition.
+
+**What steps 2 to 4 changed, and what they did not.** Behaviour now depends on what people
+decided, which is the point — and it is also the risk, so everything about it is visible and
+reversible. Nothing is deleted, nothing is learned online, no weights move, and each lever
+is separate: the ranking's use of dispositions and the retrieval of examples are independent
+settings, because one changes the order of a list and the other changes what a model reads.
 
 ## Measured and left alone
 

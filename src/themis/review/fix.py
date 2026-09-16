@@ -29,7 +29,7 @@ from themis.config import Settings
 from themis.llm.context_pack import ContextPack
 from themis.llm.provider import LLMError, Provider, Usage
 from themis.logging import get_logger
-from themis.models import Finding
+from themis.models import Finding, ModelCall
 
 log = get_logger(__name__)
 
@@ -72,6 +72,7 @@ def propose(
     settings: Settings,
     usage: Usage,
     dialect: str = "trino",
+    record: list[ModelCall] | None = None,
 ) -> str | None:
     """Corrected SQL for one finding, or None when nothing usable came back."""
     original = (finding.evidence.sql_after or "").strip()
@@ -94,6 +95,17 @@ def propose(
         return None
 
     usage.add(response.usage)
+    if record is not None:
+        record.append(
+            ModelCall(
+                seat="fix",
+                model=settings.llm_specialist_model,
+                context=prompt,
+                system=SYSTEM_PROMPT,
+                response=dict(response.payload),
+                finding=finding,
+            )
+        )
     if not response.payload.get("can_fix"):
         log.debug("fix.declined", rule_id=finding.rule_id)
         return None

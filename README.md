@@ -57,6 +57,14 @@ recall, so a triage stage demotes a finding that a more specific rule already co
 relationship named and nothing deleted. The score behind the ranking prints its own
 components, because an opaque number gating a merge is not a reviewable statement.
 
+**What reviewers decide changes the next review — visibly, and only in the order.** Mark a
+finding dismissed and the next run that raises it says so on the finding, ranks it lower,
+and shows the specialist how the same rule was ruled on before. Nothing is deleted, no
+weights move, and two guards stop the obvious failure of a tool that learns to go quiet:
+one dismissal moves nothing, and a finding execution *measured* is exempt. Every model call
+is kept with the exact context it was shown — `themis dataset` exports it, joined to the
+human judgement, which is the only honest basis a tuned model could ever have.
+
 **Deriving grain costs precision, not recall — measured.** Running the same corpus
 against a variant of the demo project that declares its keys: recall is 100% either
 way, and one of the four safe-but-flagged changes stops being flagged — a join onto a
@@ -144,6 +152,19 @@ reporting tags, published folders) are settings, e.g.
 The service (`make api`, `make worker`) binds to the loopback interface. A review request
 runs dbt on the project it names, so before exposing it set `THEMIS_API_TOKEN` and
 `THEMIS_PROJECT_ROOTS`, and run `make migrate` after upgrading.
+
+What people decide about findings is the one input a review cannot derive for itself.
+Dispositions are recorded through the API (`POST /findings/{id}/disposition`), and from
+then on they rank, they are shown to specialists as precedent, and they label the captured
+model calls:
+
+```bash
+themis dataset --judged-only
+```
+
+That prints how many captured calls carry a human judgement — the number that decides
+whether tuning a model is worth doing yet, which today it is not. Add `--out calls.jsonl`
+to export them; the file contains the SQL the model was shown, so treat it like the repo.
 
 To check that every part actually runs — not a stand-in for it — with Postgres (`make up`),
 Ollama and a Trino on port 8085 available:

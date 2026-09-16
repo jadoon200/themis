@@ -177,3 +177,64 @@ def test_an_unresolved_model_is_reported_as_unknown_not_as_safe() -> None:
     )
     assert "unresolved" in pack.text
     assert "nobody knows" in pack.text
+
+
+# --- precedent: shown, and deliberately not quotable ---------------------------
+
+
+def _with_precedent() -> Finding:
+    from themis.models import FindingHistory, PriorJudgement
+
+    return _finding().model_copy(
+        update={
+            "history": FindingHistory(
+                occurrences=3,
+                dismissed=2,
+                examples=(
+                    PriorJudgement(
+                        rule_id="F5002",
+                        model_name="fct",
+                        disposition="dismissed",
+                        title="strategy changed",
+                        note="the desk reloads this table nightly anyway",
+                        same_model=True,
+                    ),
+                    PriorJudgement(
+                        rule_id="F5002",
+                        model_name="other",
+                        disposition="accepted",
+                        title="strategy changed",
+                        note="this one really did drop rows",
+                    ),
+                ),
+            )
+        }
+    )
+
+
+def test_past_judgements_reach_the_specialist() -> None:
+    pack = build_pack(_with_precedent(), snapshot=_snapshot(), grains={})
+    assert "How reviewers ruled on findings like this one" in pack.text
+    assert "reloads this table nightly" in pack.text
+    assert "on this model" in pack.text
+    assert "on `other`" in pack.text
+
+
+def test_precedent_is_never_quotable_as_evidence() -> None:
+    """A specialist must not refute a finding by quoting someone who once dismissed a
+    different one. The precedent is in the prompt and out of the grounding check."""
+    pack = build_pack(_with_precedent(), snapshot=_snapshot(), grains={})
+    assert "reloads this table nightly" not in pack.evidence_text
+    assert "a note" in pack.evidence_text
+
+
+def test_a_pack_with_no_precedent_is_entirely_quotable() -> None:
+    pack = build_pack(_finding(), snapshot=_snapshot(), grains={})
+    assert pack.quotable_text is None
+    assert pack.evidence_text == pack.text
+
+
+def test_the_precedent_says_it_settles_nothing() -> None:
+    text = build_pack(_with_precedent(), snapshot=_snapshot(), grains={}).text
+    assert "not a verdict on the SQL above" in text
+    assert "can still be real here" in text

@@ -68,6 +68,16 @@ _REACH_STEPS: tuple[tuple[int, float], ...] = ((20, 16.0), (5, 13.0), (1, 8.0))
 
 _GOVERNED_BONUS = 25.0
 
+# What a history of dismissals takes off the score, at most. Large enough to move a
+# finding down the page, never large enough to remove it: the recall-first bargain is
+# paid in ranking, and a finding deleted because it was unpopular is a finding nobody
+# can argue with later.
+_DISMISSAL_PENALTY = 45.0
+
+# Two judgements before the ranking moves. One reviewer dismissing one finding once is
+# an opinion about that change, not evidence about the rule.
+_MIN_JUDGEMENTS = 2
+
 
 def calibrate(findings: list[Finding]) -> list[Finding]:
     """Cap severity at what the evidence supports.
@@ -128,12 +138,47 @@ def _reach_points(count: int) -> float:
     return 0.0
 
 
+def _history_component(finding: Finding) -> tuple[float, str | None]:
+    """What people decided about this same finding before, as points and a sentence.
+
+    The only part of the score that comes from outside the change under review, so it
+    is bounded, requires more than one judgement, and says in words what it did.
+
+    A measured finding is exempt. Dismissing one is a statement about a change someone
+    accepted, not about a rule that over-flags — the rows moved, and they moved again.
+    Discounting a measurement because the last one was waved through is how a tool
+    learns to go quiet on exactly the findings it exists to raise.
+    """
+    history = finding.history
+    if history is None:
+        return 0.0, None
+
+    judged = history.dispositioned
+    rate = history.dismissal_rate
+    if judged < _MIN_JUDGEMENTS or rate is None or rate < 0.5:
+        if history.occurrences:
+            return 0.0, f"raised in {history.occurrences} earlier run(s)"
+        return 0.0, None
+    if finding.confidence is Confidence.MEASURED:
+        return 0.0, (
+            f"dismissed in {history.dismissed} of {judged} earlier judgements, "
+            "but measured here, so the ranking is unchanged"
+        )
+
+    penalty = _DISMISSAL_PENALTY * rate
+    return -penalty, (
+        f"dismissed by a reviewer in {history.dismissed} of {judged} "
+        f"earlier judgements (-{penalty:.0f})"
+    )
+
+
 def _score(finding: Finding, *, governed: bool) -> tuple[float, tuple[str, ...]]:
     severity = _SEVERITY_WEIGHT.get(finding.severity, 10.0)
     confidence = _CONFIDENCE_WEIGHT.get(finding.confidence, 0.5)
     reach = _reach_points(len(finding.blast_radius))
+    judgement, judgement_reason = _history_component(finding)
 
-    total = severity * confidence + reach + (_GOVERNED_BONUS if governed else 0.0)
+    total = severity * confidence + reach + (_GOVERNED_BONUS if governed else 0.0) + judgement
     components = [
         f"{finding.severity.value} ({severity:.0f}) "
         f"x {finding.confidence.value} ({confidence:.1f})",
@@ -142,7 +187,11 @@ def _score(finding: Finding, *, governed: bool) -> tuple[float, tuple[str, ...]]
         components.append(f"reaches {len(finding.blast_radius)} model(s) (+{reach:.0f})")
     if governed:
         components.append(f"lands in a governed model (+{_GOVERNED_BONUS:.0f})")
-    return total, tuple(components)
+    if judgement_reason:
+        components.append(judgement_reason)
+    # Ranked down, never off: a floor keeps the ordering meaningful without letting a
+    # history of dismissals drive a finding negative and below everything else.
+    return max(total, 1.0), tuple(components)
 
 
 def triage(

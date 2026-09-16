@@ -41,6 +41,20 @@ def _finding(finding: Finding, *, score: float, subsumed_by: str | None) -> dict
         "note": evidence.note,
         "blast_radius": list(finding.blast_radius),
         "triage": {"score": round(score, 1), "subsumed_by": subsumed_by},
+        # Counts only. A reviewer's note is free text about a specific change, so it
+        # stays out of a machine-readable artifact that redaction is expected to make
+        # safe to send elsewhere.
+        "history": (
+            None
+            if finding.history is None
+            else {
+                "occurrences": finding.history.occurrences,
+                "dismissed": finding.history.dismissed,
+                "accepted": finding.history.accepted,
+                "fixed": finding.history.fixed,
+                "deferred": finding.history.deferred,
+            }
+        ),
         # Both reasons a finding may be set aside, kept distinct: a specialist refuted
         # it, or a more precise rule already said it.
         "suppressed_reason": finding.suppressed_reason,

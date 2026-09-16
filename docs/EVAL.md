@@ -1111,6 +1111,45 @@ refusal is now made by code, before any model call.
 Current result, on `fix/poc-base`: **47 of 47**, none skipped, 459 s; CI green on all four
 jobs, with the corpus job reproducing the numbers at the top of this file.
 
+## Learning from what reviewers decide
+
+The roadmap's first four tuning steps are built (step 5, an adapter, is not — the bar is
+unchanged). What follows is what they do and, more usefully, what was deliberately given up
+to keep them honest.
+
+**A dismissal ranks a finding down; it never removes one.** Two judgements are required
+before anything moves, the penalty scales with the dismissal rate and is capped at 45 points
+against a high-severity likely finding's 42-point base, and the score has a floor. The
+finding stays on the page, carrying the sentence "raised in 4 earlier run(s); reviewers
+ruled 3 dismissed" and the most recent note. A reviewer who disagrees can see exactly what
+moved it, which a weight could never offer.
+
+**A measured finding is exempt from its own history.** This is the one that mattered most in
+the design. Dismissing a measured finding says someone accepted a change whose rows really
+did move; it says nothing about a rule that over-flags. Discounting the next measurement on
+that basis is precisely how a tool learns to go quiet on the findings it exists to raise, so
+the rubric skips the penalty and says so in the reason line.
+
+**Precedent is shown to specialists and is not evidence.** The pack carries how reviewers
+ruled on the same rule — the same model first, with their notes — under a heading that says
+these are decisions about other changes. It sits outside `pack.evidence_text`, so the
+self-check will not accept a quote taken from it. Without that split, a specialist could
+refute a real finding by quoting somebody who once dismissed a different one, and the
+grounding check would have called that a well-evidenced answer. Retrieval that teaches a
+reviewer to refute is worse than no retrieval.
+
+**Every model call is kept, rejected answers included.** The pack, the instructions, the
+parsed answer, and whether the self-check accepted it. An answer the self-check threw out is
+the clearest label available for what this lane must not produce, and a training set built
+only from accepted answers would omit exactly that class.
+
+**What it is measured on, which is not much.** One synthetic corpus, one real disposition.
+The component check exercises the whole loop — a disposition written through one component
+reaching the ranking, the pack and the export in another — and 10 of 10 pass. That is
+evidence the wiring is real. It is not evidence that the behaviour helps, and it cannot be
+until the dispositions come from someone who did not write the rules. `themis dataset`
+prints the distance to that bar on every run rather than letting it be estimated.
+
 ## Known limitations
 
 Kept current. Several entries here were closed and are gone rather than left standing —

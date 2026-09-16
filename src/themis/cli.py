@@ -6,14 +6,15 @@ shell, and the eval harness all exercise exactly the same code path.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
-from typing import Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any
 
 import typer
 
 from themis import __version__
 from themis.acquire.manifest import load_manifest
-from themis.config import load_settings
+from themis.config import Settings, load_settings
 from themis.logging import configure_logging, get_logger
 from themis.models import Backend, Finding, GrainSource, Severity
 from themis.report import markdown
@@ -40,6 +41,9 @@ app = typer.Typer(
     no_args_is_help=True,
     add_completion=False,
 )
+if TYPE_CHECKING:
+    from themis.pipeline import HistoryLookup
+
 log = get_logger(__name__)
 
 ProjectOpt = Annotated[
@@ -171,6 +175,7 @@ def review(
             prod_manifest=prod_manifest,
             defer_state=defer_state,
             use_manifest_cache=not no_manifest_cache,
+            history=_history(str(project), settings),
         )
     except _REVIEW_ERRORS as exc:
         typer.echo(f"Review could not run: {exc}", err=True)
@@ -719,6 +724,71 @@ def ask(
     raise typer.Exit(code=1)
 
 
+@app.command()
+def dataset(
+    out: Annotated[
+        Path | None,
+        typer.Option("--out", help="Write the calls here as JSONL. Omitted: counts only."),
+    ] = None,
+    project: Annotated[
+        str | None, typer.Option("--project", help="Only this project's runs.")
+    ] = None,
+    judged_only: Annotated[
+        bool,
+        typer.Option("--judged-only", help="Only calls a human later ruled on."),
+    ] = False,
+    verbose: VerboseOpt = False,
+) -> None:
+    """What every model call was shown, what it answered, and how it was later judged.
+
+    The tuning set, accumulated from real reviews rather than written alongside the
+    rules. Run it with no `--out` to see whether there is yet enough to tune on: a few
+    hundred judged calls across more than one project is the bar, and until then this
+    prints the honest number.
+
+    The output contains the SQL under review verbatim, because that is what the model
+    was shown. Treat the file the way you would treat the repository.
+    """
+    from themis.db.base import session_scope
+    from themis.db.store import export_calls
+
+    configure_logging(verbose=verbose)
+
+    try:
+        with session_scope() as session:
+            rows = export_calls(session, project=project, judged_only=judged_only)
+    except Exception as exc:
+        typer.echo(f"Could not read the store: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+
+    judged = sum(1 for row in rows if row["human_disposition"])
+    by_seat: dict[str, int] = {}
+    for row in rows:
+        seat = str(row["seat"])
+        by_seat[seat] = by_seat.get(seat, 0) + 1
+
+    if out is not None:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        with out.open("w") as handle:
+            for row in rows:
+                handle.write(json.dumps(row, default=str) + "\n")
+        typer.echo(f"{len(rows)} call(s) written to {out}")
+    else:
+        typer.echo(f"{len(rows)} captured call(s)")
+
+    for seat, count in sorted(by_seat.items()):
+        typer.echo(f"  {seat}: {count}")
+    typer.echo(f"{judged} of them carry a human judgement.")
+    if judged < 100:
+        # Said every time, because the number is the whole point: a model tuned on a
+        # handful of judgements learns the handful.
+        typer.echo(
+            "Too few to tune on. The bar is hundreds of real judgements across more "
+            "than one project, plus a held-out set of real pull requests to test the "
+            "result on — see docs/ROADMAP.md."
+        )
+
+
 @app.command(name="eval")
 def eval_cmd(
     project: ProjectOpt = Path("demo_project"),
@@ -1096,6 +1166,20 @@ def eval_cmd(
         raise typer.Exit(code=1)
     typer.echo("gate: pass")
     raise typer.Exit(code=0)
+
+
+def _history(project: str, settings: Settings) -> HistoryLookup | None:
+    """Stored judgements for this project, or nothing if there is no store.
+
+    Importing the store lazily keeps `themis review` usable on a machine with no
+    database at all; a lookup that raises is caught by the pipeline and logged, because
+    a review must not fail over history it could not read.
+    """
+    try:
+        from themis.db.history import history_lookup
+    except Exception:  # pragma: no cover - sqlalchemy missing is not a review failure
+        return None
+    return history_lookup(project, examples=settings.prior_judgement_examples)
 
 
 def _persist(result: object, *, project: str, base: str, head: str, execute: bool) -> None:

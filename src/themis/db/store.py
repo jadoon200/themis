@@ -19,6 +19,7 @@ from themis.db.models import (
 )
 from themis.db.models import (
     GrainRecord,
+    ModelCallRow,
     ModelDelta,
     ReviewRun,
     RunSource,
@@ -27,7 +28,7 @@ from themis.db.models import (
     utcnow,
 )
 from themis.logging import get_logger
-from themis.models import Finding, Grain
+from themis.models import Finding, FindingHistory, Grain, PriorJudgement
 from themis.pipeline import ReviewResult
 
 log = get_logger(__name__)
@@ -169,6 +170,24 @@ def heartbeat(session: Session, run: ReviewRun, worker_id: str | None = None) ->
     return True
 
 
+def finding_fingerprint(finding: Finding, *, project: str) -> str:
+    """The stored identity of a finding, computed the one way it is computed anywhere.
+
+    Reading history back has to hash exactly what writing it hashed, so both sides call
+    this rather than each assembling the arguments themselves.
+    """
+    return fingerprint_finding(
+        rule_id=finding.rule_id,
+        model_name=finding.evidence.model_name,
+        project=project,
+        evidence_note=(
+            finding.evidence.identity
+            if finding.evidence.identity is not None
+            else finding.evidence.note
+        ),
+    )
+
+
 def _delta_payload(finding: Finding) -> dict[str, object] | None:
     delta = finding.execution_delta
     if delta is None:
@@ -196,16 +215,7 @@ def save_result(session: Session, run: ReviewRun, result: ReviewResult) -> Revie
         session.add(
             FindingRow(
                 run_id=run.id,
-                fingerprint=fingerprint_finding(
-                    rule_id=finding.rule_id,
-                    model_name=finding.evidence.model_name,
-                    project=run.project,
-                    evidence_note=(
-                        finding.evidence.identity
-                        if finding.evidence.identity is not None
-                        else finding.evidence.note
-                    ),
-                ),
+                fingerprint=finding_fingerprint(finding, project=run.project),
                 rule_id=finding.rule_id,
                 family=finding.family,
                 title=finding.title,
@@ -245,6 +255,7 @@ def save_result(session: Session, run: ReviewRun, result: ReviewResult) -> Revie
             )
 
     _save_grains(session, run, result.grains)
+    _save_model_calls(session, run, result)
     session.flush()
     log.info(
         "run.saved",
@@ -253,6 +264,43 @@ def save_result(session: Session, run: ReviewRun, result: ReviewResult) -> Revie
         executed=result.executed,
     )
     return run
+
+
+def _save_model_calls(session: Session, run: ReviewRun, result: ReviewResult) -> None:
+    """Keep what each model call was shown and what it answered.
+
+    Every other row in this database is about the change under review. These are about
+    the reviewer itself, and they are the only record from which a tuning set could
+    ever be built — the pack is assembled in memory and, until now, discarded the
+    moment the answer came back.
+
+    Fingerprinted the same way the findings are, so a disposition recorded days later
+    lands against the call that produced the answer.
+    """
+    if result.llm is None or not result.llm.calls:
+        return
+    for call in result.llm.calls:
+        finding = call.finding
+        session.add(
+            ModelCallRow(
+                run_id=run.id,
+                seat=call.seat,
+                llm_model=call.model,
+                fingerprint=(
+                    finding_fingerprint(finding, project=run.project)
+                    if finding is not None
+                    else None
+                ),
+                rule_id=finding.rule_id if finding is not None else None,
+                model_name=finding.evidence.model_name if finding is not None else None,
+                context=call.context,
+                system=call.system,
+                response=dict(call.response),
+                accepted=call.accepted,
+                rejected_reason=call.rejected_reason,
+            )
+        )
+    log.info("run.calls_saved", run_key=run.run_key, calls=len(result.llm.calls))
 
 
 def _save_grains(session: Session, run: ReviewRun, grains: dict[str, Grain]) -> None:
@@ -312,3 +360,185 @@ def dismissal_rate(session: Session, fingerprint: str) -> float | None:
         return None
     dismissed = sum(1 for r in rows if r == "dismissed")
     return dismissed / len(rows)
+
+
+# How many past judgements a specialist is shown. More is not better: the pack is the
+# model's whole world, and precedent crowding out the SQL under review is exactly the
+# failure this lane is written to avoid.
+_MAX_EXAMPLES = 3
+
+
+def history_for(
+    session: Session,
+    findings: list[Finding],
+    *,
+    project: str,
+    examples: int = _MAX_EXAMPLES,
+) -> list[FindingHistory | None]:
+    """What earlier runs did with each of these findings, aligned with the input.
+
+    One pass over the two things the store knows that a fresh review cannot: how often
+    this exact finding has been raised before, and what people decided about findings
+    like it. ``None`` for a finding nobody has seen before — distinct from a history of
+    zero dismissals, which means it was seen and nobody objected.
+    """
+    if not findings:
+        return []
+
+    fingerprints = [finding_fingerprint(f, project=project) for f in findings]
+    rows = session.execute(
+        select(
+            FindingRow.fingerprint,
+            FindingRow.disposition,
+            FindingRow.disposition_note,
+            FindingRow.disposition_at,
+        ).where(FindingRow.fingerprint.in_(set(fingerprints)))
+    ).all()
+
+    counts: dict[str, dict[str, int]] = {}
+    notes: dict[str, tuple[datetime | None, str | None]] = {}
+    for fingerprint, disposition, note, at in rows:
+        bucket = counts.setdefault(fingerprint, {"occurrences": 0})
+        bucket["occurrences"] += 1
+        if disposition:
+            bucket[disposition] = bucket.get(disposition, 0) + 1
+            previous = notes.get(fingerprint)
+            newer = previous is None or (
+                at is not None and previous[0] is not None and at > previous[0]
+            )
+            if note and newer:
+                notes[fingerprint] = (at, note)
+
+    judgements = _judgements_for(session, findings, limit=examples) if examples else {}
+
+    out: list[FindingHistory | None] = []
+    for finding, fingerprint in zip(findings, fingerprints, strict=True):
+        found = counts.get(fingerprint)
+        precedents = judgements.get(id(finding), ())
+        if found is None and not precedents:
+            out.append(None)
+            continue
+        bucket = found or {"occurrences": 0}
+        out.append(
+            FindingHistory(
+                occurrences=bucket.get("occurrences", 0),
+                dismissed=bucket.get("dismissed", 0),
+                accepted=bucket.get("accepted", 0),
+                fixed=bucket.get("fixed", 0),
+                deferred=bucket.get("deferred", 0),
+                last_note=notes.get(fingerprint, (None, None))[1],
+                examples=precedents,
+            )
+        )
+    return out
+
+
+def _judgements_for(
+    session: Session, findings: list[Finding], *, limit: int
+) -> dict[int, tuple[PriorJudgement, ...]]:
+    """Dispositioned findings of the same rule, most recently judged first.
+
+    Same rule rather than same fingerprint: the precedent a reviewer wants is "what we
+    decided about this rule on this model", and an exact repeat is rarer than the case
+    where the judgement is still the relevant one.
+    """
+    rules = {f.rule_id for f in findings}
+    if not rules:
+        return {}
+    rows = (
+        session.execute(
+            select(FindingRow)
+            .where(FindingRow.rule_id.in_(rules))
+            .where(FindingRow.disposition.is_not(None))
+            .order_by(FindingRow.disposition_at.desc().nullslast(), FindingRow.id.desc())
+            .limit(200)
+        )
+        .scalars()
+        .all()
+    )
+
+    out: dict[int, tuple[PriorJudgement, ...]] = {}
+    for finding in findings:
+        model_name = finding.evidence.model_name
+        candidates = [r for r in rows if r.rule_id == finding.rule_id]
+        # Same model first: a judgement about this model is a stronger precedent than
+        # the same rule somewhere else, and the pack says which it is.
+        candidates.sort(key=lambda r: r.model_name != model_name)
+        picked = tuple(
+            PriorJudgement(
+                rule_id=row.rule_id,
+                model_name=row.model_name,
+                disposition=str(row.disposition),
+                title=row.title,
+                note=row.disposition_note,
+                same_model=row.model_name == model_name,
+            )
+            for row in candidates[:limit]
+        )
+        if picked:
+            out[id(finding)] = picked
+    return out
+
+
+def export_calls(
+    session: Session, *, project: str | None = None, judged_only: bool = False
+) -> list[dict[str, object]]:
+    """Every captured model call, joined to the judgement that later settled it.
+
+    This is the shape a tuning set would be assembled from, and printing it is how the
+    question "is there enough to tune on yet" gets a number instead of an opinion. The
+    join is by fingerprint, so a disposition recorded weeks after the call still lands
+    against the context that produced the answer.
+
+    ``judged_only`` keeps the calls a human has ruled on — the only ones that carry a
+    label at all.
+    """
+    query = select(ModelCallRow, ReviewRun).join(ReviewRun, ModelCallRow.run_id == ReviewRun.id)
+    if project:
+        query = query.where(ReviewRun.project == project)
+    rows = session.execute(query.order_by(ModelCallRow.id)).all()
+    if not rows:
+        return []
+
+    fingerprints = {call.fingerprint for call, _ in rows if call.fingerprint}
+    judgements: dict[str, tuple[str, str | None]] = {}
+    if fingerprints:
+        judged = (
+            session.execute(
+                select(FindingRow)
+                .where(FindingRow.fingerprint.in_(fingerprints))
+                .where(FindingRow.disposition.is_not(None))
+                .order_by(FindingRow.disposition_at.asc().nullsfirst(), FindingRow.id.asc())
+            )
+            .scalars()
+            .all()
+        )
+        # Later rows overwrite earlier ones, so the most recent judgement wins.
+        for row in judged:
+            judgements[row.fingerprint] = (str(row.disposition), row.disposition_note)
+
+    out: list[dict[str, object]] = []
+    for call, run in rows:
+        disposition, note = judgements.get(call.fingerprint or "", (None, None))
+        if judged_only and disposition is None:
+            continue
+        out.append(
+            {
+                "run_key": run.run_key,
+                "project": run.project,
+                "seat": call.seat,
+                "llm_model": call.llm_model,
+                "rule_id": call.rule_id,
+                "model_name": call.model_name,
+                "fingerprint": call.fingerprint,
+                "system": call.system,
+                "context": call.context,
+                "response": call.response,
+                "accepted_by_selfcheck": call.accepted,
+                "rejected_reason": call.rejected_reason,
+                "human_disposition": disposition,
+                "human_note": note,
+                "created_at": call.created_at.isoformat() if call.created_at else None,
+            }
+        )
+    return out

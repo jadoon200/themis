@@ -21,7 +21,7 @@ from typing import Any
 from themis.config import Settings
 from themis.llm.provider import LLMError, Provider, Usage
 from themis.logging import get_logger
-from themis.models import Finding
+from themis.models import Finding, ModelCall
 from themis.review.selfcheck import quote_is_grounded
 from themis.snapshot import ProjectSnapshot
 
@@ -72,6 +72,7 @@ def explain(
     before: ProjectSnapshot,
     after: ProjectSnapshot,
     usage: Usage,
+    record: list[ModelCall] | None = None,
 ) -> str | None:
     """Propose a cause for an unexplained measured change. None if it cannot."""
     delta = finding.execution_delta
@@ -117,6 +118,17 @@ def explain(
         return None
 
     usage.add(response.usage)
+    if record is not None:
+        record.append(
+            ModelCall(
+                seat="explain",
+                model=settings.llm_supervisor_model,
+                context=context,
+                system=SYSTEM,
+                response=dict(response.payload),
+                finding=finding,
+            )
+        )
     hypothesis = str(response.payload.get("hypothesis", "")).strip()
     quote = str(response.payload.get("evidence_quote", "")).strip()
     confidence = str(response.payload.get("confidence", "unclear"))
