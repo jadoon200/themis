@@ -57,6 +57,13 @@ recall, so a triage stage demotes a finding that a more specific rule already co
 relationship named and nothing deleted. The score behind the ranking prints its own
 components, because an opaque number gating a merge is not a reviewable statement.
 
+**Totals are not enough, so rows are paired.** A change can move money between accounts,
+entities or treatments while every row count and every total stays exactly where it was —
+flipping how uncontracted revenue is recognised did, and an aggregate-only comparison called
+it clean. Stage 3 pairs the base and head rows on the derived grain and counts what changed,
+column by column. The projects this is for declare no keys, so it pairs only on a key it has
+*counted* unique in both builds; an inferred key is never trusted to pair rows.
+
 **What reviewers decide changes the next review — visibly, and only in the order.** Mark a
 finding dismissed and the next run that raises it says so on the finding, ranks it lower,
 and shows the specialist how the same rule was ruled on before. Nothing is deleted, no
@@ -166,6 +173,19 @@ That prints how many captured calls carry a human judgement — the number that 
 whether tuning a model is worth doing yet, which today it is not. Add `--out calls.jsonl`
 to export them; the file contains the SQL the model was shown, so treat it like the repo.
 
+A team can also write down what it already knows about its project — FX rates are one row
+per currency per month, amounts are in minor units — in `themis_conventions.yml`, versioned
+with the models. Specialists read the conventions that apply to a finding as context, never
+as evidence:
+
+```bash
+themis conventions --project path/to/project
+```
+
+Several of these ideas came from reading how other tools work — Recce, dbt-audit-helper,
+SQLMesh, Semgrep, Alibaba's Open Code Review. `docs/PRIOR_ART.md` records what was adapted,
+what was deliberately not, and why.
+
 To check that every part actually runs — not a stand-in for it — with Postgres (`make up`),
 Ollama and a Trino on port 8085 available:
 
@@ -187,7 +207,7 @@ executes SQL during analysis.
 
 A proof of concept. See `docs/ROADMAP.md` for what is built and what is next, and
 `docs/EVAL.md` for the measurements, including where THEMIS does worse than it looks
-like it should. On the 44-case corpus: **100% recall, all 29 rules firing, every
+like it should. On the 46-case corpus: **100% recall, all 29 rules firing, every
 behaviour-preserving control silent** — and CI fails if any of that stops being true.
 Four of four deliberately safe changes are still flagged (recall-first, by design),
 which puts precision at 82% and the false-positive rate at 36%; those two figures move

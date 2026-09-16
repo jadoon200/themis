@@ -10,8 +10,9 @@ so. **The current figures are in [Where it stands](#where-it-stands), immediatel
 
 ## Where it stands
 
-Measured 2026-09-15 on the 44-case corpus, after the fixes described in
-[A review of the review](#a-review-of-the-review). Every figure below is from a run whose
+Measured 2026-09-17 on the 46-case corpus, after the fixes described in
+[A review of the review](#a-review-of-the-review) and the paired-row comparison described in
+[What the oracle could not see](#what-the-oracle-could-not-see). Every figure below is from a run whose
 gate passed: no case unscorable, no defect missed or caught only by the wrong family, no
 control flagged, every rule fired. **CI's own corpus job now reproduces the testless column
 exactly** — the first time it has matched anything in this file.
@@ -25,9 +26,13 @@ exactly** — the first time it has matched anything in this file.
 | precision | 82% | 86% |
 | false-positive rate | 36% (4/11) | 27% (3/11) |
 | latent defects reported | 14 / 14 | 14 / 14 |
-| unruled defect reported | 1 / 1 | 1 / 1 |
+| unruled defects reported | **3 / 3** | 3 / 3 |
 | rules firing | 29 / 29 | 29 / 29 |
-| findings per flagged change | median 2, worst 3 | median 2, worst 4 |
+| findings per flagged change | median 1, worst 3 | median 1, worst 4 |
+
+**The median fell because two cases were added, not because findings were lost.** Both new
+unruled cases carry a single finding; without them the median is 2 in both columns, as before.
+Every other figure is unchanged from the 44-case run.
 
 **Declaring keys costs no recall and buys one benign case.** With the tested variant's
 keys merged in, `dim_accounts` inherits a proven key from `stg_accounts`, and a join onto it
@@ -1110,6 +1115,45 @@ refusal is now made by code, before any model call.
 
 Current result, on `fix/poc-base`: **47 of 47**, none skipped, 459 s; CI green on all four
 jobs, with the corpus job reproducing the numbers at the top of this file.
+
+## What the oracle could not see
+
+Execution asked whether rows, totals or the column set moved. So did the corpus oracle —
+it is the same measurement — and that shared question had a blind spot shaped exactly like
+some of the most expensive defects in finance: **values moving between keys while every
+total holds.** A reclassification, an entity remap, a treatment flipped. Because the oracle
+could not see it either, the corpus could not even represent the miss.
+
+It was found by reading how other tools compare builds (see [PRIOR_ART](PRIOR_ART.md)), and
+then proved before it was fixed:
+
+| case | before pairing | after |
+|---|---|---|
+| `unruled_period_from_posting_date` — period taken from the posting date, a month-end cutoff error | caught (a grouped model's row count moved) | caught |
+| `unruled_recognition_default_flipped` — uncontracted revenue recognised over time instead of at a point in time | **missed — a clean review** | caught: "fct_revenue: paired on (entry_id): 21 row(s) changed value in recognition_method (21)" |
+
+The second case moves no row count and no total anywhere in the project. Stage 3 now pairs
+base and head rows on the derived grain — only a grain it has *counted* unique in both
+builds — and counts what changed per column, with a relative tolerance so reordered float
+arithmetic is not a change. The full corpus still passes its gate with every control
+silent: the comparison found nothing on any change that moves nothing.
+
+**The score said caught before the report had been read.** Reading the review found three
+defects in X0001 that this was the first case to exercise:
+
+- the model whose SQL changed was described as having *unchanged* SQL — it is a view with no
+  countable key, so its own rows could not be paired, and the wording assumed that an origin
+  which did not move itself could only be a model nobody edited;
+- its evidence showed an unchanged row count and nothing about the table where the values
+  moved, so a reviewer could not see what had happened;
+- it was **critical**, and named three regulatory marts under "a reported figure moved". None
+  of them reads the column that changed. Reachability had been standing in for movement, and
+  critical — reserved for a reported figure demonstrated to move — was being awarded on a
+  path through the DAG.
+
+All three are fixed and covered, and the component check now asserts on the report itself,
+not the score. The same lesson as the one that closed the CI corpus job: **a number that
+says "caught" is not evidence of what a reviewer was shown.**
 
 ## Learning from what reviewers decide
 
