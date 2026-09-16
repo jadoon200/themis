@@ -612,6 +612,141 @@ def check_persistence_and_models(
     )
 
 
+def _dismiss_all(db: Path, rule_id: str) -> int:
+    """Rule every stored finding of this rule dismissed, the way the API would.
+
+    The API path for recording a disposition is checked in the service section. What
+    this needs is the *state* a few weeks of use would leave behind, and the honest way
+    to get it in one run is to write it.
+    """
+    import sqlite3
+
+    connection = sqlite3.connect(db)
+    with connection:
+        cursor = connection.execute(
+            "update finding set disposition = 'dismissed', "
+            "disposition_note = 'the join key is unique by contract upstream', "
+            "disposition_at = datetime('now') where rule_id = ? and disposition is null",
+            (rule_id,),
+        )
+        changed = cursor.rowcount
+    connection.close()
+    return changed
+
+
+def check_learning_loop(
+    shas: dict[str, str], tmp: Path, env: dict[str, str], *, ollama: bool
+) -> None:
+    """A finding is raised, a reviewer rules on it, and the next review knows.
+
+    Every part of this is unit-tested; none of that proves the four pieces are wired to
+    each other. The loop only exists if a disposition written through one component
+    reaches the ranking, the specialist's pack and the exported dataset in another.
+    """
+    print("\nthe learning loop")
+    db = tmp / "loop.db"
+    db_env = {**env, "THEMIS_DATABASE_URL": f"sqlite:///{db}"}
+    m = subprocess.run(
+        [sys.executable, "-m", "alembic", "upgrade", "head"],
+        cwd=REPO,
+        env={**os.environ, **db_env, "PYTHONPATH": str(SRC)},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    record("migrations create the model-call table", m.returncode == 0, m.stderr[-300:])
+
+    def fanout_review(out: Path, *extra: str) -> tuple[subprocess.CompletedProcess[str], dict]:
+        result = themis(
+            "review",
+            "--project",
+            "demo_project",
+            "--base",
+            "HEAD",
+            "--head",
+            shas["fanout"],
+            "--json",
+            str(out),
+            *extra,
+            env=db_env,
+        )
+        return result, (json.loads(out.read_text()) if out.exists() else {})
+
+    first, doc = fanout_review(tmp / "loop1.json", "--no-llm")
+    before = {f["rule_id"]: f["triage"]["score"] for f in doc.get("findings", [])}
+    record(
+        "a first review stores its findings with no history",
+        "F1001" in before and all(f["history"] is None for f in doc.get("findings", [])),
+        f"exit {first.returncode}, rules={sorted(before)}",
+    )
+
+    # Two earlier runs, both dismissed: one judgement is an opinion, two are a pattern.
+    fanout_review(tmp / "loop2.json", "--no-llm")
+    dismissed = _dismiss_all(db, "F1001")
+    record(
+        "dispositions are recorded against the stored findings",
+        dismissed >= 2,
+        f"{dismissed} rows",
+    )
+
+    third, doc = fanout_review(tmp / "loop3.json", "--no-llm")
+    after = {f["rule_id"]: f["triage"]["score"] for f in doc.get("findings", [])}
+    history = next(
+        (f["history"] for f in doc.get("findings", []) if f["rule_id"] == "F1001"), None
+    )
+    record(
+        "the next review reads the judgements back",
+        bool(history) and history.get("dismissed", 0) >= 2,
+        f"history={history}",
+    )
+    record(
+        "a repeatedly dismissed finding ranks lower than it did",
+        "F1001" in after and after["F1001"] < before.get("F1001", 0),
+        f"{before.get('F1001')} -> {after.get('F1001')}",
+    )
+    record(
+        "it is still in the report, and says why it moved",
+        "F1001" in after and "Seen before:" in third.stdout and "dismissed" in third.stdout,
+        f"rules={sorted(after)}",
+    )
+
+    if not ollama:
+        skip("past judgements reach the specialist", "no Ollama on 11434")
+        skip("every model call is captured with its context", "no Ollama on 11434")
+        return
+
+    fanout_review(tmp / "loop4.json")
+    exported = tmp / "dataset.jsonl"
+    d = themis("dataset", "--out", str(exported), env=db_env)
+    rows = (
+        [json.loads(line) for line in exported.read_text().splitlines()]
+        if exported.exists()
+        else []
+    )
+    record(
+        "every model call is captured with its context",
+        d.returncode == 0 and len(rows) > 0 and all(r["context"] and r["system"] for r in rows),
+        f"exit {d.returncode}, {len(rows)} call(s), {d.stdout[-200:]}",
+    )
+    precedent = [r for r in rows if "How reviewers ruled on findings like this one" in r["context"]]
+    record(
+        "past judgements reach the specialist",
+        bool(precedent) and any("unique by contract" in r["context"] for r in precedent),
+        f"{len(precedent)} of {len(rows)} packs carried precedent",
+    )
+    record(
+        "the export joins each call to the judgement that settled it",
+        any(r["human_disposition"] == "dismissed" for r in rows),
+        f"dispositions={sorted({str(r['human_disposition']) for r in rows})}",
+    )
+    judged = themis("dataset", "--judged-only", env=db_env)
+    record(
+        "the dataset says how far it is from being enough to tune on",
+        judged.returncode == 0 and "Too few to tune on" in judged.stdout,
+        judged.stdout[-200:],
+    )
+
+
 def check_service(shas: dict[str, str], tmp: Path) -> None:
     print("\nservice: Postgres, API, worker")
     if not port_open(5436):
@@ -863,6 +998,7 @@ def main() -> int:
         check_persistence_and_models(
             shas, tmp, env, ollama=ollama and not args.quick, quick=args.quick
         )
+        check_learning_loop(shas, tmp, env, ollama=ollama and not args.quick)
         check_service(shas, tmp)
         if args.quick:
             skip("Trino", "--quick")
