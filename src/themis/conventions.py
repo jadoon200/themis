@@ -98,8 +98,33 @@ def load(project_dir: Path) -> Loaded:
     path = project_dir / FILENAME
     if not path.exists():
         return Loaded()
+    return parse(path.read_text())
+
+
+def load_at(project_dir: Path, revision: str) -> Loaded:
+    """The conventions as they stand at ``revision``, not as they are on disk.
+
+    Conventions are versioned with the code on purpose, so a review of a commit reads that
+    commit's conventions. Reading the working tree instead is the mistake `--head` once
+    made with the SQL: the right revision's name on the wrong revision's content.
+    """
+    from themis.acquire import git
+
+    repo = git.repo_root(project_dir)
+    if git.is_working_tree(repo, revision, project_dir):
+        return load(project_dir)
+    relative = (project_dir.resolve() / FILENAME).relative_to(repo.resolve())
     try:
-        document = yaml.safe_load(path.read_text()) or {}
+        text = git.show_file(repo, revision, relative.as_posix())
+    except git.GitError:
+        return Loaded()  # the file does not exist at that revision
+    return parse(text)
+
+
+def parse(text: str) -> Loaded:
+    """Parse a conventions document, refusing what cannot be used and saying why."""
+    try:
+        document = yaml.safe_load(text) or {}
     except yaml.YAMLError as exc:
         return Loaded(rejected=((FILENAME, f"not valid YAML: {exc}"),))
 

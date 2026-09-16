@@ -173,3 +173,67 @@ def test_the_command_points_key_claims_at_tests(tmp_path: Path) -> None:
     result = CliRunner().invoke(app, ["conventions", "--project", str(tmp_path)])
     assert result.exit_code == 0
     assert "declare it as a uniqueness test" in result.output
+
+
+def _git(repo: Path, *args: str) -> str:
+    import subprocess
+
+    return subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repo),
+            "-c",
+            "user.email=t@t.invalid",
+            "-c",
+            "user.name=t",
+            "-c",
+            "commit.gpgsign=false",
+            *args,
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+
+
+def test_a_review_of_a_commit_reads_that_commits_conventions(tmp_path: Path) -> None:
+    """Conventions are versioned with the code, so the revision under review decides
+    them — the same mistake `--head` once made with the SQL would otherwise recur."""
+    repo = tmp_path / "repo"
+    project = repo / "proj"
+    project.mkdir(parents=True)
+    _git(repo, "init", "-q")
+    (project / conventions.FILENAME).write_text(_GOOD)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "conventions as reviewed")
+    reviewed = _git(repo, "rev-parse", "HEAD")
+
+    one = _GOOD.split("  - id: amounts-in-minor-units")[0]
+    (project / conventions.FILENAME).write_text(one)
+    _git(repo, "commit", "-qam", "drop one")
+    # And something different again on disk, uncommitted.
+    (project / conventions.FILENAME).write_text("conventions: []\n")
+
+    at_commit = conventions.load_at(project, reviewed)
+    assert [c.id for c in at_commit.conventions] == [
+        "fx-rates-one-per-period",
+        "amounts-in-minor-units",
+    ]
+    assert conventions.load_at(project, "HEAD").conventions == ()
+
+
+def test_a_revision_without_the_file_has_no_conventions(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    project = repo / "proj"
+    project.mkdir(parents=True)
+    _git(repo, "init", "-q")
+    (project / "model.sql").write_text("select 1\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "no conventions yet")
+    first = _git(repo, "rev-parse", "HEAD")
+    (project / conventions.FILENAME).write_text(_GOOD)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "conventions added")
+
+    assert conventions.load_at(project, first) == conventions.Loaded()

@@ -849,7 +849,7 @@ def review(
             # the model path can only be tested against a fake, which proves the wiring
             # and never that the real prompts produce parseable, grounded output.
             active: Provider = provider if provider is not None else build_provider(settings)  # type: ignore[assignment]
-            loaded = conventions.load(project_dir)
+            loaded = conventions.load_at(project_dir, head)
             if loaded.conventions:
                 log.info("review.conventions", loaded=len(loaded.conventions))
             llm_summary = supervisor.review(
