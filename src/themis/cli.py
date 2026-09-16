@@ -7,13 +7,13 @@ shell, and the eval harness all exercise exactly the same code path.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any
 
 import typer
 
 from themis import __version__
 from themis.acquire.manifest import load_manifest
-from themis.config import load_settings
+from themis.config import Settings, load_settings
 from themis.logging import configure_logging, get_logger
 from themis.models import Backend, Finding, GrainSource, Severity
 from themis.report import markdown
@@ -40,6 +40,9 @@ app = typer.Typer(
     no_args_is_help=True,
     add_completion=False,
 )
+if TYPE_CHECKING:
+    from themis.pipeline import HistoryLookup
+
 log = get_logger(__name__)
 
 ProjectOpt = Annotated[
@@ -171,6 +174,7 @@ def review(
             prod_manifest=prod_manifest,
             defer_state=defer_state,
             use_manifest_cache=not no_manifest_cache,
+            history=_history(str(project), settings),
         )
     except _REVIEW_ERRORS as exc:
         typer.echo(f"Review could not run: {exc}", err=True)
@@ -1096,6 +1100,20 @@ def eval_cmd(
         raise typer.Exit(code=1)
     typer.echo("gate: pass")
     raise typer.Exit(code=0)
+
+
+def _history(project: str, settings: Settings) -> HistoryLookup | None:
+    """Stored judgements for this project, or nothing if there is no store.
+
+    Importing the store lazily keeps `themis review` usable on a machine with no
+    database at all; a lookup that raises is caught by the pipeline and logged, because
+    a review must not fail over history it could not read.
+    """
+    try:
+        from themis.db.history import history_lookup
+    except Exception:  # pragma: no cover - sqlalchemy missing is not a review failure
+        return None
+    return history_lookup(project, examples=settings.prior_judgement_examples)
 
 
 def _persist(result: object, *, project: str, base: str, head: str, execute: bool) -> None:

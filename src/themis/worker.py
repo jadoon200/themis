@@ -15,6 +15,7 @@ import time
 from themis.capabilities import DEFAULT_CAPABILITIES, Capability, parse_capabilities, require
 from themis.config import Settings, load_settings
 from themis.db.base import session_scope
+from themis.db.history import history_lookup
 from themis.db.models import ReviewRun
 from themis.db.store import claim_next_run, fail_run, heartbeat, load_owned_run, save_result
 from themis.logging import get_logger
@@ -130,6 +131,9 @@ def process_one(
                 run_llm=llm_requested,
                 pr_description=pr_description,
                 capabilities=held,
+                history=history_lookup(
+                    project_ref, examples=settings.prior_judgement_examples, url=url
+                ),
             )
     except Exception as exc:
         # Record the failure rather than letting the run sit in RUNNING until it is

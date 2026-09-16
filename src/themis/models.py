@@ -212,6 +212,50 @@ def sum_moved(before: float, after: float) -> bool:
     return abs(after - before) > max(1e-9, scale * 1e-12)
 
 
+class PriorJudgement(BaseModel):
+    """One earlier finding a human ruled on, kept as text a reviewer can read.
+
+    Retrieved for the *kind* of finding under review — same rule, ideally the same
+    model — not only for the identical fingerprint, because the useful precedent is
+    usually "we decided this about this rule on this model" rather than an exact repeat.
+    """
+
+    rule_id: str
+    model_name: str
+    disposition: str
+    title: str
+    note: str | None = None
+    same_model: bool = False
+
+
+class FindingHistory(BaseModel):
+    """What earlier runs, and the people reading them, did with this same finding.
+
+    Keyed by fingerprint, which is stable across runs by construction. A finding raised
+    again and again is either a real problem nobody has fixed or a false positive nobody
+    believes, and only the dispositions tell you which.
+    """
+
+    occurrences: int = 0
+    dismissed: int = 0
+    accepted: int = 0
+    fixed: int = 0
+    deferred: int = 0
+    last_note: str | None = None
+    # Past judgements on findings like this one, for the specialist's context pack.
+    examples: tuple[PriorJudgement, ...] = ()
+
+    @property
+    def dispositioned(self) -> int:
+        return self.dismissed + self.accepted + self.fixed + self.deferred
+
+    @property
+    def dismissal_rate(self) -> float | None:
+        """Share of human judgements that dismissed it, or None if nobody has judged."""
+        total = self.dispositioned
+        return None if total == 0 else self.dismissed / total
+
+
 class Finding(BaseModel):
     """One reviewable issue. The unit the whole system exists to produce."""
 
@@ -234,6 +278,10 @@ class Finding(BaseModel):
     # unless it parses in the target dialect and actually differs from the original.
     suggested_fix: str | None = None
     suppressed_reason: str | None = None
+    # What earlier runs and their readers did with this same finding. Set only when a
+    # store is available; None means "nobody has looked", which is not the same as
+    # "nobody dismissed it".
+    history: FindingHistory | None = None
 
     @property
     def is_settled(self) -> bool:

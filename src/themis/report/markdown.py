@@ -96,6 +96,38 @@ def _format_delta(finding: Finding) -> list[str]:
     return lines
 
 
+def _history_line(finding: Finding) -> str | None:
+    """What earlier readers did with this same finding.
+
+    Printed on the finding itself, not only folded into a score, because "this was
+    dismissed three times before" is something a reviewer should be able to disagree
+    with — and they cannot disagree with a number they never see.
+    """
+    history = finding.history
+    if history is None or not history.occurrences:
+        return None
+    judged = history.dispositioned
+    if not judged:
+        return f"**Seen before:** raised in {history.occurrences} earlier run(s), never ruled on."
+    parts = [
+        f"{count} {name}"
+        for name, count in (
+            ("dismissed", history.dismissed),
+            ("accepted", history.accepted),
+            ("fixed", history.fixed),
+            ("deferred", history.deferred),
+        )
+        if count
+    ]
+    line = (
+        f"**Seen before:** raised in {history.occurrences} earlier run(s); "
+        f"reviewers ruled {', '.join(parts)}."
+    )
+    if history.last_note:
+        line += f" Most recent note: _{history.last_note[:200]}_"
+    return line
+
+
 def _render_finding(index: int, finding: Finding) -> str:
     lines = [
         f"### {index}. {finding.title}",
@@ -124,6 +156,10 @@ def _render_finding(index: int, finding: Finding) -> str:
         if finding.evidence.sql_after:
             lines += ["```sql", finding.evidence.sql_after, "```"]
         lines += ["", "</details>"]
+
+    history_line = _history_line(finding)
+    if history_line:
+        lines += ["", history_line]
 
     if finding.suggestion:
         lines += ["", f"**Suggested:** {finding.suggestion}"]

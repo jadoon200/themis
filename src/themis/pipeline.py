@@ -6,6 +6,7 @@ whole flow in one screen matters more than any abstraction it might be factored 
 
 from __future__ import annotations
 
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -22,6 +23,7 @@ from themis.models import (
     Confidence,
     ExecutionDelta,
     Finding,
+    FindingHistory,
     Grain,
     GrainSource,
 )
@@ -597,6 +599,42 @@ def measured_grain_findings(result: ExecutionResult, inferred: dict[str, Grain])
     return findings
 
 
+# What earlier runs did with these same findings. A callable rather than a session so
+# the pipeline keeps no database dependency: the CLI and the worker each bind one to
+# their own store, and a run with no store simply has no history.
+HistoryLookup = Callable[[list[Finding]], Sequence[FindingHistory | None]]
+
+
+def attach_history(
+    findings: list[Finding], lookup: HistoryLookup | None
+) -> list[Finding]:
+    """Hang each finding's own history on it, if anything can supply one.
+
+    Deliberately before the model layer and the ranking, because both read it: the
+    specialist is shown what people decided about findings like this one, and the
+    rubric ranks down what they keep dismissing.
+    """
+    if lookup is None or not findings:
+        return findings
+    try:
+        histories = lookup(findings)
+    except Exception as exc:  # pragma: no cover - a store problem must not fail a review
+        log.warning("review.history_unavailable", error=str(exc)[:200])
+        return findings
+
+    out: list[Finding] = []
+    seen = 0
+    for finding, history in zip(findings, histories, strict=False):
+        if history is None:
+            out.append(finding)
+            continue
+        seen += 1
+        out.append(finding.model_copy(update={"history": history}))
+    if seen:
+        log.info("review.history_attached", findings=seen)
+    return out
+
+
 def review(
     project_dir: Path,
     *,
@@ -618,6 +656,7 @@ def review(
     pr_description: str | None = None,
     provider: object | None = None,
     data_anchor: Path | None = None,
+    history: HistoryLookup | None = None,
 ) -> ReviewResult:
     """Run the deterministic stages, optionally including execution.
 
@@ -716,6 +755,9 @@ def review(
     # same object the rules used — and asking for `.before` is what builds it, only if
     # a specialist that needs column lineage is actually reached.
     column_lineage = contexts[0].lineage.before if contexts and contexts[0].lineage else None
+
+    # Before the model layer and before triage, because both read it.
+    findings = attach_history(findings, history)
 
     llm_summary: ReviewSummary | None = None
     if run_llm and findings:
