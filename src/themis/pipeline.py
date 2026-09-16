@@ -10,7 +10,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from themis import vocabulary
+from themis import conventions, vocabulary
 from themis.acquire.snapshot_builder import AcquireResult, acquire
 from themis.analyze.grain import infer_grains
 from themis.analyze.lineage import LineageIndex
@@ -849,6 +849,9 @@ def review(
             # the model path can only be tested against a fake, which proves the wiring
             # and never that the real prompts produce parseable, grounded output.
             active: Provider = provider if provider is not None else build_provider(settings)  # type: ignore[assignment]
+            loaded = conventions.load(project_dir)
+            if loaded.conventions:
+                log.info("review.conventions", loaded=len(loaded.conventions))
             llm_summary = supervisor.review(
                 findings,
                 provider=active,
@@ -861,6 +864,7 @@ def review(
                 # The before graph: a column that was removed still exists there, which
                 # is the only revision in which "what reads it" has an answer.
                 lineage=column_lineage,
+                conventions=loaded.conventions,
             )
             findings = llm_summary.findings
         except LLMError as exc:
