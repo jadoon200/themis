@@ -20,6 +20,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 
 from sqlalchemy import (
+    Boolean,
     DateTime,
     Float,
     ForeignKey,
@@ -102,6 +103,9 @@ class ReviewRun(Base):
     grains: Mapped[list[GrainRecord]] = relationship(
         back_populates="run", cascade="all, delete-orphan"
     )
+    model_calls: Mapped[list[ModelCallRow]] = relationship(
+        back_populates="run", cascade="all, delete-orphan"
+    )
 
     __table_args__ = (
         Index("ix_review_run_claim", "status", "created_at"),
@@ -152,6 +156,44 @@ class Finding(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     __table_args__ = (Index("ix_finding_fingerprint_created", "fingerprint", "created_at"),)
+
+
+class ModelCallRow(Base):
+    """One model call, with the context it was given and the answer it returned.
+
+    The training set, accumulated as a by-product of use. Nothing reads this back into
+    a review — it exists so that the question "what was this answer grounded in" has an
+    answer later, and so that a tuning set can be assembled from real reviews rather
+    than from the corpus that wrote the rules.
+
+    The human judgement is not duplicated here. It lands on the finding days later, and
+    the export joins the two on the fingerprint.
+    """
+
+    __tablename__ = "model_call"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    run_id: Mapped[int] = mapped_column(ForeignKey("review_run.id", ondelete="CASCADE"))
+    run: Mapped[ReviewRun] = relationship(back_populates="model_calls")
+
+    # Which seat made the call: a specialist's name, or intent / fix / explain.
+    seat: Mapped[str] = mapped_column(String(64), index=True)
+    llm_model: Mapped[str] = mapped_column(String(128))
+
+    # The finding it was about, by the same fingerprint the finding row carries, so a
+    # disposition recorded weeks later can be joined to what the model was shown.
+    fingerprint: Mapped[str | None] = mapped_column(String(64), index=True, default=None)
+    rule_id: Mapped[str | None] = mapped_column(String(32), index=True, default=None)
+    model_name: Mapped[str | None] = mapped_column(String(255), default=None)
+
+    context: Mapped[str] = mapped_column(Text)
+    system: Mapped[str] = mapped_column(Text)
+    response: Mapped[dict[str, object]] = mapped_column(JsonType, default=dict)
+    # Whether the self-check let it through. A rejected answer is a label too.
+    accepted: Mapped[bool] = mapped_column(Boolean, default=True)
+    rejected_reason: Mapped[str | None] = mapped_column(Text, default=None)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
 class ModelDelta(Base):

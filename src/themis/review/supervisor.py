@@ -19,7 +19,7 @@ from themis.config import Settings
 from themis.llm.context_pack import ContextPack, Section, build_intent_pack, build_pack
 from themis.llm.provider import Provider, Usage
 from themis.logging import get_logger
-from themis.models import Confidence, Finding, Grain, Severity, Verdict
+from themis.models import Confidence, Finding, Grain, ModelCall, Severity, Verdict
 from themis.review import selfcheck
 from themis.review.explain import explain
 from themis.review.fix import propose
@@ -57,6 +57,10 @@ class ReviewSummary:
     # real, only suggesting why an already-certain number moved.
     explained: int = 0
     undisclosed: list[str] = field(default_factory=list)
+    # Every call made, with what it was shown and what it answered. Held in memory and
+    # written only if the run is saved: the pipeline has no database, and a training
+    # set that cannot be assembled is the thing this closes.
+    calls: list[ModelCall] = field(default_factory=list)
 
     @property
     def skipped_as_settled(self) -> int:
@@ -150,6 +154,7 @@ def review(
                     before=before_snapshot,
                     after=snapshot,
                     usage=summary.usage,
+                    record=summary.calls,
                 )
                 if hypothesis:
                     summary.explained += 1
@@ -179,6 +184,24 @@ def review(
             summary.usage.add(raw.usage)
 
         adjudication, rejection = selfcheck.verified(raw, pack)
+        if raw is not None:
+            summary.calls.append(
+                ModelCall(
+                    seat=specialist.name,
+                    model=settings.llm_specialist_model,
+                    context=pack.text,
+                    system=specialist.system_prompt,
+                    response={
+                        "verdict": raw.verdict,
+                        "severity": raw.severity,
+                        "rationale": raw.rationale,
+                        "evidence_quote": raw.evidence_quote,
+                    },
+                    accepted=adjudication is not None,
+                    rejected_reason=rejection,
+                    finding=finding,
+                )
+            )
         if adjudication is None:
             if rejection and raw is not None:
                 summary.rejected_by_selfcheck += 1
@@ -201,6 +224,7 @@ def review(
         grains=grains,
         lineage=lineage,
         usage=summary.usage,
+        record=summary.calls,
     )
 
     if pr_description:
@@ -212,6 +236,7 @@ def review(
             pr_description=pr_description,
             snapshot=snapshot,
             usage=summary.usage,
+            record=summary.calls,
         )
 
     summary.findings = reviewed
@@ -237,6 +262,7 @@ def _propose_fixes(
     grains: dict[str, Grain],
     lineage: ColumnGraph | None,
     usage: Usage,
+    record: list[ModelCall] | None = None,
 ) -> list[Finding]:
     """Attach corrected SQL where a model can write it, and nothing where it cannot.
 
@@ -257,7 +283,9 @@ def _propose_fixes(
             needs=frozenset({Section.RELATED_SQL, Section.GRAIN}),
             lineage=lineage,
         )
-        fixed = propose(finding, pack, provider=provider, settings=settings, usage=usage)
+        fixed = propose(
+            finding, pack, provider=provider, settings=settings, usage=usage, record=record
+        )
         out.append(finding.model_copy(update={"suggested_fix": fixed}) if fixed else finding)
     return out
 
@@ -271,6 +299,7 @@ def _intent_pass(
     pr_description: str,
     snapshot: ProjectSnapshot,
     usage: Usage,
+    record: list[ModelCall] | None = None,
 ) -> list[str]:
     """The one pass with no rule behind it — what the description does not mention.
 
@@ -302,6 +331,16 @@ def _intent_pass(
         return []
 
     usage.add(response.usage)
+    if record is not None:
+        record.append(
+            ModelCall(
+                seat="intent",
+                model=settings.llm_supervisor_model,
+                context=pack.text,
+                system=INTENT.system_prompt,
+                response=dict(response.payload),
+            )
+        )
     raw = response.payload.get("undisclosed_changes")
     items: list[str] = []
     if isinstance(raw, list):

@@ -10,6 +10,7 @@ imports across packages.
 from __future__ import annotations
 
 from enum import StrEnum
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -210,6 +211,34 @@ def sum_moved(before: float, after: float) -> bool:
         return False
     scale = max(abs(before), abs(after))
     return abs(after - before) > max(1e-9, scale * 1e-12)
+
+
+class ModelCall(BaseModel):
+    """One completed call to the model: what it was shown, and what it answered.
+
+    Kept so that a training set can exist at all. Today the pack is assembled, sent and
+    thrown away, so there is no record of what any answer was grounded in — which makes
+    tuning impossible in principle rather than merely premature, and makes "why did it
+    say that" unanswerable a week later.
+
+    The human disposition that later settles the finding is not stored here. It arrives
+    days after the call and is already on the finding; the export joins the two by
+    fingerprint.
+    """
+
+    seat: str
+    model: str
+    # The pack, verbatim — the whole of what the model could see.
+    context: str
+    system: str
+    response: dict[str, Any] = Field(default_factory=dict)
+    # Whether the self-check let the answer through. A rejected answer is worth keeping:
+    # it is the clearest label there is for what this lane must not produce.
+    accepted: bool = True
+    rejected_reason: str | None = None
+    # The finding it was about, for the fingerprint. None for the intent pass, which
+    # judges the change as a whole.
+    finding: Finding | None = None
 
 
 class PriorJudgement(BaseModel):

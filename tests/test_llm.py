@@ -611,3 +611,53 @@ def test_a_re_record_replaces_rather_than_accumulates(tmp_path: Any) -> None:
     fresh.save()
     assert len(Cassette(path)) == 1
     assert Cassette(path).get("old-prompt-key") is None
+
+
+# --- what was shown, kept ------------------------------------------------------
+
+
+def test_every_adjudication_is_captured_with_its_context() -> None:
+    """The pack is assembled, sent, and was thrown away. Nothing could be tuned on a
+    record that does not exist, and nothing could explain an answer a week later."""
+    summary, provider = _run(
+        {
+            "verdict": "refute",
+            "severity": "low",
+            "rationale": "the key is unique",
+            "evidence_quote": "New join to stg_fx_rates may fan out",
+        },
+        _finding(),
+    )
+    assert len(summary.calls) == 1
+    call = summary.calls[0]
+    assert call.seat == GRAIN.name
+    assert call.context == provider.prompts[0]
+    assert call.system.strip()
+    assert call.response["verdict"] == "refute"
+    assert call.finding is not None and call.finding.rule_id == "F1001"
+
+
+def test_an_answer_the_selfcheck_rejected_is_captured_as_rejected() -> None:
+    summary, _ = _run(
+        {
+            "verdict": "refute",
+            "severity": "low",
+            "rationale": "trust me",
+            "evidence_quote": "a uniqueness test passed on rate_date",
+        },
+        _finding(),
+    )
+    assert summary.calls[0].accepted is False
+    assert "does not appear" in (summary.calls[0].rejected_reason or "")
+
+
+def test_a_call_that_never_happened_is_not_captured() -> None:
+    provider = FakeProvider(fail=True)
+    summary = supervisor.review(
+        [_finding()],
+        provider=provider,
+        settings=Settings(),
+        snapshot=_snapshot(),
+        grains=_grains(),
+    )
+    assert summary.calls == []
