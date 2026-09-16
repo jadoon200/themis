@@ -129,3 +129,79 @@ def test_nothing_moving_reports_nothing() -> None:
         )
         == []
     )
+
+
+# --- values that move between keys, and what "a reported figure moved" may claim -----
+
+
+def _governed_snapshot(stg_sql: str) -> ProjectSnapshot:
+    """stg -> mid -> mart, with only the mart tagged for regulatory reporting."""
+    snapshot = _snapshot(stg_sql)
+    mart = snapshot.models["mart"].model_copy(update={"tags": ("regulatory",)})
+    return snapshot.model_copy(update={"models": {**snapshot.models, "mart": mart}})
+
+
+def _paired(name: str, changed: int = 21) -> ExecutionDelta:
+    from themis.models import KeyedDiff
+
+    return ExecutionDelta(
+        model_name=name,
+        rows_before=142,
+        rows_after=142,
+        keyed=KeyedDiff(
+            key=("entry_id",), rows_changed=changed, columns_changed={"recognition": changed}
+        ),
+    )
+
+
+def test_an_edit_whose_own_results_hold_says_its_sql_changed() -> None:
+    """It used to say "its own SQL did not change" about the model where it did — sending
+    a reviewer looking for the cause somewhere else."""
+    (finding,) = unexplained_change_findings(
+        ExecutionResult(deltas={"mid": _paired("mid")}),
+        [],
+        _snapshot("select a, 'point_in_time' as recognition from raw"),
+        _snapshot("select a, 'over_time' as recognition from raw"),
+    )
+    assert finding.evidence.model_name == "stg"
+    assert "This model's SQL changed" in finding.consequence
+    assert "its own SQL did not" not in finding.consequence
+
+
+def test_the_finding_shows_where_the_movement_was_measured() -> None:
+    """The origin measured the same, so its own delta says nothing. The evidence has to
+    name the descendant where rows were paired and values moved."""
+    (finding,) = unexplained_change_findings(
+        ExecutionResult(deltas={"mid": _paired("mid")}),
+        [],
+        _snapshot("select a, 'point_in_time' as recognition from raw"),
+        _snapshot("select a, 'over_time' as recognition from raw"),
+    )
+    assert finding.evidence.note is not None
+    assert "mid: paired on (entry_id): 21 row(s) changed value in recognition (21)" in (
+        finding.evidence.note
+    )
+
+
+def test_a_reachable_regulatory_mart_that_did_not_move_is_not_a_reported_figure() -> None:
+    """Reachability stood in for movement: a reclassification that moved one untagged
+    table was reported critical, naming regulatory marts that never read the column."""
+    (finding,) = unexplained_change_findings(
+        ExecutionResult(deltas={"mid": _paired("mid")}),
+        [],
+        _governed_snapshot("select a, 'point_in_time' as recognition from raw"),
+        _governed_snapshot("select a, 'over_time' as recognition from raw"),
+    )
+    assert finding.severity is Severity.HIGH
+    assert "A reported figure moved" not in finding.consequence
+
+
+def test_a_regulatory_mart_measured_to_move_is_critical() -> None:
+    (finding,) = unexplained_change_findings(
+        ExecutionResult(deltas={"mid": _paired("mid"), "mart": _paired("mart", changed=5)}),
+        [],
+        _governed_snapshot("select a, 'point_in_time' as recognition from raw"),
+        _governed_snapshot("select a, 'over_time' as recognition from raw"),
+    )
+    assert finding.severity is Severity.CRITICAL
+    assert "A reported figure moved: mart" in finding.consequence

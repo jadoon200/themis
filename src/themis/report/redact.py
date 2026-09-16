@@ -66,6 +66,13 @@ def delta(item: ExecutionDelta, *, salt: str) -> dict[str, Any]:
         "columns_retyped": len(item.columns_retyped),
         "failed_revision": item.failed_revision,
         "build_skipped": item.build_skipped,
+        # Whether rows could be paired and how many moved — never the key values, which
+        # can identify a customer, nor the column names.
+        "paired": item.keyed is not None,
+        "paired_rows_moved": None
+        if item.keyed is None
+        else item.keyed.rows_added + item.keyed.rows_removed + item.keyed.rows_changed,
+        "paired_columns_changed": None if item.keyed is None else len(item.keyed.columns_changed),
     }
 
 

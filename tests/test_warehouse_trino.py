@@ -200,3 +200,45 @@ def test_a_runs_schemas_are_dropped_and_nobody_elses() -> None:
     assert "themis_head_c0ffee" not in remaining
     cur.execute("drop schema if exists memory.themis_head_c0ffee9")
     cur.fetchall()
+
+
+def test_rows_are_paired_on_a_key_on_trino(warehouse: TrinoClient) -> None:
+    """The keyed comparison on the engine it targets: IS NOT DISTINCT FROM joins, decimal
+    tolerance arithmetic and concat_ws all have to be valid Trino, not only DuckDB."""
+    import trino
+
+    conn = trino.dbapi.connect(
+        host=HOST, port=PORT, user="themis", catalog="memory", schema="default"
+    )
+    cur = conn.cursor()
+    for statement in (
+        "drop table if exists memory.themis_t_base.p",
+        "drop table if exists memory.themis_t_head.p",
+        """create table memory.themis_t_base.p as
+           select * from (values
+             (1, 'point_in_time', cast(100.00 as decimal(38,6))),
+             (2, 'point_in_time', cast(200.00 as decimal(38,6))),
+             (3, 'over_time', cast(300.00 as decimal(38,6)))
+           ) as t (entry_id, recognition, amount_usd)""",
+        """create table memory.themis_t_head.p as
+           select * from (values
+             (1, 'over_time', cast(100.00 as decimal(38,6))),
+             (2, 'point_in_time', cast(200.00 as decimal(38,6))),
+             (4, 'over_time', cast(300.00 as decimal(38,6)))
+           ) as t (entry_id, recognition, amount_usd)""",
+    ):
+        cur.execute(statement)
+        cur.fetchall()
+
+    paired = warehouse.paired_rows(
+        ("themis_t_base", "p"),
+        ("themis_t_head", "p"),
+        key=("entry_id",),
+        columns=("amount_usd", "recognition"),
+        numeric=frozenset({"amount_usd"}),
+    )
+    assert paired is not None
+    assert paired.rows_changed == 1
+    assert paired.columns_changed == {"recognition": 1}
+    assert (paired.rows_added, paired.rows_removed) == (1, 1)
+    assert "1" in paired.sample_keys

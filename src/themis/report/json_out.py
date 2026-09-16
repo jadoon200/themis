@@ -77,6 +77,18 @@ def _delta(delta: ExecutionDelta) -> dict[str, Any]:
         "build_error": delta.build_error,
         "failed_revision": delta.failed_revision,
         "build_skipped": delta.build_skipped,
+        "keyed": None
+        if delta.keyed is None
+        else {
+            "key": list(delta.keyed.key),
+            "rows_added": delta.keyed.rows_added,
+            "rows_removed": delta.keyed.rows_removed,
+            "rows_changed": delta.keyed.rows_changed,
+            "columns_changed": dict(sorted(delta.keyed.columns_changed.items())),
+            "ignored_columns": list(delta.keyed.ignored_columns),
+            "sample_keys": list(delta.keyed.sample_keys),
+        },
+        "keyed_skipped_reason": delta.keyed_skipped_reason,
     }
 
 

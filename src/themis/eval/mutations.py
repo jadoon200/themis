@@ -647,6 +647,32 @@ _ALL_INJECTED: tuple[Mutation, ...] = (
         replace="{{ money('entries.amount_txn_ccy / rates.rate') }}   as amount_usd",
     ),
     Mutation(
+        id="unruled_period_from_posting_date",
+        kind=Kind.UNRULED,
+        expects_family="X",
+        description=(
+            "Accounting period derived from the posting date instead of the period the "
+            "entry was booked to. Late postings move into the following month: the same "
+            "entries, the same total, the wrong period — a month-end cutoff error"
+        ),
+        relative_path="models/staging/stg_gl_entries.sql",
+        find="cast(period_month as date)                     as period_month,",
+        replace="{{ period_start('cast(posting_date as date)') }}  as period_month,",
+    ),
+    Mutation(
+        id="unruled_recognition_default_flipped",
+        kind=Kind.UNRULED,
+        expects_family="X",
+        description=(
+            "Entries with no contract default to over-time recognition instead of point "
+            "in time. Every row survives and every total is unchanged; what moved is the "
+            "treatment of the revenue, which is what an auditor reads"
+        ),
+        relative_path="models/intermediate/int_revenue_recognized.sql",
+        find="coalesce(contracts.recognition_method, 'point_in_time') as recognition_method",
+        replace="coalesce(contracts.recognition_method, 'over_time') as recognition_method",
+    ),
+    Mutation(
         id="union_joined_as_one_row_per_period",
         pr_description=(
             "Add the reversed amount to the account period summary, from int_account_activity."

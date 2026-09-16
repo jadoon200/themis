@@ -213,6 +213,8 @@ class ModelDelta(Base):
     columns_removed: Mapped[list[str]] = mapped_column(JsonType, default=list)
     columns_retyped: Mapped[dict[str, object]] = mapped_column(JsonType, default=dict)
     null_rate_deltas: Mapped[dict[str, object]] = mapped_column(JsonType, default=dict)
+    # Rows paired on a key both builds counted unique: added, removed, changed per column.
+    keyed_diff: Mapped[dict[str, object] | None] = mapped_column(JsonType, default=None)
     build_error: Mapped[str | None] = mapped_column(Text, default=None)
     material: Mapped[bool] = mapped_column(default=False, index=True)
 
