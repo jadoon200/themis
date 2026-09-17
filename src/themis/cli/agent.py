@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 import typer
 
@@ -24,7 +24,12 @@ from themis.logging import configure_logging
 
 @app.command()
 def agent(
-    question: Annotated[str, typer.Argument(help="What to find out about the project or change.")],
+    question: Annotated[
+        str | None,
+        typer.Argument(
+            help="What to find out. Omit to ask several questions against one loaded review."
+        ),
+    ] = None,
     project: ProjectOpt = Path("demo_project"),
     base: Annotated[
         str | None,
@@ -51,7 +56,10 @@ def agent(
     --base it reviews the change first and can use the findings; with --manifest it explores
     a compiled project; with --execute it can also ask what building both revisions measured.
 
-    Exit codes: 0 a grounded answer, 1 refused, 2 could not start.
+    With no question it keeps the review loaded and reads questions one per line until an
+    empty line or end of input — compiling both revisions once instead of once a question.
+
+    Exit codes: 0 a grounded answer, 1 refused, 2 could not start. Interactively, 0.
     """
     from themis import conventions
     from themis.agent.loop import investigate
@@ -95,15 +103,33 @@ def agent(
         typer.echo(f"Agent could not start: {exc}", err=True)
         raise typer.Exit(code=2) from exc
 
-    outcome = investigate(
-        question,
-        workspace,
-        provider=build_provider(settings),
-        settings=settings,
-        max_steps=max_steps,
-    )
-    steps = {step.number: step for step in outcome.steps}
+    provider = build_provider(settings)
 
+    def answer(text: str) -> bool:
+        outcome = investigate(
+            text, workspace, provider=provider, settings=settings, max_steps=max_steps
+        )
+        _print_outcome(text, outcome, as_json=as_json)
+        return outcome.grounded
+
+    if question is not None:
+        raise typer.Exit(code=0 if answer(question) else 1)
+
+    typer.echo("Loaded. Ask a question per line; an empty line ends the session.", err=True)
+    while True:
+        try:
+            line = input("? ").strip()
+        except EOFError:
+            break
+        if not line:
+            break
+        answer(line)
+        typer.echo("")
+    raise typer.Exit(code=0)
+
+
+def _print_outcome(question: str, outcome: Any, *, as_json: bool) -> None:
+    steps = {step.number: step for step in outcome.steps}
     if as_json:
         typer.echo(
             json.dumps(
@@ -132,21 +158,20 @@ def agent(
                 indent=2,
             )
         )
-    else:
-        for step in outcome.steps:
-            arguments = ", ".join(f"{k}={v}" for k, v in step.arguments.items())
-            mark = "" if step.result.ok else "  (no result)"
-            typer.echo(f"[{step.number}] {step.tool}({arguments}){mark}", err=True)
+        return
+    for step in outcome.steps:
+        arguments = ", ".join(f"{k}={v}" for k, v in step.arguments.items())
+        mark = "" if step.result.ok else "  (no result)"
+        typer.echo(f"[{step.number}] {step.tool}({arguments}){mark}", err=True)
+    typer.echo("")
+    if outcome.grounded:
+        typer.echo(outcome.answer)
         typer.echo("")
-        if outcome.grounded:
-            typer.echo(outcome.answer)
-            typer.echo("")
-            for citation in outcome.citations:
-                tool = steps[citation.result].tool if citation.result in steps else "?"
-                typer.echo(f'  [{citation.result}] {tool}: "{citation.quote}"')
-        else:
-            typer.echo(f"Could not answer: {outcome.refusal_reason}")
-    raise typer.Exit(code=0 if outcome.grounded else 1)
+        for citation in outcome.citations:
+            tool = steps[citation.result].tool if citation.result in steps else "?"
+            typer.echo(f'  [{citation.result}] {tool}: "{citation.quote}"')
+    else:
+        typer.echo(f"Could not answer: {outcome.refusal_reason}")
 
 
 @app.command()
