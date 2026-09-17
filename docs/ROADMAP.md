@@ -86,8 +86,8 @@
   Both adapted from other tools — see [PRIOR_ART](PRIOR_ART.md).
 - **An agent over the tools.** Twelve typed, read-only tools — one registry shared by the
   built-in agent and an MCP server — and a local-model loop that chooses tools through
-  constrained decoding and must quote a tool result verbatim for every claim. Measured on a
-  question set: 10/10 correct, 3/3 unanswerable refused.
+  constrained decoding and must quote a tool result verbatim for every claim. Held out: 5/5
+  correct, 1/1 refused; tuned: 12/14, one incomplete answer.
 - **Set-up on a real project.** `themis init` and `themis doctor`; the profile found where
   dbt finds it; audit columns and invocation literals no longer read as changes; the model's
   context window always requested; the paired-row join hashable on Trino.
@@ -131,6 +131,10 @@ report agree; token accounting was already done. The machine-learning lane is
 enough for the saving to show as time rather than as object counts — that number has to
 come from a real warehouse. After that, in rough order of what it would change:
 
+- **Filters in the tools, not enumeration in the model.** The agent's remaining wrong
+  answer named one of two regulatory marts from a list. A `downstream_models` that filters by
+  tag or materialization returns exactly the answer, with nothing left for an 8B model to
+  enumerate. The general rule: every "which X are Y" a reviewer asks should be one tool call.
 - **The agent, on real questions.** Its question set was written alongside its tools. The
   next measurement is questions reviewers actually ask on the work project, scored the same
   way — and a verification menu: letting a specialist that abstains *choose* a deterministic

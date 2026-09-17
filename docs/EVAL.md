@@ -1194,25 +1194,60 @@ warehouse's, and at work it is the number to take first.
 
 ## The agent
 
-`scripts/agent_eval.py` asks a fixed set of questions with known answers — facts that must
-appear and facts that must not — and questions no tool can answer.
+`scripts/agent_eval.py` asks questions with known answers — facts that must appear and facts
+that must not — and questions no tool can answer, which must be refused. Four outcomes, and
+"grounded but wrong" is the one to watch, because citations cannot catch it: a true quote in
+support of a wrong conclusion passes every check.
 
-| | first run, qwen3:8b |
-|---|---|
-| answerable, correct | **10 / 10** |
-| answerable, grounded but wrong | 0 |
-| answerable, refused | 0 |
-| unanswerable, refused | **3 / 3** |
-| median time per question | 15s |
+Every run is recorded, including the ones that went backwards, in order:
 
-One question was built as a trap: of the models downstream of `int_revenue_recognized`, two
-are tagged `regulatory` and one only `recon`. The answer named the two and not the third.
+| run | set | answerable correct | grounded but wrong | refused wrongly | unanswerable refused |
+|---|---|---|---|---|---|
+| 1 | 13 single-hop questions | 10 / 10 | 0 | 0 | 3 / 3 |
+| 2 | + 4 multi-hop (17) | 11 / 14 | 1 | 2 | 3 / 3 |
+| 3 | held out — written before run 3's changes, run once | **5 / 5** | 0 | 0 | **1 / 1** |
+| 3 | tuned, after quote-format changes | 10 / 14 | 3 | 1 | 3 / 3 |
+| 4 | tuned, after run 3's fixes | **12 / 14** | 1 | 1 | **3 / 3** |
 
-**What this does not show.** Thirteen questions written by the person who wrote the tools,
-on the project the tools were built against — the corpus's bias, in a new place. "Grounded
-but wrong" is the number that matters, because citations cannot catch it: a true quote in
-support of a wrong conclusion passes every check. Zero here says the questions were easy
-enough, not that it cannot happen.
+**The multi-hop questions found the tools wrong before they found the model wrong.** Asked
+what an FX rate feeds, the lineage tool answered "feeds no downstream column" — downstream
+edges live on the consuming models and it had traced only the one asked about. Asked where a
+regulatory figure comes from, it gave one hop as the whole chain, for the same reason
+upstream. An agent quotes such a result faithfully. Both fixed before run 2 was scored.
+
+**Run 2's failures were about how results read.** A quote reformatted
+`tags=regulatory,recon` as `tags: regulatory, recon`; a quote lifted the transcript's call
+header; and the grounded-but-wrong answer attached a column to a relation after reading a list
+under a header. Every tool line now names its subject and states one fact
+(`fct_revenue_incremental — incremental strategy: delete+insert`,
+`stg_fx_rates.rate directly feeds int_gl_entries_converted.fx_rate`), and results are marked
+off from the calls that produced them. The held-out questions were committed before that
+change and run once after it.
+
+**Run 3 went backwards on the tuned set, for four separate reasons.** One was a regression:
+upstream lineage, now transitive, gave "which column is this computed from" a four-column
+chain, and the model named a grandparent — lines now say *directly* or *indirectly*. One
+answer listing a chain ran past the 400-token output limit and was cut off mid-JSON — the
+agent now has its own budget. One named only one of two regulatory marts. And one was **a
+rubric bug**: a correct "dim_accounts — reads from: stg_accounts" was scored wrong for not
+containing "yes"; the rubric was fixed, and that is the only rescoring.
+
+**What remains, after run 4.** The one grounded-but-wrong answer is still the incomplete list:
+two regulatory marts downstream, one named. Asking an 8B model to enumerate is the weak point,
+and the fix belongs in the tools, not the prompt — a `downstream_models` that filters by tag
+returns exactly the answer, with nothing to enumerate. The one wrong refusal was tool choice
+on a multi-hop question: it asked for a column `rate` on the mart instead of what the rate
+feeds, found nothing, and refused — safe, and a cost.
+
+**Two things found along the way that were not agent problems.** The grounding check shared by
+the specialists skipped pieces of a quote shorter than a phrase — so
+"materialization: incremental" passed against "materialization: view"; every piece is now
+checked, and a short one must sit beside its label. And a quote that was genuinely in a tool
+result but filed under the wrong result number is now re-attributed rather than discarded.
+
+**What this does not show.** Twenty-three questions, written by the person who wrote the tools,
+on the project the tools were built against. The held-out six are a check on tuning, not on
+that. The measurement that matters is reviewers' own questions on the work project.
 
 ## Learning from what reviewers decide
 
