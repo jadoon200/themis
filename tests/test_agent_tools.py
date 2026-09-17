@@ -179,3 +179,22 @@ def test_every_example_is_a_valid_call_of_its_own_tool() -> None:
         for name, value in tool.example.items():
             enum = properties[name].get("enum")
             assert enum is None or value in enum, (tool.name, name)
+
+
+def test_downstream_lineage_traces_the_consumers_before_answering() -> None:
+    """Downstream edges live on the consuming models. Tracing only the model asked about
+    answered "feeds no downstream column" for an FX rate two columns are computed from —
+    an absence that was really "never looked", which an agent would quote as a fact."""
+    workspace = Workspace(after=synthetic.project(40))
+    staging = next(
+        name
+        for name in sorted(workspace.after.models)
+        if name.startswith("stg_")
+        and any(child.startswith("int_") for child in workspace.after.downstream_of(name))
+    )
+    result = _run(
+        workspace, "column_lineage", model=staging, column="amount", direction="downstream"
+    )
+    assert result.ok, result.text
+    assert "feeds no downstream column" not in result.text
+    assert "int_" in result.text

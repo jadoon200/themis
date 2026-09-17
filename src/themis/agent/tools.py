@@ -205,7 +205,12 @@ def _column_lineage(workspace: Workspace, args: dict[str, Any]) -> ToolResult:
     direction = str(args.get("direction", "upstream"))
     if (missing := _unknown_model(workspace, name)) is not None:
         return missing
-    graph = workspace.lineage(name)
+    # Downstream edges are recorded on the models that consume a column, so answering "what
+    # does this feed" means tracing everything built on it. Tracing only the model asked
+    # about answered "feeds no downstream column" for an FX rate that two columns are
+    # computed from — an absence that was really "never looked".
+    downstream = workspace.after.downstream_of(name) if direction == "downstream" else ()
+    graph = workspace.lineage(name, *downstream)
     if not graph.is_traced(name):
         reason = graph.unresolved.get(name, "it was not traced")
         return ToolResult(
@@ -240,12 +245,22 @@ def _column_lineage(workspace: Workspace, args: dict[str, Any]) -> ToolResult:
                 ),
                 data={"columns": [], "untraced_roots": roots},
             )
+    untraced = sorted(model for model in downstream if not graph.is_traced(model))
+    caveat = (
+        f"\n{len(untraced)} downstream model(s) could not be traced, so this may be incomplete: "
+        + ", ".join(untraced[:10])
+        if untraced
+        else ""
+    )
     if not items:
         empty = "no upstream model column" if direction == "upstream" else "no downstream column"
-        return ToolResult(text=f"{name}.{column} {label} {empty}.", data={"columns": []})
+        return ToolResult(
+            text=f"{name}.{column} {label} {empty}.{caveat}",
+            data={"columns": [], "untraced": untraced},
+        )
     return ToolResult(
-        text=f"{name}.{column} {label}:\n" + _limited(items, "columns"),
-        data={"columns": items},
+        text=f"{name}.{column} {label}:\n" + _limited(items, "columns") + caveat,
+        data={"columns": items, "untraced": untraced},
     )
 
 
