@@ -58,6 +58,132 @@ class TableShape:
         )
 
 
+@dataclass(frozen=True)
+class PairedRows:
+    """Raw counts from pairing two builds of one table on a key."""
+
+    rows_added: int
+    rows_removed: int
+    rows_changed: int
+    columns_changed: dict[str, int]
+    sample_keys: tuple[str, ...]
+
+
+# The marker a paired row carries to say which side it came from. Quoted everywhere it
+# is used, and long enough that no model column will share it.
+_SIDE = "__themis_paired_side"
+
+# Relative tolerance for numeric values. Summing or multiplying in a different order
+# changes the last bits of a binary float, and a refactor that reorders arithmetic must
+# not read as every row having changed. Far below any difference a reviewer cares about.
+_RELATIVE_TOLERANCE = "1e-9"
+
+
+def paired_rows_sql(
+    base_ref: str,
+    head_ref: str,
+    *,
+    key: tuple[str, ...],
+    columns: tuple[str, ...],
+    numeric: frozenset[str],
+    quote: Any,
+    sample_limit: int = 5,
+) -> tuple[str, str]:
+    """The two queries a keyed comparison needs: counts, and a few example keys.
+
+    Portable between DuckDB and Trino on purpose — a full outer join on plain equality,
+    and ``IS DISTINCT FROM`` so a value that became NULL counts as changed. Both engines
+    accept all of it, so there is one statement to reason about rather than two.
+
+    The join is ``=`` and not ``IS NOT DISTINCT FROM``, though the latter would pair NULL
+    keys. Trino plans a null-safe comparison as a join *filter* rather than hash criteria:
+    200,000 rows paired in 66 seconds against 0.2 with ``=``, and the cost grows with the
+    square of the table — at the configured row ceiling it would not finish. So the caller
+    refuses a key that contains NULLs, which is not a row identifier in any case.
+
+    Whether the key identifies a row is not decided here either: the caller only asks once
+    both builds have been counted unique on it.
+    """
+    q = quote
+    side = q(_SIDE)
+    selected = ", ".join(q(c) for c in (*key, *columns))
+
+    def changed(column: str) -> str:
+        b, h = f"b.{q(column)}", f"h.{q(column)}"
+        if column in numeric:
+            return (
+                f"case when ({b} is null) <> ({h} is null) then 1 "
+                f"when {b} is null then 0 "
+                f"when abs({b} - {h}) > {_RELATIVE_TOLERANCE} * greatest(abs({b}), abs({h})) "
+                "then 1 else 0 end"
+            )
+        return f"case when {b} is distinct from {h} then 1 else 0 end"
+
+    flags = [f"{changed(c)} as {q('__changed_' + str(i))}" for i, c in enumerate(columns)]
+    join = " and ".join(f"b.{q(k)} = h.{q(k)}" for k in key)
+    key_text = ", ".join(
+        f"coalesce(cast(coalesce(h.{q(k)}, b.{q(k)}) as varchar), 'NULL')" for k in key
+    )
+    paired = (
+        f"with b as (select 1 as {side}, {selected} from {base_ref}), "
+        f"h as (select 1 as {side}, {selected} from {head_ref}), "
+        "paired as (select "
+        f"b.{side} as in_base, h.{side} as in_head, "
+        f"concat_ws(' | ', {key_text}) as key_text"
+        + (", " + ", ".join(flags) if flags else "")
+        + f" from b full outer join h on {join}) "
+    )
+    both = "in_base is not null and in_head is not null"
+    any_changed = " or ".join(f"{q('__changed_' + str(i))} = 1" for i in range(len(columns)))
+
+    counts = [
+        "sum(case when in_base is null then 1 else 0 end)",
+        "sum(case when in_head is null then 1 else 0 end)",
+        (f"sum(case when {both} and ({any_changed}) then 1 else 0 end)" if columns else "0"),
+        *(
+            f"sum(case when {both} then {q('__changed_' + str(i))} else 0 end)"
+            for i in range(len(columns))
+        ),
+    ]
+    counts_sql = paired + "select " + ", ".join(counts) + " from paired"
+
+    differs = "in_base is null or in_head is null" + (f" or ({any_changed})" if columns else "")
+    sample_sql = (
+        paired
+        + f"select key_text from paired where {differs} order by key_text limit {sample_limit}"
+    )
+    return counts_sql, sample_sql
+
+
+def _paired_rows(
+    run: Any,
+    base_ref: str,
+    head_ref: str,
+    *,
+    key: tuple[str, ...],
+    columns: tuple[str, ...],
+    numeric: frozenset[str],
+    quote: Any,
+) -> PairedRows | None:
+    counts_sql, sample_sql = paired_rows_sql(
+        base_ref, head_ref, key=key, columns=columns, numeric=numeric, quote=quote
+    )
+    rows = run(counts_sql)
+    if not rows or rows[0][0] is None:
+        return None
+    values = [int(v or 0) for v in rows[0]]
+    samples = run(sample_sql)
+    return PairedRows(
+        rows_added=values[0],
+        rows_removed=values[1],
+        rows_changed=values[2],
+        columns_changed={
+            column: count for column, count in zip(columns, values[3:], strict=False) if count
+        },
+        sample_keys=tuple(str(row[0]) for row in samples if row and row[0] is not None),
+    )
+
+
 class WarehouseClient(Protocol):
     """The measurements Stage 3 needs. Deliberately small."""
 
@@ -68,6 +194,16 @@ class WarehouseClient(Protocol):
     def null_rates(self, schema: str, table: str, columns: tuple[str, ...]) -> dict[str, float]: ...
 
     def distinct_count(self, schema: str, table: str, columns: tuple[str, ...]) -> int | None: ...
+
+    def paired_rows(
+        self,
+        base: tuple[str, str],
+        head: tuple[str, str],
+        *,
+        key: tuple[str, ...],
+        columns: tuple[str, ...],
+        numeric: frozenset[str],
+    ) -> PairedRows | None: ...
 
     def close(self) -> None: ...
 
@@ -155,6 +291,26 @@ class DuckDBClient:
         expression = f"({key})" if len(columns) > 1 else key
         rows = self._query(f"select count(distinct {expression}) from {self._ref(schema, table)}")
         return int(rows[0][0]) if rows and rows[0][0] is not None else None
+
+    def paired_rows(
+        self,
+        base: tuple[str, str],
+        head: tuple[str, str],
+        *,
+        key: tuple[str, ...],
+        columns: tuple[str, ...],
+        numeric: frozenset[str],
+    ) -> PairedRows | None:
+        """Pair base and head rows on ``key`` and count what differs."""
+        return _paired_rows(
+            self._query,
+            self._ref(*base),
+            self._ref(*head),
+            key=key,
+            columns=columns,
+            numeric=numeric,
+            quote=self._quote,
+        )
 
     def close(self) -> None:
         self._conn.close()
@@ -278,6 +434,26 @@ class TrinoClient:
             expression = f"concat_ws(chr(31), {parts})"
         rows = self._query(f"select count(distinct {expression}) from {self._ref(schema, table)}")
         return int(rows[0][0]) if rows and rows[0][0] is not None else None
+
+    def paired_rows(
+        self,
+        base: tuple[str, str],
+        head: tuple[str, str],
+        *,
+        key: tuple[str, ...],
+        columns: tuple[str, ...],
+        numeric: frozenset[str],
+    ) -> PairedRows | None:
+        """Pair base and head rows on ``key`` and count what differs."""
+        return _paired_rows(
+            self._query,
+            self._ref(*base),
+            self._ref(*head),
+            key=key,
+            columns=columns,
+            numeric=numeric,
+            quote=self._quote,
+        )
 
     def close(self) -> None:
         self._conn.close()

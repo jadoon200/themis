@@ -116,6 +116,16 @@ def duckdb_run_schemas() -> list[str]:
 # --- scenarios ---------------------------------------------------------------------------
 
 
+CONVENTIONS = """conventions:
+  - id: fx-rates-one-per-period
+    rules: [F1001]
+    models: ["int_*"]
+    condition: A join onto stg_fx_rates in an intermediate model.
+    guidance: stg_fx_rates holds one row per currency per month, by contract with treasury.
+    implication: A join onto it multiplies rows unless both currency and period are matched.
+"""
+
+
 def build_scenarios(tmp: Path) -> dict[str, str]:
     """Commit one change per scenario on top of HEAD. Returns name -> commit SHA."""
     from themis.eval.mutations import select
@@ -128,6 +138,11 @@ def build_scenarios(tmp: Path) -> dict[str, str]:
     def commit(name: str, change: Callable[[Path], None]) -> None:
         git("checkout", "--detach", "--quiet", base, cwd=tree)
         change(tree / "demo_project")
+        # New files are staged by name. `commit -a` only picks up tracked ones, and a
+        # blanket add in a worktree is the habit that has destroyed work in this repo.
+        conventions_file = tree / "demo_project" / "themis_conventions.yml"
+        if conventions_file.exists():
+            git("add", str(conventions_file.relative_to(tree)), cwd=tree)
         git(
             "-c",
             "user.email=check@themis.invalid",
@@ -175,6 +190,13 @@ def build_scenarios(tmp: Path) -> dict[str, str]:
         commit("alias_refactor", mutation("control_rename_alias_in_filter"))
         commit("seed_change", edit_seed)
         commit("project_config", edit_project_config)
+        commit("recognition", mutation("unruled_recognition_default_flipped"))
+
+        def fanout_with_conventions(project: Path) -> None:
+            mutation("fanout_drop_join_predicate")(project)
+            (project / "themis_conventions.yml").write_text(CONVENTIONS)
+
+        commit("fanout_conventions", fanout_with_conventions)
     finally:
         git("worktree", "remove", "--force", str(tree))
     return shas
@@ -634,6 +656,133 @@ def _dismiss_all(db: Path, rule_id: str) -> int:
     return changed
 
 
+def check_prior_art(shas: dict[str, str], tmp: Path, env: dict[str, str], *, ollama: bool) -> None:
+    """What was adapted from other tools, exercised for real (docs/PRIOR_ART.md)."""
+    print("\nadapted from prior art: paired rows, line placement, conventions")
+    db_env = {**env, "THEMIS_DATABASE_URL": f"sqlite:///{tmp / 'prior_art.db'}"}
+
+    # Paired rows: the case that used to come back clean.
+    out = tmp / "recognition.json"
+    r = themis(
+        "review",
+        "--project",
+        "demo_project",
+        "--base",
+        "HEAD",
+        "--head",
+        shas["recognition"],
+        "--execute",
+        "--no-llm",
+        "--no-save",
+        "--json",
+        str(out),
+        env=db_env,
+    )
+    doc = json.loads(out.read_text()) if out.exists() else {}
+    x0001 = [f for f in doc.get("findings", []) if f.get("rule_id") == "X0001"]
+    note = (x0001[0].get("note") or "") if x0001 else ""
+    record(
+        "values that move with every row and total held are measured",
+        bool(x0001) and "paired on (entry_id)" in note and "recognition_method" in note,
+        f"exit {r.returncode}, X0001={len(x0001)}, note={note[:200]!r}",
+    )
+    revenue = next(
+        (d for d in doc.get("execution_deltas", []) if d.get("model") == "fct_revenue"), {}
+    )
+    keyed = revenue.get("keyed") or {}
+    record(
+        "the rows held, the totals held, and the paired values did not",
+        revenue.get("row_delta") == 0
+        and keyed.get("rows_changed", 0) > 0
+        and all(before == after for before, after in revenue.get("sum_deltas", {}).values()),
+        f"fct_revenue={revenue}",
+    )
+    record(
+        "a regulatory mart that did not move is not called a reported figure",
+        bool(x0001) and x0001[0].get("severity") == "high",
+        f"severity={x0001[0].get('severity') if x0001 else None}",
+    )
+
+    # Line placement: the fan-out annotation lands on the join, not on line 1.
+    sarif_path = tmp / "placed.sarif"
+    themis(
+        "review",
+        "--project",
+        "demo_project",
+        "--base",
+        "HEAD",
+        "--head",
+        shas["fanout"],
+        "--no-llm",
+        "--no-save",
+        "--sarif",
+        str(sarif_path),
+        env=db_env,
+    )
+    sarif = json.loads(sarif_path.read_text()) if sarif_path.exists() else {}
+    placed: list[tuple[str, int]] = []
+    for result in (sarif.get("runs") or [{}])[0].get("results", []):
+        if result.get("ruleId") != "F1001":
+            continue
+        location = result["locations"][0]["physicalLocation"]
+        placed.append((location["artifactLocation"]["uri"], int(location["region"]["startLine"])))
+    lines_ok = bool(placed)
+    detail = []
+    for uri, line in placed:
+        path = uri if uri.startswith("demo_project/") else f"demo_project/{uri}"
+        text = git("show", f"{shas['fanout']}:{path}").splitlines()
+        at = text[line - 1].strip().lower() if 0 < line <= len(text) else ""
+        detail.append(f"{uri}:{line} {at!r}")
+        lines_ok = lines_ok and line > 1 and ("join" in at or at.startswith("on "))
+    record("findings are placed on the line they are about", lines_ok, "; ".join(detail))
+
+    # Conventions: validated by the command, read at the reviewed commit.
+    scratch = tmp / "conventions_project"
+    scratch.mkdir(exist_ok=True)
+    (scratch / "themis_conventions.yml").write_text(CONVENTIONS)
+    c = themis("conventions", "--project", str(scratch), env=db_env)
+    record(
+        "conventions validate and key claims are pointed at tests",
+        c.returncode == 0 and "declare it as a uniqueness test" in c.stdout,
+        f"exit {c.returncode}: {c.stdout[-200:]}",
+    )
+
+    if not ollama:
+        skip("a commit's conventions reach the specialist", "no Ollama on 11434")
+        return
+    m = subprocess.run(
+        [sys.executable, "-m", "alembic", "upgrade", "head"],
+        cwd=REPO,
+        env={**os.environ, **db_env, "PYTHONPATH": str(SRC)},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    themis(
+        "review",
+        "--project",
+        "demo_project",
+        "--base",
+        "HEAD",
+        "--head",
+        shas["fanout_conventions"],
+        env=db_env,
+    )
+    exported = tmp / "conventions_calls.jsonl"
+    themis("dataset", "--out", str(exported), env=db_env)
+    rows = (
+        [json.loads(line) for line in exported.read_text().splitlines()]
+        if exported.exists()
+        else []
+    )
+    shown = [row for row in rows if "fx-rates-one-per-period" in row.get("context", "")]
+    record(
+        "a commit's conventions reach the specialist",
+        m.returncode == 0 and bool(shown),
+        f"{len(shown)} of {len(rows)} captured call(s) carried the convention",
+    )
+
+
 def check_learning_loop(
     shas: dict[str, str], tmp: Path, env: dict[str, str], *, ollama: bool
 ) -> None:
@@ -996,6 +1145,7 @@ def main() -> int:
         check_persistence_and_models(
             shas, tmp, env, ollama=ollama and not args.quick, quick=args.quick
         )
+        check_prior_art(shas, tmp, env, ollama=ollama and not args.quick)
         check_learning_loop(shas, tmp, env, ollama=ollama and not args.quick)
         check_service(shas, tmp)
         if args.quick:

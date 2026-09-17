@@ -724,6 +724,47 @@ def ask(
     raise typer.Exit(code=1)
 
 
+@app.command(name="conventions")
+def conventions_cmd(
+    project: ProjectOpt = Path("demo_project"),
+    verbose: VerboseOpt = False,
+) -> None:
+    """Check the project's written-down conventions, and say which should be tests.
+
+    Reads `themis_conventions.yml` at the project root. Exits 1 if any entry was refused,
+    because a convention someone wrote that silently does nothing is worse than an error.
+    """
+    from themis import conventions
+
+    configure_logging(verbose=verbose)
+    loaded = conventions.load(project)
+    path = project / conventions.FILENAME
+
+    if not loaded.conventions and not loaded.rejected:
+        typer.echo(f"No conventions: {path} does not exist.")
+        raise typer.Exit(code=0)
+
+    typer.echo(f"{len(loaded.conventions)} convention(s) loaded from {path}")
+    for convention in loaded.conventions:
+        scope = []
+        if convention.rules:
+            scope.append("rules " + ", ".join(convention.rules))
+        if convention.models:
+            scope.append("models " + ", ".join(convention.models))
+        typer.echo(f"  {convention.id}: {'; '.join(scope) or 'every finding'}")
+        if conventions.checkable(convention):
+            # The upgrade path. A statement about a key can be declared and measured; as
+            # prose it can only be believed, and it cannot ground a verdict.
+            typer.echo(
+                "    reads as a claim about a key — declare it as a uniqueness test and "
+                "THEMIS will read it as a declared grain and measure it with --execute"
+            )
+
+    for label, reason in loaded.rejected:
+        typer.echo(f"  REFUSED {label}: {reason}", err=True)
+    raise typer.Exit(code=1 if loaded.rejected else 0)
+
+
 @app.command()
 def dataset(
     out: Annotated[

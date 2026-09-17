@@ -22,3 +22,24 @@ def test_log_lines_go_to_stderr_not_stdout(capsys: pytest.CaptureFixture[str]) -
         assert captured.out == ""
     finally:
         structlog.reset_defaults()
+
+
+def test_logging_survives_stderr_being_swapped_and_closed() -> None:
+    """A CLI test runner replaces stderr and closes its stand-in afterwards. Logging bound
+    to that object then raised on every later line — 72 unrelated tests failed at once."""
+    import io
+    import sys
+
+    from themis.logging import configure_logging, get_logger
+
+    original = sys.stderr
+    stand_in = io.StringIO()
+    sys.stderr = stand_in
+    try:
+        configure_logging()
+        get_logger("swap").info("while.swapped")
+    finally:
+        sys.stderr = original
+        stand_in.close()
+
+    get_logger("swap").info("after.restored")  # must not raise

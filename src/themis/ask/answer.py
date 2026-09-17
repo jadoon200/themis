@@ -108,6 +108,16 @@ def render_facts(facts: RetrievedFacts) -> str:
             for column, pair in (delta.sum_deltas or {}).items():
                 if isinstance(pair, list) and len(pair) == 2 and pair[0] != pair[1]:
                     piece += f"; sum({column}) {pair[0]:,.2f} -> {pair[1]:,.2f}"
+            keyed: dict[str, Any] = dict(delta.keyed_diff or {})
+            changed: dict[str, Any] = dict(keyed.get("columns_changed") or {})
+            if keyed and (changed or keyed.get("rows_added") or keyed.get("rows_removed")):
+                key = ", ".join(str(k) for k in keyed.get("key", []))
+                piece += f"; paired on ({key}): {keyed.get('rows_changed', 0)} row(s) changed"
+                if changed:
+                    piece += " in " + ", ".join(f"{c} ({n})" for c, n in sorted(changed.items()))
+                piece += (
+                    f", {keyed.get('rows_added', 0)} added, {keyed.get('rows_removed', 0)} removed"
+                )
             lines.append(piece)
 
     if facts.grains:

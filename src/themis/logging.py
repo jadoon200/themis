@@ -8,6 +8,25 @@ import sys
 import structlog
 
 
+class _CurrentStderr:
+    """Whatever ``sys.stderr`` is at the moment of writing, not when logging was set up.
+
+    Handing structlog ``sys.stderr`` itself binds the stream object that existed at
+    configure time. Anything that swaps stderr for a while — a CLI test runner, an
+    embedding host — then closes that object, and every later log line raises "I/O
+    operation on closed file", from code that has nothing to do with logging.
+    """
+
+    def write(self, text: str) -> int:
+        return sys.stderr.write(text)
+
+    def flush(self) -> None:
+        sys.stderr.flush()
+
+    def isatty(self) -> bool:
+        return sys.stderr.isatty()
+
+
 def configure_logging(*, verbose: bool = False) -> None:
     """Human-readable console logging, on stderr. Called once, from the CLI.
 
@@ -26,7 +45,7 @@ def configure_logging(*, verbose: bool = False) -> None:
             structlog.dev.ConsoleRenderer(colors=sys.stderr.isatty()),
         ],
         wrapper_class=structlog.make_filtering_bound_logger(level),
-        logger_factory=structlog.PrintLoggerFactory(file=sys.stderr),
+        logger_factory=structlog.PrintLoggerFactory(file=_CurrentStderr()),  # type: ignore[arg-type]
         cache_logger_on_first_use=True,
     )
 

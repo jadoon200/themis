@@ -18,6 +18,7 @@ from sqlglot import exp
 
 from themis.analyze.lineage import ColumnGraph
 from themis.analyze.parse import ParseError, parse_sql
+from themis.conventions import Convention, for_finding
 from themis.models import Finding, Grain
 from themis.snapshot import ModelNode, ProjectSnapshot
 from themis.vocabulary import GOVERNED_TAGS
@@ -197,6 +198,7 @@ def build_pack(
     pr_description: str | None = None,
     needs: frozenset[Section] | None = None,
     lineage: ColumnGraph | None = None,
+    conventions: tuple[Convention, ...] = (),
 ) -> ContextPack:
     """Assemble the evidence pack for one finding.
 
@@ -306,12 +308,39 @@ def build_pack(
     # Everything above is evidence about this change. What follows is precedent — kept
     # apart so a quote can never come from it.
     body = "\n".join(sections)
-    precedent = _precedent_section(finding)
+    context = _conventions_section(finding, conventions) + _precedent_section(finding)
     return ContextPack(
         finding=finding,
-        text=body + precedent,
-        quotable_text=body if precedent else None,
+        text=body + context,
+        quotable_text=body if context else None,
     )
+
+
+def _conventions_section(finding: Finding, conventions: tuple[Convention, ...]) -> str:
+    """What this project's reviewers have written down that bears on this finding.
+
+    Written by people who know the project, reviewed in version control, and still not
+    evidence: a convention can go stale while the code it describes changes, so it
+    informs the judgement and cannot ground a quote.
+    """
+    applicable = for_finding(conventions, finding)
+    if not applicable:
+        return ""
+    lines = [
+        "",
+        "",
+        "## What this project's reviewers have written down",
+        "",
+        "Conventions the team maintains for this project. Use them to understand intent. "
+        "They are not evidence about this change and cannot be quoted as it: if the SQL "
+        "above contradicts a convention, the SQL is what is true.",
+        "",
+    ]
+    for convention in applicable:
+        lines.append(f"- **{convention.id}** — when: {convention.condition}")
+        lines.append(f"  known: {convention.guidance}")
+        lines.append(f"  so: {convention.implication}")
+    return "\n".join(lines)
 
 
 def _precedent_section(finding: Finding) -> str:

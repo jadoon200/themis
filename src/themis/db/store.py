@@ -28,7 +28,7 @@ from themis.db.models import (
     utcnow,
 )
 from themis.logging import get_logger
-from themis.models import Finding, FindingHistory, Grain, PriorJudgement
+from themis.models import ExecutionDelta, Finding, FindingHistory, Grain, PriorJudgement
 from themis.pipeline import ReviewResult
 
 log = get_logger(__name__)
@@ -200,6 +200,20 @@ def _delta_payload(finding: Finding) -> dict[str, object] | None:
         "columns_removed": list(delta.columns_removed),
         "columns_retyped": {k: list(v) for k, v in delta.columns_retyped.items()},
         "build_error": delta.build_error,
+        "keyed": _keyed_payload(delta),
+    }
+
+
+def _keyed_payload(delta: ExecutionDelta) -> dict[str, object] | None:
+    keyed = delta.keyed
+    if keyed is None:
+        return None
+    return {
+        "key": list(keyed.key),
+        "rows_added": keyed.rows_added,
+        "rows_removed": keyed.rows_removed,
+        "rows_changed": keyed.rows_changed,
+        "columns_changed": dict(keyed.columns_changed),
     }
 
 
@@ -249,6 +263,7 @@ def save_result(session: Session, run: ReviewRun, result: ReviewResult) -> Revie
                     columns_removed=list(delta.columns_removed),
                     columns_retyped={k: list(v) for k, v in delta.columns_retyped.items()},
                     null_rate_deltas={k: list(v) for k, v in delta.null_rate_deltas.items()},
+                    keyed_diff=_keyed_payload(delta),
                     build_error=delta.build_error,
                     material=delta.is_material,
                 )

@@ -10,10 +10,11 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from themis import vocabulary
+from themis import conventions, vocabulary
 from themis.acquire.snapshot_builder import AcquireResult, acquire
 from themis.analyze.grain import infer_grains
 from themis.analyze.lineage import LineageIndex
+from themis.analyze.positioning import position_findings
 from themis.analyze.suggest import suggest_tests
 from themis.capabilities import Capability, require
 from themis.config import Settings
@@ -26,6 +27,8 @@ from themis.models import (
     FindingHistory,
     Grain,
     GrainSource,
+    KeyedDiff,
+    sum_moved,
 )
 from themis.review.supervisor import ReviewSummary
 from themis.rules.base import RuleContext, SkippedRule
@@ -368,6 +371,12 @@ def unexplained_change_findings(
                 after=after,
                 consequences=consequences,
                 is_root=name in roots,
+                own_code_changed=name in origins,
+                consequence_deltas={
+                    c: result.deltas[c]
+                    for c in consequences
+                    if c in result.deltas and result.deltas[c].is_material
+                },
                 vocab=vocab,
             )
         )
@@ -397,9 +406,13 @@ def _unexplained_finding(
     after: ProjectSnapshot,
     consequences: tuple[str, ...],
     is_root: bool,
+    own_code_changed: bool = False,
+    consequence_deltas: dict[str, ExecutionDelta] | None = None,
     vocab: Vocabulary = DEFAULT_VOCABULARY,
 ) -> Finding:
     from themis.models import Evidence, Severity
+
+    consequence_deltas = consequence_deltas or {}
 
     moved = [
         (column, was, now) for column, (was, now) in sorted(delta.sum_deltas.items()) if was != now
@@ -410,14 +423,22 @@ def _unexplained_finding(
     # to the root model was right for reporting, but an untagged staging model whose
     # change reaches a regulatory mart is not a lesser problem than one that starts
     # there — the reported figure moved either way.
-    reached = (name, *after.downstream_of(name))
+    #
+    # "Lands" means measured to move there, not merely reachable. Reachability used to
+    # stand in for it, and a reclassification that moved one untagged table was reported
+    # as critical, naming three regulatory marts as "a reported figure moved" when none of
+    # them reads the column that changed. Critical is reserved for a reported figure that
+    # was demonstrated to move; a governed mart that was not measured has not been.
+    measured_here = {name: delta, **consequence_deltas}
     governed_models = tuple(
         reached_name
-        for reached_name in reached
+        for reached_name in (name, *after.downstream_of(name))
         if (reached_model := after.models.get(reached_name))
         and vocab.is_governed(reached_model.tags)
+        and reached_name in measured_here
+        and _values_moved(measured_here[reached_name])
     )
-    severity = Severity.CRITICAL if (moved and governed_models) else Severity.HIGH
+    severity = Severity.CRITICAL if governed_models else Severity.HIGH
 
     detail: list[str] = []
     if rows_moved and delta.rows_before is not None and delta.rows_after is not None:
@@ -425,6 +446,18 @@ def _unexplained_finding(
     for column, was, now in moved:
         shift = ((now - was) / was * 100) if was else 0.0
         detail.append(f"sum({column}) {was:,.2f} -> {now:,.2f} ({shift:+.1f}%)")
+    keyed = delta.keyed
+    if keyed is not None and keyed.moved:
+        detail.append(_keyed_detail(keyed))
+
+    # An origin whose own results measure the same still owns the movement beneath it —
+    # a view with no countable key, say, over a table where the rows were paired. Without
+    # this the finding showed an unchanged row count and nothing else, and a reviewer could
+    # not see what had moved at all.
+    for child, child_delta in sorted(consequence_deltas.items())[:3]:
+        measured = _delta_summary(child_delta)
+        if measured:
+            detail.append(f"{child}: {measured}")
 
     if consequences:
         detail.append(f"same change reaches {len(consequences)} downstream model(s)")
@@ -440,6 +473,15 @@ def _unexplained_finding(
         origin = (
             "Building both revisions produced different results for this model, and none "
             "of the checks accounts for the difference."
+        )
+    elif own_code_changed:
+        # Its SQL changed and its own results measure the same, but what is built on it
+        # moved. Reported here because this is the code a reviewer has to read; calling it
+        # "SQL unchanged" sent them looking for a cause somewhere else.
+        origin = (
+            "This model's SQL changed. Its own results measure the same, but the models "
+            "built on it changed when both revisions were built, and none of the checks "
+            "accounts for the difference."
         )
     else:
         origin = (
@@ -463,7 +505,7 @@ def _unexplained_finding(
                 f" A reported figure moved: {', '.join(governed_models)} "
                 f"{'is' if len(governed_models) == 1 else 'are'} tagged for "
                 "reconciliation or regulatory reporting."
-                if governed_models and moved
+                if governed_models
                 else ""
             )
             + reach
@@ -477,6 +519,44 @@ def _unexplained_finding(
         blast_radius=after.downstream_of(name),
         execution_delta=delta,
     )
+
+
+def _values_moved(delta: ExecutionDelta) -> bool:
+    """Whether a figure in this model changed: a total, or values paired on its key.
+
+    Values moving between keys with every total intact still counts — revenue
+    reclassified is not less wrong for summing to the same number.
+    """
+    if any(sum_moved(before, after) for before, after in delta.sum_deltas.values()):
+        return True
+    return delta.keyed is not None and delta.keyed.moved
+
+
+def _delta_summary(delta: ExecutionDelta) -> str:
+    """What moved in one model, in one clause: rows, then totals, then paired values."""
+    parts: list[str] = []
+    if delta.row_delta not in (0, None):
+        parts.append(f"rows {delta.rows_before:,} -> {delta.rows_after:,}")
+    for column, (was, now) in sorted(delta.sum_deltas.items()):
+        if sum_moved(was, now):
+            parts.append(f"sum({column}) {was:,.2f} -> {now:,.2f}")
+    if delta.keyed is not None and delta.keyed.moved:
+        parts.append(_keyed_detail(delta.keyed))
+    return "; ".join(parts)
+
+
+def _keyed_detail(keyed: KeyedDiff) -> str:
+    """One line on what pairing rows found, for a finding's evidence note."""
+    parts: list[str] = []
+    if keyed.rows_changed:
+        top = sorted(keyed.columns_changed.items(), key=lambda item: (-item[1], item[0]))[:4]
+        columns = ", ".join(f"{name} ({count:,})" for name, count in top)
+        parts.append(f"{keyed.rows_changed:,} row(s) changed value in {columns}")
+    if keyed.rows_added:
+        parts.append(f"{keyed.rows_added:,} key(s) only in head")
+    if keyed.rows_removed:
+        parts.append(f"{keyed.rows_removed:,} key(s) only in base")
+    return f"paired on ({', '.join(keyed.key)}): " + "; ".join(parts)
 
 
 def build_failure_findings(result: ExecutionResult, after: ProjectSnapshot) -> list[Finding]:
@@ -769,6 +849,9 @@ def review(
             # the model path can only be tested against a fake, which proves the wiring
             # and never that the real prompts produce parseable, grounded output.
             active: Provider = provider if provider is not None else build_provider(settings)  # type: ignore[assignment]
+            loaded = conventions.load_at(project_dir, head)
+            if loaded.conventions:
+                log.info("review.conventions", loaded=len(loaded.conventions))
             llm_summary = supervisor.review(
                 findings,
                 provider=active,
@@ -781,6 +864,7 @@ def review(
                 # The before graph: a column that was removed still exists there, which
                 # is the only revision in which "what reads it" has an answer.
                 lineage=column_lineage,
+                conventions=loaded.conventions,
             )
             findings = llm_summary.findings
         except LLMError as exc:
@@ -800,6 +884,9 @@ def review(
     # A critical that execution demonstrated keeps its level; one that is still a
     # prediction does not.
     findings = calibrate(findings)
+    # Last of all, so every finding — measured, adjudicated, or neither — is placed on the
+    # line of the file a reviewer will be reading, where its evidence allows.
+    findings = position_findings(findings, acquired.after)
 
     reviewed = {c.model_name for c in contexts}
     untested = tuple(

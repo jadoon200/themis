@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 
 from themis.analyze.lineage import ColumnGraph
 from themis.config import Settings
+from themis.conventions import Convention
 from themis.llm.context_pack import ContextPack, Section, build_intent_pack, build_pack
 from themis.llm.provider import Provider, Usage
 from themis.logging import get_logger
@@ -135,6 +136,8 @@ def review(
     # Column lineage, so a specialist judging a removed column is told what reads it
     # rather than being handed a model-granular blast radius and left to guess.
     lineage: ColumnGraph | None = None,
+    # What the project's reviewers have written down, shown to specialists as context.
+    conventions: tuple[Convention, ...] = (),
 ) -> ReviewSummary:
     """Adjudicate the findings that warrant it, and run the intent pass."""
     summary = ReviewSummary()
@@ -178,6 +181,7 @@ def review(
             # carry everything anyone might need, and then nobody's evidence is narrow.
             needs=specialist.needs,
             lineage=lineage,
+            conventions=conventions,
         )
         raw = adjudicate(provider, specialist, pack, model=settings.llm_specialist_model)
         if raw is not None:
@@ -225,6 +229,7 @@ def review(
         lineage=lineage,
         usage=summary.usage,
         record=summary.calls,
+        conventions=conventions,
     )
 
     if pr_description:
@@ -263,6 +268,7 @@ def _propose_fixes(
     lineage: ColumnGraph | None,
     usage: Usage,
     record: list[ModelCall] | None = None,
+    conventions: tuple[Convention, ...] = (),
 ) -> list[Finding]:
     """Attach corrected SQL where a model can write it, and nothing where it cannot.
 
@@ -282,6 +288,7 @@ def _propose_fixes(
             pr_description=None,
             needs=frozenset({Section.RELATED_SQL, Section.GRAIN}),
             lineage=lineage,
+            conventions=conventions,
         )
         fixed = propose(
             finding, pack, provider=provider, settings=settings, usage=usage, record=record

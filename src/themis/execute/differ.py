@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from themis.execute.warehouse import WarehouseClient
 from themis.logging import get_logger
-from themis.models import ExecutionDelta, Grain, GrainSource
+from themis.models import ExecutionDelta, Grain, GrainSource, KeyedDiff
 from themis.vocabulary import DEFAULT as DEFAULT_VOCABULARY
 from themis.vocabulary import Vocabulary
 
@@ -122,4 +122,98 @@ def measure_grain(
             f"({rows_per_key:.2f} rows per key)"
             + ("" if unique else " — the key does NOT identify a row")
         ),
+    )
+
+
+def pair_rows(
+    client: WarehouseClient,
+    model: str,
+    *,
+    base_schema: str,
+    head_schema: str,
+    head_grain: Grain | None,
+    base_grain: Grain | None,
+    max_rows: int,
+    ignore: tuple[str, ...] = (),
+) -> tuple[KeyedDiff | None, str | None]:
+    """Compare base and head row by row on a key both builds have been counted unique on.
+
+    Returns the comparison, or None and the reason it could not be made. The reason is
+    kept because "not paired" and "paired and nothing changed" must never read the same:
+    the first is a limit of the evidence, the second is evidence.
+    """
+    if head_grain is None or base_grain is None:
+        return None, "no key could be counted in both builds"
+    if head_grain.columns != base_grain.columns:
+        return None, "the two builds were counted on different keys"
+    for side, grain in (("head", head_grain), ("base", base_grain)):
+        if grain.rows_per_key is None or abs(grain.rows_per_key - 1.0) > 1e-12:
+            return None, (
+                f"({', '.join(grain.columns)}) does not identify a row in the {side} build, "
+                "so rows cannot be paired"
+            )
+
+    before = client.shape(base_schema, model)
+    after = client.shape(head_schema, model)
+    if not (before.exists and after.exists):
+        return None, "the model is missing from one build"
+    if max(before.row_count, after.row_count) > max_rows:
+        return None, f"more than {max_rows:,} rows, over the time budget for pairing"
+
+    key = head_grain.columns
+    # Pairing joins on plain equality, which cannot match a NULL key — and a null-safe join
+    # is one Trino cannot hash (see paired_rows_sql). A key with NULLs does not identify its
+    # rows anyway, so the comparison is refused and says why.
+    for schema, side in ((base_schema, "base"), (head_schema, "head")):
+        rates = client.null_rates(schema, model, key)
+        if set(rates) != set(key):
+            return None, f"could not confirm ({', '.join(key)}) has no NULLs in the {side} build"
+        if any(rate > 0 for rate in rates.values()):
+            return None, (
+                f"({', '.join(key)}) has NULL values in the {side} build, "
+                "so rows cannot be paired on it"
+            )
+
+    ignored = {name.lower() for name in ignore}
+    comparable = tuple(
+        sorted(
+            name
+            for name in set(before.column_types) & set(after.column_types)
+            if name not in key
+            # A retyped column is already reported as a schema change, and comparing
+            # a varchar to a decimal would fail the whole query.
+            and before.column_types[name] == after.column_types[name]
+            and name.lower() not in ignored
+        )
+    )
+    skipped = tuple(
+        sorted(
+            name
+            for name in set(before.column_types) & set(after.column_types)
+            if name.lower() in ignored and name not in key
+        )
+    )
+    numeric = frozenset(after.numeric_columns)
+
+    paired = client.paired_rows(
+        (base_schema, model),
+        (head_schema, model),
+        key=key,
+        columns=comparable,
+        numeric=numeric,
+    )
+    if paired is None:
+        return None, "the paired comparison could not be run"
+
+    return (
+        KeyedDiff(
+            key=key,
+            rows_added=paired.rows_added,
+            rows_removed=paired.rows_removed,
+            rows_changed=paired.rows_changed,
+            columns_changed=paired.columns_changed,
+            ignored_columns=skipped,
+            sample_keys=paired.sample_keys,
+        ),
+        None,
     )

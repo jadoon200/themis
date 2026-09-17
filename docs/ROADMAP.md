@@ -76,6 +76,14 @@
   stored with its pack, its answer and whether the self-check accepted it, exported by
   `themis dataset` and joined to the human judgement by fingerprint. Weights do not move —
   see "Tuning the model" for why that is the last step and not the first.
+- **Rows paired on the derived key.** Stage 3 joins base and head on the grain it counted
+  unique in both builds and counts rows added, removed and changed per column, so values
+  moving between keys with every total held are measured and reach X0001. Critical severity
+  requires a governed model *measured* to move, not merely reachable.
+- **Findings on their line, and written-down conventions.** Evidence fragments are placed on
+  the raw file's line deterministically, declining when unsure; `themis_conventions.yml`
+  gives specialists the team's own knowledge as context, read at the revision under review.
+  Both adapted from other tools — see [PRIOR_ART](PRIOR_ART.md).
 - **Demo project.** A financial dbt project on DuckDB — general ledger, FX conversion,
   revenue recognition, regulatory mart. Macro-using and, deliberately, test-free.
 
@@ -114,7 +122,12 @@ report agree; token accounting was already done. The machine-learning lane is
 enough for the saving to show as time rather than as object counts — that number has to
 come from a real warehouse. After that, in rough order of what it would change:
 
-- **A sample of differing rows** beside the measured totals, joined on the derived key.
+- **Column-precise impact.** Classify each change as additive, column-level, model-wide or
+  unknown — the approach Recce's classifier takes after SQLMesh's — and use column lineage to
+  build and measure only the models that read what changed. It saves Stage 3 the most time
+  on a large warehouse, and its failure is the one kind this project has not accepted: a
+  model wrongly marked unaffected is never measured. It needs a corpus of cases proving it
+  never narrows wrongly first. See [PRIOR_ART](PRIOR_ART.md).
 - **A declared test that newly fails, as its own finding.** Stage 3 builds without tests
   so a failing one cannot hide the models below it; running them afterwards against both
   revisions would turn their verdicts into evidence.

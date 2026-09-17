@@ -163,6 +163,11 @@ def worktree_at(repo: Path, revision: str) -> Iterator[Path]:
                 _git(repo, "worktree", "prune")
 
 
+def show_file(repo: Path, revision: str, path: str) -> str:
+    """One file's contents at a revision, without checking anything out."""
+    return _git(repo, "show", f"{validate_revision(revision)}:{path}")
+
+
 def repo_root(start: Path) -> Path:
     """The git repository containing a path."""
     return Path(_git(start, "rev-parse", "--show-toplevel").strip())

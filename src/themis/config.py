@@ -60,6 +60,26 @@ class Settings(BaseSettings):
     execute_timeout_s: float = 900.0
     # Skip models above this many rows rather than blowing the time budget.
     execute_max_rows: int = 5_000_000
+    # Pair base and head rows on the derived grain and count what changed, so values that
+    # move between keys are measured even when every row count and total holds. Only runs
+    # on a key Stage 3 has counted unique in both builds.
+    execute_keyed_diff: bool = True
+    # Columns never compared row by row: load timestamps and run identifiers that differ
+    # between two builds of the same code by construction. Exact names, lowercase. Named
+    # in the report whenever one is skipped, so a real change hiding here stays visible.
+    execute_keyed_ignore_columns: tuple[str, ...] = (
+        "_loaded_at",
+        "loaded_at",
+        "_etl_loaded_at",
+        "_dbt_loaded_at",
+        "dbt_updated_at",
+        "dbt_valid_from",
+        "dbt_valid_to",
+        "dbt_scd_id",
+        "_dbt_run_id",
+        "invocation_id",
+        "run_started_at",
+    )
     # Any dbt target whose name is not in this set is refused outright. The guard is
     # deliberately an allowlist: a typo must fail closed, not run against prod.
     execute_allowed_targets: tuple[str, ...] = (

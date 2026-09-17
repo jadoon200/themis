@@ -152,6 +152,40 @@ class Grain(BaseModel):
         )
 
 
+class KeyedDiff(BaseModel):
+    """Rows paired across the two builds on a key both agree is unique.
+
+    Totals are the cheapest evidence and they have a blind spot shaped exactly like the
+    most expensive defects: money moving *between* keys. Revenue reclassified from one
+    treatment to another, entries shifted between entities, a boundary moved between
+    two buckets that both still exist — every row survives, every total holds, and an
+    aggregate-only diff reports that nothing moved.
+
+    Pairing needs a key, and the projects this is for declare none. The key here is the
+    derived grain, used only once Stage 3 has *counted* it unique in both builds, so a
+    pairing is never built on an inference.
+    """
+
+    model_config = {"frozen": True}
+
+    key: tuple[str, ...]
+    # Present only in head, present only in base, present in both with a value changed.
+    rows_added: int = 0
+    rows_removed: int = 0
+    rows_changed: int = 0
+    # column -> how many paired rows changed value in it
+    columns_changed: dict[str, int] = Field(default_factory=dict)
+    # Columns deliberately not compared, named so a reviewer can see what was skipped.
+    ignored_columns: tuple[str, ...] = ()
+    # A few keys whose rows changed, stringified. Evidence a reviewer can go and look up;
+    # never included in a redacted report, because key values can identify a customer.
+    sample_keys: tuple[str, ...] = ()
+
+    @property
+    def moved(self) -> bool:
+        return bool(self.rows_added or self.rows_removed or self.rows_changed)
+
+
 class ExecutionDelta(BaseModel):
     """What actually changed when the model was built both ways.
 
@@ -176,6 +210,11 @@ class ExecutionDelta(BaseModel):
     # Not built because something it depends on failed, rather than failing itself. The
     # model that actually broke is where a reviewer should look.
     build_skipped: bool = False
+    # Rows paired on a key both builds proved unique. None when no such key exists, which
+    # is reported as a limit of the evidence rather than read as "nothing moved".
+    keyed: KeyedDiff | None = None
+    # Why the keyed comparison did not run, when it did not.
+    keyed_skipped_reason: str | None = None
 
     @property
     def row_delta(self) -> int | None:
@@ -192,7 +231,11 @@ class ExecutionDelta(BaseModel):
             return True
         if self.columns_added or self.columns_removed or self.columns_retyped:
             return True
-        return any(sum_moved(before, after) for before, after in self.sum_deltas.values())
+        if any(sum_moved(before, after) for before, after in self.sum_deltas.values()):
+            return True
+        # Last, because it is the only test that can see values move while every row
+        # count and every total holds.
+        return self.keyed is not None and self.keyed.moved
 
 
 def sum_moved(before: float, after: float) -> bool:

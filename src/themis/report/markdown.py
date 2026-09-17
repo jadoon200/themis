@@ -93,6 +93,26 @@ def _format_delta(finding: Finding) -> list[str]:
         if abs(now - was) < 0.001:
             continue
         lines.append(f"- `{column}` null rate: {was:.1%} → {now:.1%}")
+
+    keyed = delta.keyed
+    if keyed is not None and keyed.moved:
+        key = ", ".join(f"`{c}`" for c in keyed.key)
+        lines.append(f"- Rows paired on ({key}), counted unique in both builds:")
+        if keyed.rows_changed:
+            for column, count in sorted(
+                keyed.columns_changed.items(), key=lambda item: (-item[1], item[0])
+            ):
+                lines.append(f"  - `{column}` changed in {count:,} row(s)")
+        if keyed.rows_added:
+            lines.append(f"  - {keyed.rows_added:,} key(s) exist only after the change")
+        if keyed.rows_removed:
+            lines.append(f"  - {keyed.rows_removed:,} key(s) exist only before it")
+        if keyed.sample_keys:
+            shown = ", ".join(f"`{k}`" for k in keyed.sample_keys)
+            lines.append(f"  - for example: {shown}")
+    if keyed is not None and keyed.ignored_columns:
+        ignored = ", ".join(f"`{c}`" for c in keyed.ignored_columns)
+        lines.append(f"- Not compared row by row (load metadata): {ignored}")
     return lines
 
 

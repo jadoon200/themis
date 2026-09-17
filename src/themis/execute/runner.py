@@ -27,7 +27,7 @@ from themis.acquire.dbt_runner import (
 )
 from themis.capabilities import Capability, CapabilityError, require
 from themis.config import Settings
-from themis.execute.differ import diff_tables, measure_grain
+from themis.execute.differ import diff_tables, measure_grain, pair_rows
 from themis.execute.profiles import ProfileError, read_profile, write_profile_for_schema
 from themis.execute.warehouse import WarehouseClient, client_for_profile, drop_run_schemas
 from themis.logging import get_logger
@@ -341,6 +341,8 @@ def execute(
                 base_build=base_build,
                 grain_candidates=grain_candidates or {},
                 vocab=vocabulary.from_settings(settings),
+                keyed_diff=settings.execute_keyed_diff,
+                keyed_ignore=settings.execute_keyed_ignore_columns,
             )
         finally:
             client.close()
@@ -401,6 +403,8 @@ def _measure(
     base_build: BuildOutcome,
     grain_candidates: dict[str, Grain],
     vocab: Vocabulary = DEFAULT_VOCABULARY,
+    keyed_diff: bool = True,
+    keyed_ignore: tuple[str, ...] = (),
 ) -> ExecutionResult:
     deltas: dict[str, ExecutionDelta] = {}
     grains: dict[str, Grain] = {}
@@ -438,12 +442,28 @@ def _measure(
         if baseline is not None:
             baselines[model] = baseline
 
+        if keyed_diff:
+            keyed, keyed_reason = pair_rows(
+                client,
+                model,
+                base_schema=base_schema,
+                head_schema=head_schema,
+                head_grain=measured,
+                base_grain=baseline,
+                max_rows=max_rows,
+                ignore=keyed_ignore,
+            )
+            deltas[model] = deltas[model].model_copy(
+                update={"keyed": keyed, "keyed_skipped_reason": keyed_reason}
+            )
+
     log.info(
         "execute.measured",
         models=len(deltas),
         material=sum(1 for d in deltas.values() if d.is_material),
         unbuilt=sum(1 for d in deltas.values() if d.failed_revision),
         grains=len(grains),
+        paired=sum(1 for d in deltas.values() if d.keyed is not None),
     )
     return ExecutionResult(
         deltas=deltas,
