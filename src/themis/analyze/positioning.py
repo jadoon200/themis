@@ -147,7 +147,7 @@ def locate(raw_sql: str, fragment: str) -> int | None:
     lines = [_LINE_COMMENT.sub("", line) for line in cleaned.splitlines()]
     per_line = [_tokens(line) for line in lines]
 
-    best: tuple[float, int, int] | None = None  # (-coverage, width, start) — lowest wins
+    candidates: list[tuple[float, int, int]] = []  # (-coverage, width, start)
     for width in range(1, _MAX_WINDOW + 1):
         for start in range(len(lines) - width + 1):
             # The window's own first line has to carry part of the fragment, or a wider
@@ -158,10 +158,20 @@ def locate(raw_sql: str, fragment: str) -> int | None:
             coverage = len(wanted & window) / len(wanted)
             if coverage < _MIN_COVERAGE:
                 continue
-            candidate = (-coverage, width, start)
-            if best is None or candidate < best:
-                best = candidate
-    if best is None:
+            candidates.append((-coverage, width, start))
+    if not candidates:
+        return None
+    best = min(candidates)
+
+    # The same fragment matched equally well somewhere else entirely — the same join in two
+    # CTEs, a predicate repeated in a union. Choosing the first would be a guess presented
+    # as a position, so decline.
+    rivals = [
+        other
+        for other in candidates
+        if other[:2] == best[:2] and abs(other[2] - best[2]) > _MAX_WINDOW
+    ]
+    if rivals:
         return None
 
     # A clause's opening keyword often sits alone on the line above its identifiers —

@@ -10,9 +10,11 @@ one it got and the pipeline refuses to pretend.
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from themis.analyze.volatility import invocation_window, mask_invocation_literals
 from themis.logging import get_logger
 from themis.models import Backend
 from themis.snapshot import (
@@ -56,7 +58,9 @@ def _hook_texts(value: Any) -> tuple[str, ...]:
     return tuple(text for text in out if text)
 
 
-def _model_from_node(unique_id: str, node: dict[str, Any]) -> ModelNode:
+def _model_from_node(
+    unique_id: str, node: dict[str, Any], *, mask: Callable[[str], str] | None = None
+) -> ModelNode:
     config = node.get("config") or {}
     contract = node.get("contract") or {}
     columns = tuple(
@@ -78,7 +82,11 @@ def _model_from_node(unique_id: str, node: dict[str, Any]) -> ModelNode:
         raw_sql=str(node.get("raw_code") or ""),
         # Absent on a parse-only manifest. Left as None rather than falling back to
         # raw_code, so downstream code cannot accidentally parse Jinja as SQL.
-        compiled_sql=node.get("compiled_code"),
+        compiled_sql=(
+            mask(node["compiled_code"])
+            if mask is not None and isinstance(node.get("compiled_code"), str)
+            else node.get("compiled_code")
+        ),
         materialization=str(config.get("materialized", "view")),
         incremental_strategy=config.get("incremental_strategy"),
         unique_key=_as_tuple(config.get("unique_key")),
@@ -138,8 +146,21 @@ def load_manifest(path: Path, *, revision: str, backend: Backend) -> ProjectSnap
         raise ManifestError(f"manifest at {path} is not valid JSON: {exc}") from exc
 
     nodes: dict[str, Any] = payload.get("nodes") or {}
+    # Two compiles of the same code render run_started_at and invocation_id differently,
+    # so masking them here is what lets "did this model's code change" mean the code.
+    metadata: dict[str, Any] = payload.get("metadata") or {}
+    invocation_id = metadata.get("invocation_id")
+    window = invocation_window(metadata)
+
+    def mask(sql: str) -> str:
+        return mask_invocation_literals(
+            sql,
+            invocation_id=invocation_id if isinstance(invocation_id, str) else None,
+            window=window,
+        )
+
     models = {
-        node["name"]: _model_from_node(uid, node)
+        node["name"]: _model_from_node(uid, node, mask=mask)
         for uid, node in nodes.items()
         if node.get("resource_type") in ("model", "seed")
     }

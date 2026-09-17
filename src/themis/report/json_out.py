@@ -86,6 +86,7 @@ def _delta(delta: ExecutionDelta) -> dict[str, Any]:
             "rows_changed": delta.keyed.rows_changed,
             "columns_changed": dict(sorted(delta.keyed.columns_changed.items())),
             "ignored_columns": list(delta.keyed.ignored_columns),
+            "volatile_columns": list(delta.keyed.volatile_columns),
             "sample_keys": list(delta.keyed.sample_keys),
         },
         "keyed_skipped_reason": delta.keyed_skipped_reason,

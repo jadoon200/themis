@@ -16,6 +16,7 @@ from themis.analyze.grain import infer_grains
 from themis.analyze.lineage import LineageIndex
 from themis.analyze.positioning import position_findings
 from themis.analyze.suggest import suggest_tests
+from themis.analyze.volatility import volatile_columns
 from themis.capabilities import Capability, require
 from themis.config import Settings
 from themis.execute.runner import ExecutionResult, execute
@@ -275,6 +276,16 @@ def attach_execution(findings: list[Finding], result: ExecutionResult) -> list[F
             )
         )
     return attached
+
+
+def _merge_volatile(
+    *sides: dict[str, frozenset[str]],
+) -> dict[str, frozenset[str]]:
+    merged: dict[str, frozenset[str]] = {}
+    for side in sides:
+        for model, columns in side.items():
+            merged[model] = merged.get(model, frozenset()) | columns
+    return merged
 
 
 def unexplained_change_findings(
@@ -809,6 +820,12 @@ def review(
             defer_state=defer_state,
             capabilities=capabilities,
             data_anchor=data_anchor,
+            # From both revisions: a column stamped with current_timestamp on either side
+            # differs between the builds whichever side stamped it.
+            volatile_columns=_merge_volatile(
+                volatile_columns(acquired.before, dialect=settings.dialect),
+                volatile_columns(acquired.after, dialect=settings.dialect),
+            ),
         )
         if execution.ran:
             findings = attach_execution(findings, execution)

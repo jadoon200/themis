@@ -230,6 +230,7 @@ def execute(
     defer_state: Path | None = None,
     capabilities: frozenset[Capability] | None = None,
     data_anchor: Path | None = None,
+    volatile_columns: dict[str, frozenset[str]] | None = None,
 ) -> ExecutionResult:
     """Build base and head side by side, then diff the results.
 
@@ -343,6 +344,7 @@ def execute(
                 vocab=vocabulary.from_settings(settings),
                 keyed_diff=settings.execute_keyed_diff,
                 keyed_ignore=settings.execute_keyed_ignore_columns,
+                volatile_columns=volatile_columns or {},
             )
         finally:
             client.close()
@@ -405,6 +407,7 @@ def _measure(
     vocab: Vocabulary = DEFAULT_VOCABULARY,
     keyed_diff: bool = True,
     keyed_ignore: tuple[str, ...] = (),
+    volatile_columns: dict[str, frozenset[str]] | None = None,
 ) -> ExecutionResult:
     deltas: dict[str, ExecutionDelta] = {}
     grains: dict[str, Grain] = {}
@@ -452,6 +455,7 @@ def _measure(
                 base_grain=baseline,
                 max_rows=max_rows,
                 ignore=keyed_ignore,
+                volatile=(volatile_columns or {}).get(model, frozenset()),
             )
             deltas[model] = deltas[model].model_copy(
                 update={"keyed": keyed, "keyed_skipped_reason": keyed_reason}
