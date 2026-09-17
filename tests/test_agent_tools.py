@@ -198,3 +198,24 @@ def test_downstream_lineage_traces_the_consumers_before_answering() -> None:
     assert result.ok, result.text
     assert "feeds no downstream column" not in result.text
     assert "int_" in result.text
+
+
+def test_upstream_lineage_follows_every_hop_not_just_the_first() -> None:
+    """Tracing only the model asked about answered with one hop as though it were the
+    whole answer: a regulatory figure 'computed from fct_revenue' when it comes from an FX
+    rate four models up."""
+    workspace = Workspace(after=synthetic.project(40))
+    mart = next(
+        name
+        for name in sorted(workspace.after.models)
+        if name.startswith("fct_")
+        and "union all" not in (workspace.after.models[name].compiled_sql or "")
+    )
+    result = _run(workspace, "column_lineage", model=mart, column="reported_amount")
+    assert result.ok, result.text
+    assert "int_" in result.text and "stg_" in result.text
+
+
+def test_downstream_models_show_how_each_is_built(project: Workspace) -> None:
+    result = _run(project, "downstream_models", model="stg_0")
+    assert "(view)" in result.text or "(table)" in result.text

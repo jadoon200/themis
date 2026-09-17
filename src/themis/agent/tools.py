@@ -209,8 +209,14 @@ def _column_lineage(workspace: Workspace, args: dict[str, Any]) -> ToolResult:
     # does this feed" means tracing everything built on it. Tracing only the model asked
     # about answered "feeds no downstream column" for an FX rate that two columns are
     # computed from — an absence that was really "never looked".
-    downstream = workspace.after.downstream_of(name) if direction == "downstream" else ()
-    graph = workspace.lineage(name, *downstream)
+    # The same holds upstream: an ancestor's edges exist only once it is traced, and tracing
+    # only the model asked about answered with one hop as though it were the whole answer.
+    related = (
+        workspace.after.downstream_of(name)
+        if direction == "downstream"
+        else _ancestors(workspace, name)
+    )
+    graph = workspace.lineage(name, *related)
     if not graph.is_traced(name):
         reason = graph.unresolved.get(name, "it was not traced")
         return ToolResult(
@@ -245,9 +251,13 @@ def _column_lineage(workspace: Workspace, args: dict[str, Any]) -> ToolResult:
                 ),
                 data={"columns": [], "untraced_roots": roots},
             )
-    untraced = sorted(model for model in downstream if not graph.is_traced(model))
+    untraced = sorted(
+        model
+        for model in related
+        if not graph.is_traced(model) and not workspace.after.models[model].is_seed
+    )
     caveat = (
-        f"\n{len(untraced)} downstream model(s) could not be traced, so this may be incomplete: "
+        f"\n{len(untraced)} related model(s) could not be traced, so this may be incomplete: "
         + ", ".join(untraced[:10])
         if untraced
         else ""
@@ -264,6 +274,20 @@ def _column_lineage(workspace: Workspace, args: dict[str, Any]) -> ToolResult:
     )
 
 
+def _ancestors(workspace: Workspace, name: str) -> tuple[str, ...]:
+    """Every model a model is built from, transitively."""
+    seen: set[str] = set()
+    stack = [name]
+    while stack:
+        model = workspace.after.models.get(stack.pop())
+        for dependency in model.depends_on_models if model else ():
+            parent = dependency.split(".")[-1]
+            if parent in workspace.after.models and parent not in seen:
+                seen.add(parent)
+                stack.append(parent)
+    return tuple(sorted(seen))
+
+
 def _downstream(workspace: Workspace, args: dict[str, Any]) -> ToolResult:
     name = str(args["model"])
     if (missing := _unknown_model(workspace, name)) is not None:
@@ -274,8 +298,13 @@ def _downstream(workspace: Workspace, args: dict[str, Any]) -> ToolResult:
     lines = []
     for child in names:
         model = workspace.after.models.get(child)
-        tags = f" tags={','.join(model.tags)}" if model and model.tags else ""
-        lines.append(f"{child}{tags}")
+        if model is None:
+            lines.append(child)
+            continue
+        # Materialization and tags on every line: "which downstream models are incremental"
+        # otherwise costs one more tool call per model, and a small step budget runs out.
+        tags = f" tags={','.join(model.tags)}" if model.tags else ""
+        lines.append(f"{child} ({model.materialization}){tags}")
     return ToolResult(
         text=f"{len(names)} model(s) downstream of {name}:\n" + _limited(lines, "models"),
         data={"models": names},
