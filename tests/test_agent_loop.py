@@ -104,6 +104,32 @@ def test_a_quote_fixed_on_the_retry_is_accepted() -> None:
     assert outcome.grounded
 
 
+def test_a_true_quote_filed_under_the_wrong_result_is_corrected_not_refused() -> None:
+    """A small model quoted a tool result word for word and gave it the wrong number. The
+    quote is really in what it was shown, so the answer stands and the citation is fixed."""
+    model = ScriptedModel(
+        choices=["search_models", "model_details", "answer"],
+        arguments=[{"query": "stg_0"}, {"model": "stg_0"}],
+        answers=[_grounded_answer("materialization: view", result=1)],
+    )
+    outcome = investigate("How is stg_0 built?", _workspace(), provider=model, settings=Settings())
+    assert outcome.grounded
+    assert outcome.citations[0].result == 2
+
+
+def test_a_quote_in_no_result_at_all_is_still_refused() -> None:
+    model = ScriptedModel(
+        choices=["model_details", "answer"],
+        arguments=[{"model": "stg_0"}],
+        answers=[
+            _grounded_answer("materialization: incremental", result=1),
+            _grounded_answer("materialization: incremental", result=1),
+        ],
+    )
+    outcome = investigate("How is stg_0 built?", _workspace(), provider=model, settings=Settings())
+    assert not outcome.grounded
+
+
 def test_a_citation_of_a_result_that_does_not_exist_is_refused() -> None:
     model = ScriptedModel(
         choices=["answer"],

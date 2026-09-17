@@ -242,9 +242,27 @@ class _Session:
             number = citation.get("result")
             quote = str(citation.get("quote", "")).strip()
             step = by_number.get(number) if isinstance(number, int) else None
+            if step is not None and quote_is_grounded(quote, step.result.text):
+                continue
+            # The quote may be verbatim from a result the model was shown, filed under the
+            # wrong number: a small model quoting "tags: regulatory, recon" from [3] as [2].
+            # The guarantee is that every quote is really in a tool result, and it still
+            # holds, so the citation is corrected rather than a grounded answer discarded.
+            elsewhere = next(
+                (
+                    other
+                    for other in self.steps
+                    if other.repeated_from is None and quote_is_grounded(quote, other.result.text)
+                ),
+                None,
+            )
+            if elsewhere is not None:
+                log.info("agent.citation_corrected", cited=number, found=elsewhere.number)
+                citation["result"] = elsewhere.number
+                continue
             if step is None:
                 problems.append(f"it cited result [{number}], which does not exist")
-            elif not quote_is_grounded(quote, step.result.text):
+            else:
                 problems.append(f"its quote from [{number}] is not in that result: {quote[:80]!r}")
         return problems
 

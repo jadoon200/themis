@@ -88,6 +88,33 @@ QUESTIONS: tuple[Question, ...] = (
         must=("rate_period",),
     ),
     Question("What does rule F1001 check for?", "manifest", must=("join",)),
+    # Multi-hop: several tools chained, where a small model is most likely to go wrong —
+    # and where the tools themselves first answered wrongly (see EVAL, "The agent").
+    Question(
+        "Which columns of fct_regulatory_summary are computed, directly or indirectly, "
+        "from stg_fx_rates.rate?",
+        "manifest",
+        must=("revenue_usd",),
+        note="needed downstream models traced before answering",
+    ),
+    Question(
+        "Which staging model columns does fct_regulatory_summary.revenue_usd ultimately come from?",
+        "manifest",
+        must=("stg_fx_rates", "stg_gl_entries"),
+        note="needed every ancestor traced, not one hop",
+    ),
+    Question(
+        "Which models downstream of stg_gl_entries are materialized as incremental?",
+        "manifest",
+        must=("fct_revenue_incremental",),
+        must_not=("fct_revenue_reported", "fct_account_period_summary"),
+    ),
+    Question(
+        "Is any model built on int_account_activity tagged regulatory?",
+        "manifest",
+        must=("no",),
+        must_not=("fct_regulatory_summary",),
+    ),
     Question("Who is the business owner of fct_revenue?", "manifest", answerable=False),
     Question(
         "How long does fct_revenue take to build in production?", "manifest", answerable=False
