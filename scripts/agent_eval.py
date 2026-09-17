@@ -46,6 +46,10 @@ class Question:
     must_not: tuple[str, ...] = ()
     answerable: bool = True
     note: str = ""
+    # Written before a round of changes to the tools and prompts, and run once after it,
+    # never tuned against: the tuned set's score after fixing its own failures is
+    # optimistic by construction, and this is the check on that.
+    held_out: bool = False
 
 
 QUESTIONS: tuple[Question, ...] = (
@@ -130,6 +134,45 @@ QUESTIONS: tuple[Question, ...] = (
         "review",
         must=("rate_period",),
     ),
+    # --- held out (written 2026-09-18, before the quote-format changes; not tuned on) ---
+    Question(
+        "Which models read directly from stg_contracts?",
+        "manifest",
+        must=("int_revenue_recognized",),
+        must_not=("dim_accounts",),
+        held_out=True,
+    ),
+    Question(
+        "Is fct_revenue_reported materialized as a table or a view?",
+        "manifest",
+        must=("table",),
+        held_out=True,
+    ),
+    Question(
+        "What unique key is configured for fct_revenue_incremental?",
+        "manifest",
+        must=("entry_id",),
+        held_out=True,
+    ),
+    Question(
+        "Which upstream column is dim_accounts.account_name computed from?",
+        "manifest",
+        must=("stg_accounts",),
+        held_out=True,
+    ),
+    Question(
+        "Is anything downstream of stg_entity_reference tagged regulatory?",
+        "manifest",
+        must=("no",),
+        must_not=("fct_regulatory_summary", "fct_revenue_reported"),
+        held_out=True,
+    ),
+    Question(
+        "When was fct_revenue last refreshed in production?",
+        "manifest",
+        answerable=False,
+        held_out=True,
+    ),
 )
 
 
@@ -162,6 +205,12 @@ def main() -> int:
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument("--only", choices=["manifest", "review"])
+    parser.add_argument(
+        "--set",
+        choices=["tuned", "held-out", "all"],
+        default="all",
+        help="tuned: the questions changes were made against; held-out: never tuned on",
+    )
     parser.add_argument("--json", type=Path)
     args = parser.parse_args()
     configure_logging()
@@ -187,6 +236,10 @@ def main() -> int:
     outcomes: list[Outcome] = []
     for question in QUESTIONS:
         if question.mode not in workspaces:
+            continue
+        if args.set == "tuned" and question.held_out:
+            continue
+        if args.set == "held-out" and not question.held_out:
             continue
         started = time.monotonic()
         answer = investigate(
