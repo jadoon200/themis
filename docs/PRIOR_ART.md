@@ -33,10 +33,14 @@ No rule fires, and the safety net only fired on movements an aggregate could see
 **How THEMIS differs.** Every one of those tools pairs on a key someone *declared*. The
 projects THEMIS is for declare none, so it pairs on the **derived grain** — but only once
 Stage 3 has counted it unique in *both* builds. The derivation proposes, the count
-decides, and pairing never rests on an inference. The join uses `IS NOT DISTINCT FROM`
-so NULL keys pair; numeric columns compare with a relative tolerance so reordered
-arithmetic is not a change; load-metadata columns are skipped by name and the report says
-which. Key values are kept as examples for the reviewer and never enter a redacted report.
+decides, and pairing never rests on an inference. The join is plain equality, as Recce's
+is, and a key containing NULLs is refused. The first version used `IS NOT DISTINCT FROM` so
+NULL keys would pair; both engines accepted it and every test passed, but Trino plans a
+null-safe comparison as a join *filter* rather than hash criteria — 200,000 rows took 66
+seconds against 0.2 with `=`, growing with the square of the table. Numeric columns compare
+with a relative tolerance so reordered arithmetic is not a change; load-metadata columns are
+skipped by name and the report says which. Key values are kept as examples for the reviewer
+and never enter a redacted report.
 
 **Result.** The recognition case is now caught by X0001, with the evidence
 "fct_revenue: paired on (entry_id): 21 row(s) changed value in recognition_method (21)" —

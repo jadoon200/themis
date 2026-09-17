@@ -161,6 +161,19 @@ def pair_rows(
         return None, f"more than {max_rows:,} rows, over the time budget for pairing"
 
     key = head_grain.columns
+    # Pairing joins on plain equality, which cannot match a NULL key — and a null-safe join
+    # is one Trino cannot hash (see paired_rows_sql). A key with NULLs does not identify its
+    # rows anyway, so the comparison is refused and says why.
+    for schema, side in ((base_schema, "base"), (head_schema, "head")):
+        rates = client.null_rates(schema, model, key)
+        if set(rates) != set(key):
+            return None, f"could not confirm ({', '.join(key)}) has no NULLs in the {side} build"
+        if any(rate > 0 for rate in rates.values()):
+            return None, (
+                f"({', '.join(key)}) has NULL values in the {side} build, "
+                "so rows cannot be paired on it"
+            )
+
     ignored = {name.lower() for name in ignore}
     comparable = tuple(
         sorted(

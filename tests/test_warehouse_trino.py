@@ -242,3 +242,22 @@ def test_rows_are_paired_on_a_key_on_trino(warehouse: TrinoClient) -> None:
     assert paired.columns_changed == {"recognition": 1}
     assert (paired.rows_added, paired.rows_removed) == (1, 1)
     assert "1" in paired.sample_keys
+
+
+def test_the_paired_join_is_hashed_on_trino(warehouse: TrinoClient) -> None:
+    """IS NOT DISTINCT FROM was planned as a join filter: 200,000 rows took 66 seconds
+    against 0.2 with plain equality, growing with the square of the table. Assert the plan
+    carries hash criteria so a null-safe join cannot come back unnoticed."""
+    from themis.execute.warehouse import paired_rows_sql
+
+    counts, _ = paired_rows_sql(
+        '"memory"."themis_t_base"."f"',
+        '"memory"."themis_t_head"."f"',
+        key=("entry_id", "contract_id"),
+        columns=("amount_usd",),
+        numeric=frozenset({"amount_usd"}),
+        quote=lambda name: '"' + name + '"',
+    )
+    plan = "\n".join(str(row[0]) for row in warehouse._query("explain " + counts))
+    join = next(line for line in plan.splitlines() if "FullJoin" in line)
+    assert "criteria =" in join, join

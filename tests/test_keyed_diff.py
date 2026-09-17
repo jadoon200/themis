@@ -51,16 +51,14 @@ def warehouse(tmp_path: Path) -> Iterator[DuckDBClient]:
         ('E1', 1, 'point_in_time', 100.0, timestamp '2026-01-01 00:00:00'),
         ('E2', 1, 'point_in_time', 0.1 + 0.2, timestamp '2026-01-01 00:00:00'),
         ('E3', 1, 'over_time', 50.0, timestamp '2026-01-01 00:00:00'),
-        ('E4', 1, 'point_in_time', 10.0, timestamp '2026-01-01 00:00:00'),
-        (NULL, 1, 'point_in_time', 1.0, timestamp '2026-01-01 00:00:00')"""
+        ('E4', 1, 'point_in_time', 10.0, timestamp '2026-01-01 00:00:00')"""
     )
     con.execute(
         """insert into head.fct values
         ('E1', 1, 'over_time', 100.0, timestamp '2026-01-02 00:00:00'),
         ('E2', 1, 'point_in_time', 0.3, timestamp '2026-01-02 00:00:00'),
         ('E3', 1, 'over_time', NULL, timestamp '2026-01-02 00:00:00'),
-        ('E5', 1, 'point_in_time', 10.0, timestamp '2026-01-02 00:00:00'),
-        (NULL, 1, 'point_in_time', 1.0, timestamp '2026-01-02 00:00:00')"""
+        ('E5', 1, 'point_in_time', 10.0, timestamp '2026-01-02 00:00:00')"""
     )
     con.close()
     client = DuckDBClient(db)
@@ -117,11 +115,24 @@ def test_keys_on_one_side_only_are_added_or_removed(warehouse: DuckDBClient) -> 
     assert (keyed.rows_added, keyed.rows_removed) == (1, 1)
 
 
-def test_a_null_key_pairs_with_a_null_key(warehouse: DuckDBClient) -> None:
-    """Joining on plain equality would read the NULL-keyed row as removed and added."""
-    keyed, _ = _pair(warehouse)
-    assert keyed is not None
-    assert keyed.rows_added == 1  # E5 only
+def test_a_key_with_nulls_is_refused(tmp_path: Path) -> None:
+    """Pairing joins on equality, which cannot match a NULL key, and a null-safe join is
+    one Trino plans as a filter — 300 times slower on 200,000 rows and quadratic beyond.
+    A key with NULLs does not identify its rows, so the comparison is refused."""
+    db = tmp_path / "nulls.duckdb"
+    con = duckdb.connect(str(db))
+    con.execute("create schema base; create schema head;")
+    for schema in ("base", "head"):
+        con.execute(f"create table {schema}.fct (entry_id varchar, period integer, v varchar)")
+        con.execute(f"insert into {schema}.fct values ('E1', 1, 'a'), (NULL, 1, 'b')")
+    con.close()
+    client = DuckDBClient(db)
+    try:
+        keyed, reason = _pair(client)
+    finally:
+        client.close()
+    assert keyed is None
+    assert reason is not None and "has NULL values in the base build" in reason
 
 
 def test_load_metadata_is_not_compared_and_says_so(warehouse: DuckDBClient) -> None:

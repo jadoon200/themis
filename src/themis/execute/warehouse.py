@@ -91,13 +91,18 @@ def paired_rows_sql(
 ) -> tuple[str, str]:
     """The two queries a keyed comparison needs: counts, and a few example keys.
 
-    Portable between DuckDB and Trino on purpose — a full outer join, ``IS NOT DISTINCT
-    FROM`` so a NULL key pairs with a NULL key, and ``IS DISTINCT FROM`` so a value that
-    became NULL counts as changed. Both engines accept all of it, so there is one
-    statement to reason about rather than two that could drift.
+    Portable between DuckDB and Trino on purpose — a full outer join on plain equality,
+    and ``IS DISTINCT FROM`` so a value that became NULL counts as changed. Both engines
+    accept all of it, so there is one statement to reason about rather than two.
 
-    The key is used exactly as given. Whether it identifies a row is not decided here:
-    the caller only asks once both builds have been counted unique on it.
+    The join is ``=`` and not ``IS NOT DISTINCT FROM``, though the latter would pair NULL
+    keys. Trino plans a null-safe comparison as a join *filter* rather than hash criteria:
+    200,000 rows paired in 66 seconds against 0.2 with ``=``, and the cost grows with the
+    square of the table — at the configured row ceiling it would not finish. So the caller
+    refuses a key that contains NULLs, which is not a row identifier in any case.
+
+    Whether the key identifies a row is not decided here either: the caller only asks once
+    both builds have been counted unique on it.
     """
     q = quote
     side = q(_SIDE)
@@ -115,7 +120,7 @@ def paired_rows_sql(
         return f"case when {b} is distinct from {h} then 1 else 0 end"
 
     flags = [f"{changed(c)} as {q('__changed_' + str(i))}" for i, c in enumerate(columns)]
-    join = " and ".join(f"b.{q(k)} is not distinct from h.{q(k)}" for k in key)
+    join = " and ".join(f"b.{q(k)} = h.{q(k)}" for k in key)
     key_text = ", ".join(
         f"coalesce(cast(coalesce(h.{q(k)}, b.{q(k)}) as varchar), 'NULL')" for k in key
     )
