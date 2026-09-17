@@ -106,8 +106,7 @@ def _search_models(workspace: Workspace, args: dict[str, Any]) -> ToolResult:
     lines = []
     for name in matches:
         model = workspace.after.models[name]
-        tags = f" tags={','.join(model.tags)}" if model.tags else ""
-        lines.append(f"{name} ({model.materialization}){tags}")
+        lines.append(f"{name} ({model.materialization}) — tags: {', '.join(model.tags) or 'none'}")
     return ToolResult(
         text=f"{len(matches)} model(s) matching {query!r}:\n" + _limited(lines, "models"),
         data={"models": matches},
@@ -121,21 +120,21 @@ def _model_details(workspace: Workspace, args: dict[str, Any]) -> ToolResult:
     model = workspace.after.models[name]
     upstream = sorted(dep.split(".")[-1] for dep in model.depends_on_models)
     downstream = workspace.after.downstream_of(name)
-    lines = [
-        f"model: {name}",
-        f"file: {model.file_path}",
-        f"materialization: {model.materialization}",
+    facts = [
+        ("file", model.file_path),
+        ("materialization", model.materialization),
     ]
     if model.incremental_strategy:
-        lines.append(f"incremental strategy: {model.incremental_strategy}")
+        facts.append(("incremental strategy", model.incremental_strategy))
     if model.unique_key:
-        lines.append(f"unique key (config): {', '.join(model.unique_key)}")
-    if model.tags:
-        lines.append(f"tags: {', '.join(model.tags)}")
-    lines.append(f"reads from: {', '.join(upstream) or 'nothing'}")
-    lines.append(f"models downstream: {len(downstream)}")
+        facts.append(("unique key (config)", ", ".join(model.unique_key)))
+    facts.append(("tags", ", ".join(model.tags) or "none"))
+    facts.append(("reads from", ", ".join(upstream) or "nothing"))
+    facts.append(("models downstream", str(len(downstream))))
     if model.columns:
-        lines.append(f"declared columns: {', '.join(c.name for c in model.columns)}")
+        facts.append(("declared columns", ", ".join(c.name for c in model.columns)))
+    # Every line names its model, so a quoted line cannot be read as being about another.
+    lines = [f"{name} — {label}: {value}" for label, value in facts]
     return ToolResult(
         text="\n".join(lines),
         data={
@@ -268,8 +267,12 @@ def _column_lineage(workspace: Workspace, args: dict[str, Any]) -> ToolResult:
             text=f"{name}.{column} {label} {empty}.{caveat}",
             data={"columns": [], "untraced": untraced},
         )
+    # One relation per line, subject and object both named. A list under a header let a
+    # small model attach a column to the wrong relation; a line that says it cannot.
+    relation = "is computed from" if direction == "upstream" else "feeds"
+    lines = [f"{name}.{column} {relation} {item}" for item in items]
     return ToolResult(
-        text=f"{name}.{column} {label}:\n" + _limited(items, "columns") + caveat,
+        text=_limited(lines, "columns") + caveat,
         data={"columns": items, "untraced": untraced},
     )
 
@@ -303,8 +306,7 @@ def _downstream(workspace: Workspace, args: dict[str, Any]) -> ToolResult:
             continue
         # Materialization and tags on every line: "which downstream models are incremental"
         # otherwise costs one more tool call per model, and a small step budget runs out.
-        tags = f" tags={','.join(model.tags)}" if model.tags else ""
-        lines.append(f"{child} ({model.materialization}){tags}")
+        lines.append(f"{child} ({model.materialization}) — tags: {', '.join(model.tags) or 'none'}")
     return ToolResult(
         text=f"{len(names)} model(s) downstream of {name}:\n" + _limited(lines, "models"),
         data={"models": names},

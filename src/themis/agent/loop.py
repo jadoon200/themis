@@ -129,8 +129,12 @@ def _transcript(steps: list[Step], *, generous: bool = False) -> str:
         text = step.result.text
         if len(text) > limit:
             text = text[:limit] + "\n... (truncated)"
-        call = f"{step.tool} {json.dumps(step.arguments, sort_keys=True)}"
-        blocks.append(f"[{step.number}] {call}\n{text}")
+        arguments = ", ".join(f"{k}={v}" for k, v in sorted(step.arguments.items()))
+        # The call and its result are marked apart. A model quoted the call line as though it
+        # were part of the result, which no tool returned and no check could accept.
+        blocks.append(
+            f"[{step.number}] you called {step.tool}({arguments}); it returned:\n<<<\n{text}\n>>>"
+        )
     return "\n\n".join(blocks)
 
 
@@ -222,8 +226,11 @@ class _Session:
             f"## Question\n{self.question}\n\n"
             f"## What the tools returned\n{_transcript(self.steps, generous=True)}\n\n"
             "Answer the question using only these results. Every claim needs a citation: the "
-            "[n] of the result it comes from and a quote copied exactly from that result. If "
-            "they do not answer the question, set can_answer to false and say what is missing."
+            "[n] of the result and a quote copied exactly from between that result's <<< and >>> "
+            "— copy whole lines as they are written, including the model name that starts them. "
+            "If one result already lists what the question asks for, answer from it; do not "
+            "infer a relationship that no line states. If the results do not answer the "
+            "question, set can_answer to false and say what is missing."
         )
         if feedback:
             prompt += f"\n\nYour previous answer was rejected: {feedback} Quote exactly."
