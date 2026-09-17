@@ -126,3 +126,23 @@ def test_a_whole_model_finding_stays_unplaced() -> None:
     """'This model's totals moved' is about the model. There is no line to point at."""
     placed = position_findings([_finding("X", None)], _snapshot())
     assert placed[0].evidence.line is None
+
+
+def test_a_fragment_matched_equally_in_two_places_is_not_placed() -> None:
+    """The same join in two CTEs. Picking the first would be a guess presented as a line."""
+    raw = "\n".join(
+        [
+            "with current_period as (",
+            "    select * from entries",
+            "    inner join rates on entries.currency_code = rates.currency_code",
+            "),",
+            "",
+            "prior_period as (",
+            "    select * from entries",
+            "    inner join rates on entries.currency_code = rates.currency_code",
+            ")",
+            "select * from current_period",
+        ]
+    )
+    fragment = "INNER JOIN rates ON entries.currency_code = rates.currency_code"
+    assert locate(raw, fragment) is None
