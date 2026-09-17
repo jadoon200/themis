@@ -269,3 +269,29 @@ def test_a_redacted_report_never_carries_key_values() -> None:
     assert "customer_id" not in redacted
     payload = json.loads(redacted)
     assert payload["execution_deltas"][0]["paired_rows_moved"] == 2
+
+
+def test_volatile_columns_are_not_compared_and_are_named(warehouse: DuckDBClient) -> None:
+    """A column the SQL stamps with the build time differs in every row of any two builds.
+    Excluded from the comparison — and named, so it never reads as having held."""
+    keyed, _ = _pair(warehouse, ignore=(), volatile=frozenset({"_loaded_at"}))
+    assert keyed is not None
+    assert "_loaded_at" not in keyed.columns_changed
+    assert keyed.volatile_columns == ("_loaded_at",)
+    assert keyed.ignored_columns == ()
+
+
+def test_the_report_says_which_columns_the_sql_made_volatile() -> None:
+    from themis.report import markdown
+
+    finding = _finding_with(
+        KeyedDiff(
+            key=("entry_id",),
+            rows_changed=1,
+            columns_changed={"recognition_method": 1},
+            volatile_columns=("processed_at",),
+        )
+    )
+    text = markdown.render([finding], skipped=[], models_reviewed=1, executed=True)
+    assert "because the SQL makes them differ in any two builds" in text
+    assert "`processed_at`" in text

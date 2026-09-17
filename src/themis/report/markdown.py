@@ -110,6 +110,12 @@ def _format_delta(finding: Finding) -> list[str]:
         if keyed.sample_keys:
             shown = ", ".join(f"`{k}`" for k in keyed.sample_keys)
             lines.append(f"  - for example: {shown}")
+    if keyed is not None and keyed.volatile_columns:
+        unstable = ", ".join(f"`{c}`" for c in keyed.volatile_columns)
+        lines.append(
+            f"- Not compared row by row, because the SQL makes them differ in any two builds "
+            f"(current_timestamp, random(), run_started_at and the like): {unstable}"
+        )
     if keyed is not None and keyed.ignored_columns:
         ignored = ", ".join(f"`{c}`" for c in keyed.ignored_columns)
         lines.append(f"- Not compared row by row (load metadata): {ignored}")

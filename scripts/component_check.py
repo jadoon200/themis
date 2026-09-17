@@ -135,8 +135,8 @@ def build_scenarios(tmp: Path) -> dict[str, str]:
     git("worktree", "add", "--detach", "--quiet", str(tree), base)
     shas: dict[str, str] = {}
 
-    def commit(name: str, change: Callable[[Path], None]) -> None:
-        git("checkout", "--detach", "--quiet", base, cwd=tree)
+    def commit(name: str, change: Callable[[Path], None], parent: str | None = None) -> None:
+        git("checkout", "--detach", "--quiet", parent or base, cwd=tree)
         change(tree / "demo_project")
         # New files are staged by name. `commit -a` only picks up tracked ones, and a
         # blanket add in a worktree is the habit that has destroyed work in this repo.
@@ -197,6 +197,45 @@ def build_scenarios(tmp: Path) -> dict[str, str]:
             (project / "themis_conventions.yml").write_text(CONVENTIONS)
 
         commit("fanout_conventions", fanout_with_conventions)
+
+        # A project that stamps audit columns — the normal state of a real dbt project. The
+        # values differ between any two builds, so a comment upstream must stay silent and a
+        # real reclassification must still be caught beside them.
+        def audit_columns(project: Path) -> None:
+            for relative, anchor in (
+                (
+                    "models/marts/fct_account_period_summary.sql",
+                    "        sum(amount_txn_ccy) as net_amount_txn_ccy\n",
+                ),
+                ("models/marts/fct_revenue.sql", "    amount_usd\n"),
+            ):
+                path = project / relative
+                text = path.read_text()
+                assert anchor in text, relative
+                path.write_text(
+                    text.replace(
+                        anchor,
+                        anchor.rstrip("\n")
+                        + ",\n        current_timestamp as processed_at,"
+                        + "\n        '{{ run_started_at }}' as loaded_at,"
+                        + "\n        '{{ invocation_id }}' as batch_id\n",
+                    )
+                )
+
+        def upstream_comment(project: Path) -> None:
+            path = project / "models/staging/stg_gl_entries.sql"
+            text = path.read_text()
+            marker = "-- General ledger entries, typed and signed. One row per entry_id."
+            assert marker in text
+            path.write_text(text.replace(marker, marker + " Source: ERP export."))
+
+        commit("audit_base", audit_columns)
+        commit("audit_comment", upstream_comment, parent=shas["audit_base"])
+        commit(
+            "audit_recognition",
+            mutation("unruled_recognition_default_flipped"),
+            parent=shas["audit_base"],
+        )
     finally:
         git("worktree", "remove", "--force", str(tree))
     return shas
@@ -783,6 +822,55 @@ def check_prior_art(shas: dict[str, str], tmp: Path, env: dict[str, str], *, oll
     )
 
 
+def check_volatile_values(shas: dict[str, str], tmp: Path, env: dict[str, str]) -> None:
+    """Audit columns that differ between any two builds must not read as a change."""
+    print("\nvalues that differ between any two builds")
+
+    def reviewed(head: str, out: Path) -> tuple[subprocess.CompletedProcess[str], dict]:
+        result = themis(
+            "review",
+            "--project",
+            "demo_project",
+            "--base",
+            shas["audit_base"],
+            "--head",
+            head,
+            "--execute",
+            "--no-llm",
+            "--no-save",
+            "--json",
+            str(out),
+            env=env,
+        )
+        return result, (json.loads(out.read_text()) if out.exists() else {})
+
+    def delta(doc: dict, model: str) -> dict:
+        return next((d for d in doc.get("execution_deltas", []) if d.get("model") == model), {})
+
+    quiet, doc = reviewed(shas["audit_comment"], tmp / "audit_comment.json")
+    summary = delta(doc, "fct_account_period_summary").get("keyed") or {}
+    record(
+        "a comment upstream of audit columns raises nothing",
+        quiet.returncode == 0 and doc.get("findings") == [],
+        f"exit {quiet.returncode}, findings={[f.get('rule_id') for f in doc.get('findings', [])]}",
+    )
+    record(
+        "the audit columns were found from the SQL and named, not compared",
+        set(summary.get("volatile_columns", [])) == {"processed_at", "loaded_at", "batch_id"}
+        and not summary.get("columns_changed"),
+        f"keyed={summary}",
+    )
+
+    caught, doc = reviewed(shas["audit_recognition"], tmp / "audit_recognition.json")
+    notes = " ".join((f.get("note") or "") for f in doc.get("findings", []))
+    revenue = delta(doc, "fct_revenue").get("keyed") or {}
+    record(
+        "a real reclassification beside audit columns is still caught",
+        "recognition_method" in notes and "processed_at" not in notes,
+        f"exit {caught.returncode}, notes={notes[:200]!r}, keyed={revenue}",
+    )
+
+
 def check_learning_loop(
     shas: dict[str, str], tmp: Path, env: dict[str, str], *, ollama: bool
 ) -> None:
@@ -1146,6 +1234,7 @@ def main() -> int:
             shas, tmp, env, ollama=ollama and not args.quick, quick=args.quick
         )
         check_prior_art(shas, tmp, env, ollama=ollama and not args.quick)
+        check_volatile_values(shas, tmp, env)
         check_learning_loop(shas, tmp, env, ollama=ollama and not args.quick)
         check_service(shas, tmp)
         if args.quick:

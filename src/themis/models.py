@@ -177,6 +177,9 @@ class KeyedDiff(BaseModel):
     columns_changed: dict[str, int] = Field(default_factory=dict)
     # Columns deliberately not compared, named so a reviewer can see what was skipped.
     ignored_columns: tuple[str, ...] = ()
+    # Columns computed from current_timestamp, random(), run_started_at and the like —
+    # different in any two builds by construction, found from the SQL rather than names.
+    volatile_columns: tuple[str, ...] = ()
     # A few keys whose rows changed, stringified. Evidence a reviewer can go and look up;
     # never included in a redacted report, because key values can identify a customer.
     sample_keys: tuple[str, ...] = ()

@@ -135,6 +135,7 @@ def pair_rows(
     base_grain: Grain | None,
     max_rows: int,
     ignore: tuple[str, ...] = (),
+    volatile: frozenset[str] = frozenset(),
 ) -> tuple[KeyedDiff | None, str | None]:
     """Compare base and head row by row on a key both builds have been counted unique on.
 
@@ -184,13 +185,23 @@ def pair_rows(
             # a varchar to a decimal would fail the whole query.
             and before.column_types[name] == after.column_types[name]
             and name.lower() not in ignored
+            and name not in volatile
         )
     )
     skipped = tuple(
         sorted(
             name
             for name in set(before.column_types) & set(after.column_types)
-            if name.lower() in ignored and name not in key
+            # Named by the settings but not proven volatile by the SQL. A column both lists
+            # would name is reported as volatile: the SQL is the stronger reason.
+            if name.lower() in ignored and name not in key and name not in volatile
+        )
+    )
+    unstable = tuple(
+        sorted(
+            name
+            for name in set(before.column_types) & set(after.column_types)
+            if name in volatile and name not in key
         )
     )
     numeric = frozenset(after.numeric_columns)
@@ -213,6 +224,7 @@ def pair_rows(
             rows_changed=paired.rows_changed,
             columns_changed=paired.columns_changed,
             ignored_columns=skipped,
+            volatile_columns=unstable,
             sample_keys=paired.sample_keys,
         ),
         None,
