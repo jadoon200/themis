@@ -62,9 +62,8 @@ def agent(
     Exit codes: 0 a grounded answer, 1 refused, 2 could not start. Interactively, 0.
     """
     from themis import conventions
-    from themis.agent.loop import investigate
+    from themis.agent.loop import agent_provider, investigate
     from themis.agent.workspace import Workspace
-    from themis.llm.provider import build_provider
 
     configure_logging(verbose=verbose)
     settings = load_settings()
@@ -103,7 +102,7 @@ def agent(
         typer.echo(f"Agent could not start: {exc}", err=True)
         raise typer.Exit(code=2) from exc
 
-    provider = build_provider(settings)
+    provider = agent_provider(settings)
 
     def answer(text: str) -> bool:
         outcome = investigate(

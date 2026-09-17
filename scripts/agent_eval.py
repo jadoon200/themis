@@ -29,10 +29,9 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "src"))
 
-from themis.agent.loop import investigate  # noqa: E402
+from themis.agent.loop import agent_provider, investigate  # noqa: E402
 from themis.agent.workspace import Workspace  # noqa: E402
 from themis.config import load_settings  # noqa: E402
-from themis.llm.provider import build_provider  # noqa: E402
 from themis.logging import configure_logging  # noqa: E402
 
 PROJECT = REPO / "demo_project"
@@ -83,7 +82,9 @@ QUESTIONS: tuple[Question, ...] = (
     Question(
         "Is dim_accounts built on stg_accounts?",
         "manifest",
-        must=("yes",),
+        # Was must=("yes",): scored a correct "dim_accounts — reads from: stg_accounts" as
+        # wrong for not using the word. A rubric bug, fixed and recorded in EVAL.
+        must=("stg_accounts",),
     ),
     Question(
         "Does int_gl_entries_converted join stg_fx_rates on the rate period "
@@ -215,7 +216,7 @@ def main() -> int:
     args = parser.parse_args()
     configure_logging()
     settings = load_settings()
-    provider = build_provider(settings)
+    provider = agent_provider(settings)
 
     workspaces: dict[str, Workspace] = {}
     if args.only in (None, "manifest"):

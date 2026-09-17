@@ -19,6 +19,7 @@ from fnmatch import fnmatch
 from typing import Any
 
 from themis.agent.workspace import Workspace
+from themis.analyze.lineage import ColumnRef
 
 _LIST_LIMIT = 25
 _SQL_LINES = 60
@@ -269,8 +270,29 @@ def _column_lineage(workspace: Workspace, args: dict[str, Any]) -> ToolResult:
         )
     # One relation per line, subject and object both named. A list under a header let a
     # small model attach a column to the wrong relation; a line that says it cannot.
-    relation = "is computed from" if direction == "upstream" else "feeds"
-    lines = [f"{name}.{column} {relation} {item}" for item in items]
+    # Direct and indirect kept apart. Once the answer followed every hop, "which column is
+    # this computed from" got the whole chain back and a model named a grandparent.
+    start = ColumnRef(name, column)
+    direct = {
+        str(ref)
+        for ref in (
+            graph.reads.get(start, frozenset())
+            if direction == "upstream"
+            else graph.feeds.get(start, frozenset())
+        )
+    }
+    if direction == "upstream":
+        lines = [
+            f"{name}.{column} is computed {'directly' if item in direct else 'indirectly'} "
+            f"from {item}"
+            for item in items
+        ]
+    else:
+        lines = [
+            f"{name}.{column} {'directly' if item in direct else 'indirectly'} feeds {item}"
+            for item in items
+        ]
+    lines.sort(key=lambda line: (" indirectly " in line, line))
     return ToolResult(
         text=_limited(lines, "columns") + caveat,
         data={"columns": items, "untraced": untraced},

@@ -229,8 +229,9 @@ class _Session:
             "[n] of the result and a quote copied exactly from between that result's <<< and >>> "
             "— copy whole lines as they are written, including the model name that starts them. "
             "If one result already lists what the question asks for, answer from it; do not "
-            "infer a relationship that no line states. If the results do not answer the "
-            "question, set can_answer to false and say what is missing."
+            "infer a relationship that no line states. When the question asks which models or "
+            "columns, name every one the results show, not only the first. If the results do "
+            "not answer the question, set can_answer to false and say what is missing."
         )
         if feedback:
             prompt += f"\n\nYour previous answer was rejected: {feedback} Quote exactly."
@@ -274,6 +275,15 @@ class _Session:
         return problems
 
 
+def agent_provider(settings: Settings) -> Provider:
+    """A provider with room for the agent's cited answers."""
+    from themis.llm.provider import build_provider
+
+    return build_provider(
+        settings.model_copy(update={"llm_max_output_tokens": settings.llm_agent_max_output_tokens})
+    )
+
+
 def investigate(
     question: str,
     workspace: Workspace,
@@ -301,7 +311,8 @@ def investigate(
             payload, problems = session.answer(feedback="; ".join(problems) + ".")
     except LLMError as exc:
         outcome.steps = tuple(session.steps)
-        outcome.refusal_reason = f"the model could not be reached: {exc}"
+        # Not always unreachable: a reply cut off at the output limit is an LLMError too.
+        outcome.refusal_reason = f"the model's reply could not be used: {exc}"
         return outcome
 
     outcome.steps = tuple(session.steps)

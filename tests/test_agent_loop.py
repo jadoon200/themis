@@ -181,7 +181,7 @@ def test_the_step_budget_forces_an_answer() -> None:
 def test_an_unreachable_model_is_a_refusal_not_a_crash() -> None:
     outcome = investigate("Anything?", _workspace(), provider=DownModel(), settings=Settings())
     assert not outcome.grounded
-    assert "could not be reached" in (outcome.refusal_reason or "")
+    assert "could not be used" in (outcome.refusal_reason or "")
 
 
 def test_every_exchange_is_kept_for_the_dataset() -> None:

@@ -54,6 +54,9 @@ class Settings(BaseSettings):
     # Measured: 2,050 of 30,324 prompt tokens evaluated, and a nonsense answer. qwen3:8b
     # was trained on 40,960; more costs memory for the cache, not accuracy.
     llm_context_window: int = 16384
+    # The agent's final answer cites every claim, so it runs longer than a specialist's
+    # verdict: at 400 tokens an answer listing a column chain was cut off mid-JSON.
+    llm_agent_max_output_tokens: int = 1500
 
     # --- execution (Stage 3) -------------------------------------------------
     execute_enabled: bool = False
