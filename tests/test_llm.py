@@ -661,3 +661,31 @@ def test_a_call_that_never_happened_is_not_captured() -> None:
         grains=_grains(),
     )
     assert summary.calls == []
+
+
+# --- grounding: the short value after a colon ------------------------------------
+
+
+def test_a_fabricated_short_value_after_a_colon_is_not_grounded() -> None:
+    """Short pieces used to be skipped as insubstantial, so a fabricated value passed as
+    long as its label was real: this quote was accepted against "materialization: view"."""
+    context = "model: stg_0\nmaterialization: view\nmodels downstream: 4"
+    assert not selfcheck.quote_is_grounded("materialization: incremental", context)
+
+
+def test_a_true_short_value_beside_its_label_is_grounded() -> None:
+    context = "model: stg_0\nmaterialization: view\nmodels downstream: 4"
+    assert selfcheck.quote_is_grounded("materialization: view", context)
+
+
+def test_a_short_value_borrowed_from_elsewhere_in_the_context_is_not_grounded() -> None:
+    """Every word present somewhere is not the same as the claim being there."""
+    context = "materialization: view\nincremental strategy: none recorded"
+    assert not selfcheck.quote_is_grounded("materialization: incremental", context)
+
+
+def test_lines_joined_with_commas_are_still_grounded() -> None:
+    context = "stg_fx_rates looks unique on (currency_code)\nbut that is heuristic"
+    assert selfcheck.quote_is_grounded(
+        "stg_fx_rates looks unique on (currency_code), but that is heuristic", context
+    )

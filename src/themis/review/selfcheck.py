@@ -72,21 +72,62 @@ def _contains_sequence(haystack: list[str], needle: list[str]) -> bool:
     return False
 
 
-def quote_is_grounded(quote: str, context: str) -> bool:
-    """Whether every substantial part of a quote appears in the context.
+# How many context words may separate a short piece of a quote from its neighbour. None:
+# punctuation is already stripped, so a real quote has no gap, and a gap of even one word
+# let "materialization: incremental" borrow its value across "view" from the next line.
+_SHORT_PIECE_WINDOW = 0
 
-    Shared by the specialists and the follow-up lane so there is exactly one definition
-    of what counts as grounded — two implementations would inevitably drift, and the
-    weaker one would decide.
+
+def _occurrences(haystack: list[str], needle: list[str]) -> list[tuple[int, int]]:
+    """Every (start, end) at which ``needle`` appears contiguously in ``haystack``."""
+    if not needle or len(needle) > len(haystack):
+        return []
+    return [
+        (i, i + len(needle))
+        for i in range(len(haystack) - len(needle) + 1)
+        if haystack[i : i + len(needle)] == needle
+    ]
+
+
+def quote_is_grounded(quote: str, context: str) -> bool:
+    """Whether every part of a quote appears in the context.
+
+    Shared by the specialists, the follow-up lane and the agent, so there is exactly one
+    definition of what counts as grounded — two implementations would drift, and the weaker
+    one would decide.
+
+    A quote is split where models join lines — elisions, commas, colons — and each piece
+    checked on its own. Pieces shorter than a phrase used to be skipped as insubstantial,
+    and that was a hole exactly where facts live: "materialization: incremental" passed
+    against a context saying "materialization: view", because "incremental" was never
+    checked. Now every piece must be present, and a short one must sit beside its
+    neighbour in the context — a value is only grounded next to the name it belongs to.
+    At least one piece must still be phrase-length: a quote of two words proves nothing.
     """
     context_words = _words(context)
     pieces: list[str] = []
     for part in _ELISION.split(quote):
-        pieces.extend(_JOIN.split(part))
-    segments = [piece.strip() for piece in pieces if len(_normalise(piece)) >= _MIN_SEGMENT_CHARS]
-    if not segments:
+        pieces.extend(piece.strip() for piece in _JOIN.split(part))
+    pieces = [piece for piece in pieces if _words(piece)]
+    if not any(len(_normalise(piece)) >= _MIN_SEGMENT_CHARS for piece in pieces):
         return False
-    return all(_contains_sequence(context_words, _words(segment)) for segment in segments)
+
+    spans = [_occurrences(context_words, _words(piece)) for piece in pieces]
+    if not all(spans):
+        return False
+    for index, piece in enumerate(pieces):
+        if len(_normalise(piece)) >= _MIN_SEGMENT_CHARS:
+            continue
+        before = spans[index - 1] if index > 0 else []
+        after = spans[index + 1] if index + 1 < len(pieces) else []
+        beside = any(
+            any(0 <= start - end_before <= _SHORT_PIECE_WINDOW for _, end_before in before)
+            or any(0 <= start_after - end <= _SHORT_PIECE_WINDOW for start_after, _ in after)
+            for start, end in spans[index]
+        )
+        if not beside:
+            return False
+    return True
 
 
 _LOG_QUOTE_CHARS = 600
