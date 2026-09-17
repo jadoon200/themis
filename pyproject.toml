@@ -31,6 +31,12 @@ dependencies = [
 [project.scripts]
 themis = "themis.cli:app"
 
+[project.optional-dependencies]
+# Serving the agent's tools to MCP clients. Optional because the SDK brings its own
+# dependency tree (JWT, crypto, OpenTelemetry) that a deployment never serving MCP should
+# not have to review.
+mcp = ["mcp>=2.2,<3"]
+
 [dependency-groups]
 dev = [
     "ruff>=0.6",
@@ -76,6 +82,11 @@ explicit_package_bases = true
 # Third-party libraries without type stubs — scoped, do not widen.
 [[tool.mypy.overrides]]
 module = ["duckdb.*", "dbt.*", "trino.*"]
+ignore_missing_imports = true
+
+# The MCP SDK is an optional extra, absent from a default install.
+[[tool.mypy.overrides]]
+module = ["mcp", "mcp.*", "anyio"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

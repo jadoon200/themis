@@ -82,6 +82,7 @@ class OllamaProvider:
         self._timeout = settings.llm_timeout_s
         self._temperature = settings.llm_temperature
         self._max_output_tokens = settings.llm_max_output_tokens
+        self._context_window = settings.llm_context_window
         self._retries = settings.llm_retries
         self._backoff = settings.llm_retry_backoff_s
 
@@ -126,8 +127,21 @@ class OllamaProvider:
             "options": {
                 "temperature": self._temperature,
                 "num_predict": self._max_output_tokens,
+                # Always sent. Without it Ollama silently truncates any longer prompt from
+                # the front, and nothing in the response says it did.
+                "num_ctx": self._context_window,
             },
         }
+        # Refuse a prompt that cannot fit before spending a call on it. A rough count is
+        # enough: tokenizers average three to four characters a token on SQL and English,
+        # and three is the cautious end.
+        estimated = (len(system) + len(prompt)) // 3
+        if estimated + self._max_output_tokens > self._context_window:
+            raise _Permanent(
+                f"prompt of roughly {estimated:,} tokens does not fit the "
+                f"{self._context_window:,}-token context window; raise "
+                "THEMIS_LLM_CONTEXT_WINDOW or send less"
+            )
         try:
             response = httpx.post(f"{self._base}/api/generate", json=body, timeout=self._timeout)
             response.raise_for_status()
@@ -138,6 +152,15 @@ class OllamaProvider:
             raise LLMError(f"the model at {self._base} failed: {exc}") from exc
         except (httpx.HTTPError, ValueError) as exc:
             raise LLMError(f"could not reach the model at {self._base}: {exc}") from exc
+
+        evaluated = int(data.get("prompt_eval_count", 0))
+        if evaluated and evaluated + self._max_output_tokens >= self._context_window:
+            # The estimate let it through and the model still filled its window: the front
+            # of the prompt was dropped. An answer to part of a question is not an answer.
+            raise _Permanent(
+                f"the prompt filled the {self._context_window:,}-token context window "
+                f"({evaluated:,} tokens evaluated), so its beginning was truncated"
+            )
 
         raw = str(data.get("response", "")).strip()
         try:

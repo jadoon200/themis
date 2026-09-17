@@ -48,6 +48,15 @@ class Settings(BaseSettings):
     llm_max_output_tokens: int = 400
     # Context packs are kept small on purpose; the LLM never sees a whole file.
     llm_max_context_tokens: int = 2000
+    # The context window requested from the model, in tokens. Ollama's default is about
+    # 2,048 when none is sent, and a longer prompt is not refused — its *beginning* is
+    # dropped, system prompt and finding first, and the model answers from what is left.
+    # Measured: 2,050 of 30,324 prompt tokens evaluated, and a nonsense answer. qwen3:8b
+    # was trained on 40,960; more costs memory for the cache, not accuracy.
+    llm_context_window: int = 16384
+    # The agent's final answer cites every claim, so it runs longer than a specialist's
+    # verdict: at 400 tokens an answer listing a column chain was cut off mid-JSON.
+    llm_agent_max_output_tokens: int = 1500
 
     # --- execution (Stage 3) -------------------------------------------------
     execute_enabled: bool = False

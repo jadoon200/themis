@@ -17,6 +17,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from themis.execute.profiles import resolve_profiles_dir
 from themis.logging import get_logger
 
 log = get_logger(__name__)
@@ -97,7 +98,8 @@ def run_dbt(
     # relative --project-dir would resolve against itself and quietly address the
     # wrong directory — or, worse, an existing one.
     project_dir = project_dir.resolve()
-    profiles = (profiles_dir or project_dir).resolve()
+    # Where dbt itself would find the profile — not the project, unless it is there.
+    profiles = resolve_profiles_dir(project_dir, profiles_dir).resolve()
     artefacts = target_path.resolve() if target_path is not None else project_dir / "target"
 
     args = [

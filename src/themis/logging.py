@@ -38,6 +38,10 @@ def configure_logging(*, verbose: bool = False) -> None:
     """
     level = logging.DEBUG if verbose else logging.INFO
     logging.basicConfig(format="%(message)s", stream=sys.stderr, level=level)
+    # httpx logs every request at INFO; a model call per tool step made that most of the
+    # output. Its warnings and errors still come through.
+    for noisy in ("httpx", "httpcore"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
     structlog.configure(
         processors=[
             structlog.processors.add_log_level,

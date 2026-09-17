@@ -871,6 +871,114 @@ def check_volatile_values(shas: dict[str, str], tmp: Path, env: dict[str, str]) 
     )
 
 
+def check_agent_and_setup(
+    shas: dict[str, str], tmp: Path, env: dict[str, str], *, ollama: bool
+) -> None:
+    """Setting a project up, and the agent answering from tools it must quote."""
+    print("\nsetup and the agent")
+
+    d = themis("doctor", "--project", "demo_project", env=env)
+    record(
+        "doctor finds nothing failing on the demo project",
+        d.returncode == 0 and "0 failing" in d.stdout,
+        d.stdout[-400:],
+    )
+
+    project = tmp / "init_project"
+    workdir = tmp / "init_workdir"
+    project.mkdir()
+    workdir.mkdir()
+    for name in ("dbt_project.yml", "profiles.yml"):
+        shutil.copy(PROJECT / name, project / name)
+    first = subprocess.run(
+        [sys.executable, "-m", "themis.cli", "init", "--project", str(project)],
+        cwd=workdir,
+        env={**os.environ, **env, "PYTHONPATH": str(SRC)},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    written = (workdir / ".env").read_text() if (workdir / ".env").exists() else ""
+    allow = next(
+        (line for line in written.splitlines() if line.startswith("THEMIS_EXECUTE_ALLOWED")), ""
+    )
+    record(
+        "init writes an allowlist of non-production targets and a conventions template",
+        first.returncode == 0
+        and '"dev"' in allow
+        and "prod" not in allow
+        and (project / "themis_conventions.yml").exists(),
+        f"exit {first.returncode}: {allow} {first.stdout[-200:]}",
+    )
+    (workdir / ".env").write_text("kept\n")
+    subprocess.run(
+        [sys.executable, "-m", "themis.cli", "init", "--project", str(project)],
+        cwd=workdir,
+        env={**os.environ, **env, "PYTHONPATH": str(SRC)},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    record("init never overwrites", (workdir / ".env").read_text() == "kept\n")
+
+    m = themis("mcp", "--project", "demo_project", env=env)
+    try:
+        import mcp  # noqa: F401
+
+        installed = True
+    except ImportError:
+        installed = False
+    if installed:
+        skip("mcp without the SDK says how to install it", "the optional SDK is installed")
+    else:
+        record(
+            "mcp without the SDK says how to install it",
+            m.returncode == 2 and "themis[mcp]" in m.stderr,
+            f"exit {m.returncode}: {m.stderr[-200:]}",
+        )
+
+    if not ollama:
+        skip("the agent answers a project question from a tool it quotes", "no Ollama on 11434")
+        skip("the agent answers about a review from its findings", "no Ollama on 11434")
+        return
+
+    def ask(*arguments: str) -> dict:
+        result = themis("agent", *arguments, "--json", env=env)
+        try:
+            return json.loads(result.stdout)
+        except json.JSONDecodeError:
+            return {"exit": result.returncode, "stdout": result.stdout[-300:]}
+
+    grain = ask("What is the grain of fct_account_period_summary?", "--project", "demo_project")
+    record(
+        "the agent answers a project question from a tool it quotes",
+        bool(grain.get("grounded"))
+        and "period_month" in (grain.get("answer") or "")
+        and any(c.get("tool") == "grain" for c in grain.get("citations", [])),
+        str(grain)[:300],
+    )
+    finding = ask(
+        "Which rule fired on int_gl_entries_converted in this review?",
+        "--project",
+        "demo_project",
+        "--base",
+        "HEAD",
+        "--head",
+        shas["fanout"],
+    )
+    record(
+        "the agent answers about a review from its findings",
+        bool(finding.get("grounded")) and "F1001" in (finding.get("answer") or ""),
+        str(finding)[:300],
+    )
+    refused = ask("Who is the business owner of fct_revenue?", "--project", "demo_project")
+    record(
+        "the agent refuses what no tool can answer",
+        refused.get("grounded") is False and refused.get("refusal_reason"),
+        str(refused)[:300],
+    )
+
+
 def check_learning_loop(
     shas: dict[str, str], tmp: Path, env: dict[str, str], *, ollama: bool
 ) -> None:
@@ -1235,6 +1343,7 @@ def main() -> int:
         )
         check_prior_art(shas, tmp, env, ollama=ollama and not args.quick)
         check_volatile_values(shas, tmp, env)
+        check_agent_and_setup(shas, tmp, env, ollama=ollama and not args.quick)
         check_learning_loop(shas, tmp, env, ollama=ollama and not args.quick)
         check_service(shas, tmp)
         if args.quick:

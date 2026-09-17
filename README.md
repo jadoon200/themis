@@ -108,6 +108,26 @@ make demo-build          # seeds and builds the demo project on DuckDB
 make review              # review the working tree against main
 ```
 
+On a real project, start with `themis init` and `themis doctor` — they write the
+configuration and check everything a review needs, printing the fix for whatever is
+missing. [docs/WORK_SETUP.md](docs/WORK_SETUP.md) is the step-by-step guide.
+
+### Ask the agent
+
+```bash
+themis agent "Which regulatory models read fct_revenue.amount_usd?"
+themis agent --base main --head HEAD "What did the review find, and what changed in the SQL?"
+```
+
+A local model investigates by calling THEMIS's own tools — grain, lineage, what is
+downstream, the findings, the SQL diff, what execution measured — and every claim in its
+answer must quote a tool result verbatim, or the answer is refused. It chooses which fact
+to fetch; it never produces one. On held-out questions it answered 5 of 5 and refused the one
+no tool could answer; on the questions it was tuned against, 12 of 14 with one incomplete
+answer — every run, including the ones that went backwards, is in docs/EVAL.md. The same tools are served to any MCP client by
+`themis mcp` (optional extra; tool results contain SQL, so connect only local-model clients
+to proprietary projects).
+
 Findings land on the diff, not only in the log — and in a form a gate or a dashboard
 can read, including the measured deltas, the derived grain, and the checks that could
 not run:

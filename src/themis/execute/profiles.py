@@ -17,6 +17,7 @@ The user's own ``profiles.yml`` is never modified.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -31,17 +32,41 @@ class ProfileError(RuntimeError):
     """The project's profile could not be read or does not contain the target."""
 
 
-def _profiles_path(project_dir: Path, profiles_dir: Path | None) -> Path:
-    for candidate in (
-        (profiles_dir / "profiles.yml") if profiles_dir else None,
-        project_dir / "profiles.yml",
-        Path.home() / ".dbt" / "profiles.yml",
-    ):
-        if candidate is not None and candidate.exists():
+def profiles_dir_candidates(project_dir: Path, explicit: Path | None = None) -> list[Path]:
+    """Where dbt looks for profiles.yml, in dbt's own order.
+
+    The project directory is not where most teams keep it: the dbt default is ~/.dbt, and
+    a shared machine points DBT_PROFILES_DIR somewhere else again. THEMIS used to pass the
+    project directory to dbt unconditionally, so a project with its profile in ~/.dbt —
+    the normal case at work — failed its first review with "Could not find profile".
+    """
+    candidates: list[Path] = []
+    if explicit is not None:
+        candidates.append(explicit)
+    env = os.environ.get("DBT_PROFILES_DIR")
+    if env:
+        candidates.append(Path(env).expanduser())
+    candidates += [project_dir, Path.home() / ".dbt"]
+    return candidates
+
+
+def resolve_profiles_dir(project_dir: Path, explicit: Path | None = None) -> Path:
+    """The directory holding the profiles.yml dbt would use, or the project if none does.
+
+    Falling back to the project leaves dbt to report the missing profile in its own words.
+    """
+    for candidate in profiles_dir_candidates(project_dir, explicit):
+        if (candidate / "profiles.yml").exists():
             return candidate
-    raise ProfileError(
-        f"no profiles.yml found for {project_dir} (looked in the project and ~/.dbt)"
-    )
+    return explicit or project_dir
+
+
+def _profiles_path(project_dir: Path, profiles_dir: Path | None) -> Path:
+    for candidate in profiles_dir_candidates(project_dir, profiles_dir):
+        if (candidate / "profiles.yml").exists():
+            return candidate / "profiles.yml"
+    looked = ", ".join(str(c) for c in profiles_dir_candidates(project_dir, profiles_dir))
+    raise ProfileError(f"no profiles.yml found for {project_dir} (looked in {looked})")
 
 
 def project_profile_name(project_dir: Path) -> str:
