@@ -68,6 +68,9 @@ class ReviewResult:
     # Whether the caller asked for Stage 3, so a review that wanted measurement and did
     # not get it can say so rather than passing as an inference-only review by choice.
     execution_requested: bool = False
+    # Both snapshots, kept in memory so an agent can investigate the review it belongs to
+    # without compiling again. Never persisted or serialised.
+    acquired: AcquireResult | None = None
 
     @property
     def incomplete(self) -> tuple[tuple[str, str], ...]:
@@ -928,4 +931,5 @@ def review(
         execution=execution,
         execution_requested=run_execution,
         llm=llm_summary,
+        acquired=acquired,
     )
