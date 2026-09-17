@@ -84,6 +84,15 @@
   the raw file's line deterministically, declining when unsure; `themis_conventions.yml`
   gives specialists the team's own knowledge as context, read at the revision under review.
   Both adapted from other tools — see [PRIOR_ART](PRIOR_ART.md).
+- **An agent over the tools.** Twelve typed, read-only tools — one registry shared by the
+  built-in agent and an MCP server — and a local-model loop that chooses tools through
+  constrained decoding and must quote a tool result verbatim for every claim. Measured on a
+  question set: 10/10 correct, 3/3 unanswerable refused.
+- **Set-up on a real project.** `themis init` and `themis doctor`; the profile found where
+  dbt finds it; audit columns and invocation literals no longer read as changes; the model's
+  context window always requested; the paired-row join hashable on Trino.
+- **Measured at scale.** A synthetic project generator and `scripts/scale_check.py`: the
+  review path is linear, 3.4s of analysis at 3,000 models; whole-project lineage halved.
 - **Demo project.** A financial dbt project on DuckDB — general ledger, FX conversion,
   revenue recognition, regulatory mart. Macro-using and, deliberately, test-free.
 
@@ -122,6 +131,12 @@ report agree; token accounting was already done. The machine-learning lane is
 enough for the saving to show as time rather than as object counts — that number has to
 come from a real warehouse. After that, in rough order of what it would change:
 
+- **The agent, on real questions.** Its question set was written alongside its tools. The
+  next measurement is questions reviewers actually ask on the work project, scored the same
+  way — and a verification menu: letting a specialist that abstains *choose* a deterministic
+  measurement (a distinct count, a paired-row sample) THEMIS then runs.
+- **MCP against the real SDK.** The adapter is tested without the SDK, which is an optional
+  extra pending a decision on its dependency tree.
 - **Column-precise impact.** Classify each change as additive, column-level, model-wide or
   unknown — the approach Recce's classifier takes after SQLMesh's — and use column lineage to
   build and measure only the models that read what changed. It saves Stage 3 the most time

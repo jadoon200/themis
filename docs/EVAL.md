@@ -1155,6 +1155,65 @@ All three are fixed and covered, and the component check now asserts on the repo
 not the score. The same lesson as the one that closed the CI corpus job: **a number that
 says "caught" is not evidence of what a reviewer was shown.**
 
+## What a real project would have hit
+
+Asked, before handing the tool over, what else was worth checking, one pass found four
+failures that 530 unit tests, the component check and the corpus could not see — because
+each depends on a shape a real project has and the demo project does not. Each was
+reproduced before it was fixed.
+
+| shape of a real project | what happened | measured |
+|---|---|---|
+| profile in `~/.dbt`, dbt's default | the first compile failed: "Could not find profile" | review exited 2 with the demo profile moved to a home directory |
+| audit columns: `current_timestamp`, `'{{ run_started_at }}'`, `'{{ invocation_id }}'` | a comment-only change was a high "changed and no rule explains why" | 100 of 100 rows "changed" in all three columns |
+| a prompt longer than Ollama's default window | the beginning — system prompt and finding — silently dropped | 2,050 of 30,324 prompt tokens evaluated; the answer was `"}"` |
+| a paired-row comparison on Trino | `IS NOT DISTINCT FROM` planned as a join filter, not a hash join | 200,000 rows in 66s, against 0.2s with `=` |
+
+The first three would have made THEMIS fail or cry wolf on its first real review. None of them
+is a defect class a rule can catch; all of them are about where the code meets the
+environment it runs in.
+
+## Scale
+
+`scripts/scale_check.py` generates compiled projects in the shapes a real one has and times
+every analysis stage a review runs.
+
+| stage | 250 models | 1,000 | 3,000 |
+|---|---|---|---|
+| review analysis, total | 0.36s | 1.15s | 3.43s |
+| grain | 0.12s | 0.34s | 1.02s |
+| volatility detection | 0.20s | 0.78s | 2.37s |
+| whole-project lineage, before | 1.93s | 7.97s | 24.27s |
+
+The review path is linear. Whole-project lineage — behind `profile`, `lineage` and the agent's
+lineage tool — called sqlglot once per column, and each call re-parsed and re-qualified the
+whole model: 18,086 calls at 3,000 models. Traced in one pass per model it takes half the
+time, and was checked edge for edge against the per-column trace, in both directions, on the
+demo project and a 400-model synthetic one. Stage 3 is not timed here: its cost is the
+warehouse's, and at work it is the number to take first.
+
+## The agent
+
+`scripts/agent_eval.py` asks a fixed set of questions with known answers — facts that must
+appear and facts that must not — and questions no tool can answer.
+
+| | first run, qwen3:8b |
+|---|---|
+| answerable, correct | **10 / 10** |
+| answerable, grounded but wrong | 0 |
+| answerable, refused | 0 |
+| unanswerable, refused | **3 / 3** |
+| median time per question | 15s |
+
+One question was built as a trap: of the models downstream of `int_revenue_recognized`, two
+are tagged `regulatory` and one only `recon`. The answer named the two and not the third.
+
+**What this does not show.** Thirteen questions written by the person who wrote the tools,
+on the project the tools were built against — the corpus's bias, in a new place. "Grounded
+but wrong" is the number that matters, because citations cannot catch it: a true quote in
+support of a wrong conclusion passes every check. Zero here says the questions were easy
+enough, not that it cannot happen.
+
 ## Learning from what reviewers decide
 
 The roadmap's first four tuning steps are built (step 5, an adapter, is not — the bar is
