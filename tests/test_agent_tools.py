@@ -219,3 +219,57 @@ def test_upstream_lineage_follows_every_hop_not_just_the_first() -> None:
 def test_downstream_models_show_how_each_is_built(project: Workspace) -> None:
     result = _run(project, "downstream_models", model="stg_0")
     assert "(view)" in result.text or "(table)" in result.text
+
+
+def _tagged_project() -> Workspace:
+    """A project where a staging model feeds both a tagged mart and untagged ones."""
+    snapshot = synthetic.project(40)
+    marts = sorted(name for name in snapshot.models if name.startswith("fct_"))
+    tagged = {
+        marts[0]: snapshot.models[marts[0]].model_copy(update={"tags": ("regulatory", "recon")}),
+        marts[1]: snapshot.models[marts[1]].model_copy(update={"tags": ("REGULATORY",)}),
+    }
+    return Workspace(after=snapshot.model_copy(update={"models": {**snapshot.models, **tagged}}))
+
+
+def test_a_tag_filter_answers_the_question_instead_of_leaving_a_list_to_read() -> None:
+    """The one question the agent got incomplete: which downstream models are regulatory.
+
+    It read a full list of downstream models and named one of the two tagged ones — the
+    answer was quoted correctly, so nothing caught it but the evaluation. The filter makes
+    the count THEMIS's rather than something the model has to arrive at in prose.
+    """
+    workspace = _tagged_project()
+    marts = sorted(name for name in workspace.after.models if name.startswith("fct_"))
+    both = _run(workspace, "search_models", query="fct_", tagged="regulatory")
+    assert both.ok
+    assert both.data["models"] == [marts[0], marts[1]]
+    # Case, because dbt tags are written however the project writes them.
+    assert marts[1] in both.text
+    assert both.text.startswith(f"2 of the {len(marts)} model(s) matching 'fct_' are tagged")
+
+
+def test_a_filter_that_matches_nothing_says_so_in_a_sentence_that_can_be_quoted() -> None:
+    """An empty list is a fact the agent must be able to state, not silence to interpret."""
+    workspace = _tagged_project()
+    result = _run(workspace, "search_models", query="stg_", tagged="regulatory")
+    assert result.ok and result.data["models"] == []
+    assert "is tagged regulatory" in result.text and "None of the" in result.text
+
+
+def test_downstream_models_can_be_narrowed_by_tag_and_by_materialization() -> None:
+    workspace = _tagged_project()
+    source = next(
+        name
+        for name in sorted(workspace.after.models)
+        if name.startswith("stg_") and len(workspace.after.downstream_of(name)) > 1
+    )
+    everything = _run(workspace, "downstream_models", model=source)
+    views = _run(workspace, "downstream_models", model=source, materialized="view")
+    assert views.ok
+    assert set(views.data["models"]) <= set(everything.data["models"])
+    assert all(
+        workspace.after.models[name].materialization == "view" for name in views.data["models"]
+    )
+    if views.data["models"]:
+        assert "materialized as view" in views.text
