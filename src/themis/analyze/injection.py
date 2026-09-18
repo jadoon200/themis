@@ -18,6 +18,17 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+# Two tiers, because a bank's SQL is full of sentences that read like instructions to a
+# machine and are instructions to a person. "-- do not report this column in the regulatory
+# extract" is ordinary business language; so is "treat a null balance as zero". Those weak
+# signals fire only next to something that names an automated reader, and the strong ones —
+# which have no innocent reading in a dbt model — stand alone.
+_AUTOMATION = re.compile(
+    r"\b(ai|a\.i\.|llm|language model|assistant|agent|bot|automated|automatic|"
+    r"reviewer|review tool|scanner|linter|themis|copilot|chatgpt|claude|gpt)\b",
+    re.I,
+)
+
 # Each pattern says, in the second element, why the text reads as addressed to a machine.
 # Anchored on the imperative forms; a comment that merely mentions AI is not an attempt.
 _SIGNALS: tuple[tuple[re.Pattern[str], str], ...] = (
@@ -44,22 +55,6 @@ _SIGNALS: tuple[tuple[re.Pattern[str], str], ...] = (
     ),
     (
         re.compile(
-            r"\b(do not|don't|never)\b[^.\n]{0,30}"
-            r"\b(report|flag|raise|warn|mention|analyse|analyze|review)\b",
-            re.I,
-        ),
-        "instructs a reader not to report something",
-    ),
-    (
-        re.compile(
-            r"\b(mark|report|treat|classify|consider|declare)\b[^.\n]{0,30}"
-            r"\b(as )?(safe|approved|benign|clean|no issues|not an issue|low risk)\b",
-            re.I,
-        ),
-        "instructs a reader what verdict to reach",
-    ),
-    (
-        re.compile(
             r"\b(approved|signed off|reviewed)\b[^.\n]{0,30}"
             r"\b(by|per)\b[^.\n]{0,30}\b(ai|assistant|automated|themis|bot)\b",
             re.I,
@@ -77,6 +72,28 @@ _SIGNALS: tuple[tuple[re.Pattern[str], str], ...] = (
 )
 
 
+# Weak on their own: each has a perfectly ordinary reading in financial SQL. Reported only
+# when the same text also names an automated reader.
+_WEAK_SIGNALS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (
+        re.compile(
+            r"\b(do not|don't|never)\b[^.\n]{0,30}"
+            r"\b(report|flag|raise|warn|mention|analyse|analyze|review)\b",
+            re.I,
+        ),
+        "instructs a reader not to report something",
+    ),
+    (
+        re.compile(
+            r"\b(mark|report|treat|classify|consider|declare)\b[^.\n]{0,30}"
+            r"\b(as )?(safe|approved|benign|clean|no issues|not an issue|low risk)\b",
+            re.I,
+        ),
+        "instructs a reader what verdict to reach",
+    ),
+)
+
+
 # Zero-width, word-joiner and bidi controls: invisible to a person reading the diff,
 # invisible to a regex looking for "ignore all previous", and fully legible to a model.
 _INVISIBLE = re.compile(r"[\u200b-\u200f\u202a-\u202e\u2060-\u2064\ufeff\u00ad]")
@@ -85,6 +102,21 @@ _INVISIBLE = re.compile(r"[\u200b-\u200f\u202a-\u202e\u2060-\u2064\ufeff\u00ad]"
 def _legible(text: str) -> str:
     """What the text says once characters that are there only to hide it are removed."""
     return _INVISIBLE.sub("", text)
+
+
+def _reason(text: str) -> str | None:
+    """Why this text reads as addressed to a machine, or None.
+
+    One reason per stretch of text is enough to make a person look at it.
+    """
+    for pattern, why in _SIGNALS:
+        if pattern.search(text):
+            return why
+    if _AUTOMATION.search(text):
+        for pattern, why in _WEAK_SIGNALS:
+            if pattern.search(text):
+                return why
+    return None
 
 
 @dataclass(frozen=True)
@@ -162,13 +194,11 @@ def planted_text(sql: str) -> tuple[Planted, ...]:
         body = _legible(raw_body)
         if not body.strip():
             continue
-        for pattern, why in _SIGNALS:
-            match = pattern.search(body)
-            if match is None:
-                continue
-            excerpt = " ".join(body.split())
-            found.append(Planted(line=line, text=excerpt[:160], why=why))
-            break  # one reason per region is enough to make a person look at it
+        reason = _reason(body)
+        if reason is None:
+            continue
+        excerpt = " ".join(body.split())
+        found.append(Planted(line=line, text=excerpt[:160], why=reason))
     return tuple(found)
 
 
@@ -182,10 +212,9 @@ def addresses_a_reader(text: str) -> tuple[Planted, ...]:
     found: list[Planted] = []
     for number, raw_line in enumerate(text.splitlines() or [""], start=1):
         line = _legible(raw_line)
-        for pattern, why in _SIGNALS:
-            if pattern.search(line):
-                found.append(Planted(line=number, text=" ".join(line.split())[:160], why=why))
-                break
+        reason = _reason(line)
+        if reason is not None:
+            found.append(Planted(line=number, text=" ".join(line.split())[:160], why=reason))
     return tuple(found)
 
 
