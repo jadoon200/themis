@@ -1209,6 +1209,8 @@ Every run is recorded, including the ones that went backwards, in order:
 | 3 | tuned, after quote-format changes | 10 / 14 | 3 | 1 | 3 / 3 |
 | 4 | tuned, after run 3's fixes | **12 / 14** | 1 | 1 | **3 / 3** |
 | 5 | tuned + held-out together (23), after the tag filter | **18 / 19** | 1 | 0 | **4 / 4** |
+| 6 | the same 23, after adding a lineage filter | 16 / 19 | 1 | 2 | **4 / 4** |
+| 7 | the same 23, after the filter was made unable to empty itself | **19 / 19** | 0 | 0 | **4 / 4** |
 
 **The multi-hop questions found the tools wrong before they found the model wrong.** Asked
 what an FX rate feeds, the lineage tool answered "feeds no downstream column" — downstream
@@ -1244,13 +1246,29 @@ ambiguous, since no tag here is named after a materialization, so it is now answ
 it belongs and the reply says which it was. Both questions are right in run 5, and no
 answer was wrongly refused for the first time since run 1.
 
-**What remains, after run 5.** One grounded-but-wrong answer, the hardest question in the
-set: which columns of a mart are computed, directly or indirectly, from an FX rate. It has
-been wrong, then right, then refused, then wrong again across four runs without the tools
-changing under it — the model picks a starting point, finds nothing, and states the absence.
-An absence it *checked* is exactly the answer the citation check cannot catch, and the fix
-belongs in the tools again: tracing from the column asked about, in one call, rather than
-leaving the model to choose which end to start from.
+**Run 6 is the clearest evidence in this file that a tool change is not a free improvement.**
+The fix for run 5's last wrong answer was the obvious one: "which columns of M come from
+X.c" names two ends, so `column_lineage` took `in_model` and the question became one call.
+It answered that question — and cost two others. Asked which upstream column
+`fct_revenue.amount_usd` comes from, the model narrowed to `fct_revenue` itself, where a
+column's own sources can never be, got nothing back, and refused a question that had been
+right since run 1. Sixteen of nineteen, down from eighteen. **Every optional argument is
+another way to be wrong**, and a tool that can return a bare nothing eventually will.
+
+**Run 7: 19 of 19, and 4 of 4 refused — the first clean sweep.** Two changes, both the rule
+the tool registry already stated and neither of them a prompt instruction. A filter pointed
+at the model in the question is ignored, because its answer is knowably empty. A filter that
+genuinely matches nothing returns *the answer it emptied* alongside the fact that none of it
+is in the model asked about — so the model has the material to answer instead of an absence
+to report. The question that had been wrong, right, refused and wrong again across five runs
+is now right, and so is every other one.
+
+**What that is and is not.** Twenty-three questions, written by the person who wrote the
+tools, against the project the tools were built on. A clean sweep here means the tools answer
+the questions somebody who knew them thought to ask; it says nothing yet about the questions
+a reviewer asks about their own models. The six held-out questions have now been run three
+times and are no longer held out in any useful sense — the next honest set has to come from
+the work project.
 
 **Two things found along the way that were not agent problems.** The grounding check shared by
 the specialists skipped pieces of a quote shorter than a phrase — so
@@ -1363,9 +1381,11 @@ either way. Two evasions were closed because they are cheap and known — a doub
 identifier carrying the text, and zero-width or bidi characters that break a regex while
 leaving the sentence legible to a model — and others certainly remain.
 
-**What is still exposed.** `themis ask` embeds a finding's evidence note, so the planted
-text appears there in quotes; it can produce a wrong answer to a question, but it cannot
-suppress a finding or change a report. An injection in a model nobody's finding names is
+**What is still exposed.** `themis ask` used to embed a finding's evidence note, which for
+F7004 *is* the planted comment quoted in full — the one place where reporting an injection
+would have delivered it. The fact now travels and the wording does not: ask says the model
+contains text addressed at an automated reviewer and points at the report, which still
+quotes it, because a person has to read it to judge it. An injection in a model nobody's finding names is
 never read by a seat at all. And the whole control is scoped to what THEMIS reads: a
 reviewer's *own* IDE assistant, pointed at the same repository, has none of this.
 
@@ -1393,6 +1413,53 @@ blocked until the 900-second timeout killed the run. The adapter's own conversio
 could never have shown that. Four live tests now speak the protocol over a real pipe, the
 component check drives the installed command as an IDE assistant would, and CI fails if
 either skips itself.
+
+## What a project that is not this one would bring
+
+Four questions the demo project cannot answer about itself, answered here rather than at
+the office, where finding them out costs a failed first run.
+
+**A different dbt version.** The manifest is the primary grounding backend, and nobody at
+work is on the release this project develops against. The previous answer was a reading of
+dbt's changelog, which is not evidence. `scripts/dbt_versions.py` now builds an environment
+per release, compiles the demo project with each, and compares every field the loader reads
+— materialization, tags, incremental strategy, unique key, dependencies, compiled SQL.
+**dbt 1.8, 1.9, 1.10 and 1.12 all emit manifest v12 and all parse identically, model for
+model.** The 1.8 manifest is committed as a fixture so CI keeps guarding the oldest
+supported version, and a schema version outside the verified set now warns rather than
+refusing: a newer dbt will most likely still provide what THEMIS reads, and failing closed
+would block a review that would have worked.
+
+**`{{ source(...) }}`.** Every staging model in the demo project reads a seed through
+`ref()`, so the path *every* staging model at work begins with had never been run. A source
+is not a node in `manifest.nodes` and reaches a model only as a dependency of another
+resource type. It works: a real compiled project on two source tables loads, keeps its
+graph, derives its mart's grain and traces column lineage through, with the source's own
+columns honestly untraced rather than reported as nothing. No bug — but it was an
+assumption, and now it is a test.
+
+**A changed snapshot, which was a silent blind spot.** A snapshot is neither a model nor a
+seed, so a changed snapshot file resolved to no node, matched no folder fallback, and fell
+out of the review without a word: a pull request touching only snapshots would have been
+reported as "No findings". Execution never selects the file either, so the X0001 safety net
+could not catch it. Analysing snapshots is a feature with its own semantics and is not
+built; saying a file was not analysed costs nothing, so it is X0003 among the skipped checks
+and makes the review incomplete for the merge gate. **A blind spot that says so is a
+different thing from a silent one.**
+
+**A fifty-model refactor.** An ordinary pull request, and hundreds of findings — each one
+still open being a specialist call and possibly a fix call, at ten to twenty seconds on a
+local 8B model. Nothing bounded that. The bound is on findings rather than on a clock, so
+two runs of one review still agree, and it is spent worst-first by the rubric the report
+already ranks with: "twelve were not shown to the model layer" means the twelve at the
+bottom of the report in front of you. Every finding is still reported; only the adjudication
+is rationed.
+
+**And one that doctor should have been answering all along.** Everything about a profile can
+be right while the connection is not — SSO not signed in, a token expired, a host this
+network cannot reach. `themis doctor` now runs `dbt debug` behind the target guard, so the
+first sign of that is a line in doctor rather than a failed compile in the middle of the
+first review.
 
 ## Known limitations
 

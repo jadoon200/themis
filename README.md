@@ -122,8 +122,8 @@ themis agent --base main --head HEAD "What did the review find, and what changed
 A local model investigates by calling THEMIS's own tools — grain, lineage, what is
 downstream, the findings, the SQL diff, what execution measured — and every claim in its
 answer must quote a tool result verbatim, or the answer is refused. It chooses which fact
-to fetch; it never produces one. Across 23 questions it answered 18 of 19 and refused all 4
-that no tool can answer; every run, including the ones that went backwards, is in
+to fetch; it never produces one. Across 23 questions it answered **19 of 19** and refused all
+4 that no tool can answer; every run, including the two that went backwards, is in
 docs/EVAL.md. The same tools are served to any MCP client by `themis mcp` (optional extra,
 tested against the real SDK; tool results contain SQL, so connect only local-model clients
 to proprietary projects).
