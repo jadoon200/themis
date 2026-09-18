@@ -318,6 +318,14 @@ def restated_period_findings(
             continue
         model = after.models.get(name)
         governed = bool(model and vocab.is_governed(model.tags))
+        # Only where the figures land. One change moves every model beneath it, and a
+        # restatement repeated down the chain is the noise that made X0001 attribute to
+        # roots: it turned one fact into five findings, four of which name a model nobody
+        # reports. "Already reported" means a model somebody reads — one that is governed,
+        # or one nothing is built on. It cost the corpus a median of two findings per
+        # change against one before, which is the number to watch, not the rate.
+        if not governed and after.downstream_of(name):
+            continue
         earliest = keyed.earliest_changed_period or "an earlier period"
         latest = keyed.latest_period or "the latest period"
         out.append(

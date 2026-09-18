@@ -499,3 +499,52 @@ def test_a_grain_with_no_period_column_at_all_measures_nothing_about_periods(
     assert keyed is not None
     assert keyed.period_column is None
     assert keyed.latest_period is None and keyed.prior_period_rows == 0
+
+
+def test_a_restatement_is_not_repeated_down_the_chain() -> None:
+    """One change moves every model beneath it; the restatement is reported where it lands.
+
+    Repeating it per affected model is the noise that made X0001 attribute to roots — one
+    fact becoming five findings, four of which name a model nobody reports.
+    """
+    from themis.execute.runner import ExecutionResult
+    from themis.models import Backend, KeyedDiff
+    from themis.pipeline import restated_period_findings
+    from themis.snapshot import ModelNode, ProjectSnapshot
+    from themis.vocabulary import DEFAULT
+
+    def node(name: str, tags: tuple[str, ...] = ()) -> ModelNode:
+        return ModelNode(
+            name=name, unique_id=f"model.t.{name}", file_path=f"models/{name}.sql", tags=tags
+        )
+
+    snapshot = ProjectSnapshot(
+        revision="r",
+        backend=Backend.MANIFEST,
+        models={
+            "stg_entries": node("stg_entries"),
+            "int_converted": node("int_converted"),
+            "fct_reported": node("fct_reported", ("regulatory",)),
+            "fct_internal": node("fct_internal"),
+        },
+        child_map={
+            "stg_entries": ("int_converted",),
+            "int_converted": ("fct_reported", "fct_internal"),
+        },
+    )
+    keyed = KeyedDiff(
+        key=("period_month",),
+        period_column="period_month",
+        latest_period="2026-09",
+        prior_period_rows=4,
+        earliest_changed_period="2026-01",
+    )
+    deltas = {
+        name: ExecutionDelta(model_name=name, keyed=keyed)
+        for name in ("stg_entries", "int_converted", "fct_reported", "fct_internal")
+    }
+    findings = restated_period_findings(ExecutionResult(deltas=deltas), snapshot, DEFAULT)
+    named = sorted(f.evidence.model_name for f in findings)
+    # The governed mart, and the leaf nobody builds on. Not the staging or intermediate
+    # models, whose figures are not reported anywhere.
+    assert named == ["fct_internal", "fct_reported"]
