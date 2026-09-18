@@ -166,6 +166,60 @@ def _check_allowlist(settings: Settings, target: str) -> Check:
     )
 
 
+def _check_connection(project: Path, settings: Settings, target: str) -> Check:
+    """Whether dbt can actually reach the warehouse with this target.
+
+    Everything else about a profile can be right while the connection is not: SSO not
+    signed in, a token expired, a host unreachable from this network. Without this the
+    first sign is a failed compile in the middle of a review, reported as whatever dbt
+    said, and the person is left guessing which half is wrong.
+
+    `dbt debug` connects and reads; the target guard runs first, so this can never touch
+    a target the allowlist has not approved.
+    """
+    if not project.exists() or not (project / "dbt_project.yml").exists():
+        return Check("warehouse connection", "skip", "no dbt project to connect from")
+    if target not in settings.execute_allowed_targets:
+        return Check(
+            "warehouse connection",
+            "skip",
+            f"{target!r} is not in the allowlist, so THEMIS will not connect to it",
+        )
+    from themis.acquire.dbt_runner import DbtError, run_dbt
+
+    try:
+        result = run_dbt(
+            project,
+            ["debug"],
+            target=target,
+            allowed_targets=settings.execute_allowed_targets,
+            timeout_s=120.0,
+        )
+    except DbtError as exc:
+        return Check("warehouse connection", "fail", str(exc)[:200], None)
+    except Exception as exc:  # a doctor that raises tells nobody anything
+        return Check("warehouse connection", "fail", f"{type(exc).__name__}: {exc}"[:200], None)
+
+    output = result.stdout + result.stderr
+    if "Connection test: [OK connection ok]" in output or "All checks passed" in output:
+        return Check("warehouse connection", "ok", f"dbt reached the warehouse on {target!r}")
+    # dbt prints the reason; the first line that says something is more use than an exit code.
+    detail = next(
+        (
+            line.strip()
+            for line in output.splitlines()
+            if "ERROR" in line or "failed" in line.lower() or "Connection test" in line
+        ),
+        "dbt debug did not report a successful connection",
+    )
+    return Check(
+        "warehouse connection",
+        "fail",
+        detail[:200],
+        f"(cd {project} && dbt debug --target {target}) and fix what it names",
+    )
+
+
 def _check_git(project: Path) -> Check:
     from themis.acquire import git
 
@@ -318,7 +372,12 @@ def run_checks(project: Path, settings: Settings, *, target: str) -> list[Check]
     project = project.resolve()
     checks = [_check_python(), _check_dbt(), _check_project(project)]
     checks += _check_profile(project, target)
-    checks += [_check_allowlist(settings, target), _check_git(project), _check_manifest(project)]
+    checks += [
+        _check_allowlist(settings, target),
+        _check_connection(project, settings, target),
+        _check_git(project),
+        _check_manifest(project),
+    ]
     checks += _check_model(settings)
     checks += [_check_database(settings), _check_conventions(project), _check_redaction(settings)]
     checks.append(_check_mcp())
