@@ -114,6 +114,13 @@ table and the commands to repeat it). Four live tests speak the protocol over a 
 pipe, the component check drives the installed command as an IDE assistant would, and CI
 fails if either skips itself.
 
+**Ready for a project that is not this one.** The manifest loader is verified against
+real dbt 1.8, 1.9, 1.10 and 1.12 output rather than against the changelog
+(`scripts/dbt_versions.py`); `{{ source(...) }}`-rooted models — which the demo project
+does not have at all, and every staging model at work will — are compiled and traced in the
+test suite; and the model layer is bounded, so a fifty-model refactor cannot turn a review
+into an hour of adjudication. Each skip is counted in the report.
+
 ## Next
 
 **M2 — grounding depth.** Built. Column-level lineage, the grain lattice, macro and

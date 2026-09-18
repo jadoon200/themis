@@ -783,6 +783,18 @@ def review(
     contexts = build_contexts(acquired, grains, dialect=settings.dialect, vocab=vocab)
     findings, skipped = run_rules(contexts)
 
+    # A changed dbt file no stage looked at. A snapshot is the case: it is not a model or a
+    # seed, so it resolves to no node and would drop out of the review without a word. What
+    # is not analysed is said, and counts towards the review being incomplete.
+    skipped += [
+        SkippedRule(
+            rule_id="X0003",
+            model_name=Path(path).stem,
+            reason=f"{path} is not a model, seed or macro — THEMIS did not analyse it",
+        )
+        for path in acquired.unanalysed_changes
+    ]
+
     macro_affected = {
         macro: acquired.after.models_using_macro(macro) for macro in acquired.changed_macros
     }

@@ -147,3 +147,32 @@ def test_column_lineage_traces_through_a_source_rooted_model(
     # The source table's own columns are not traced, and saying so is the point: an
     # untraced root has to read as unknown, never as "computed from nothing".
     assert all(not ref.startswith("raw.") for ref in sources)
+
+
+# --- a changed file no stage looks at ------------------------------------------------------
+
+
+def test_a_changed_snapshot_is_reported_as_unanalysed_rather_than_silently_dropped() -> None:
+    """The failure this prevents: a pull request that only touches snapshots.
+
+    A snapshot is not a model or a seed, so it resolves to no node, matches no folder
+    fallback, and used to fall out of the review without a word — "No findings" for a
+    change to slowly-changing reference data. Analysing snapshots is a feature with its own
+    semantics and is not built; saying they were not analysed costs nothing, and is the
+    difference between a blind spot and a silent one.
+    """
+    from themis.acquire.git import ChangedFile
+    from themis.acquire.snapshot_builder import AcquireResult
+
+    empty = ProjectSnapshot(revision="r", backend=Backend.MANIFEST, models={})
+    acquired = AcquireResult(
+        before=empty,
+        after=empty,
+        changed=(
+            ChangedFile(path="demo_project/snapshots/scd_accounts.sql", status="M"),
+            ChangedFile(path="demo_project/models/marts/fct_revenue.sql", status="M"),
+            ChangedFile(path="README.md", status="M"),
+            ChangedFile(path="demo_project/snapshots/gone.sql", status="D"),
+        ),
+    )
+    assert acquired.unanalysed_changes == ("demo_project/snapshots/scd_accounts.sql",)
