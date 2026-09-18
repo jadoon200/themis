@@ -129,3 +129,18 @@ def test_a_model_that_is_not_pulled_says_how_to_pull_it(monkeypatch: pytest.Monk
 
 def test_a_project_directory_without_dbt_is_a_failure(tmp_path: Path) -> None:
     assert onboarding._check_project(tmp_path).status == "fail"
+
+
+def test_the_optional_mcp_sdk_is_reported_but_never_fails_a_project(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Serving MCP is opt-in, so its absence is a skip with the install line, not a failure.
+
+    A review needs nothing from the SDK; only `themis mcp` does. Reporting it as a failure
+    would push people to install a dependency tree they may have no reason to carry.
+    """
+    assert onboarding._check_mcp().status in {"ok", "skip"}
+
+    monkeypatch.setattr(onboarding.importlib.util, "find_spec", lambda name: None)
+    absent = onboarding._check_mcp()
+    assert absent.status == "skip" and absent.fix == "uv pip install 'themis[mcp]'"

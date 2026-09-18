@@ -871,6 +871,42 @@ def check_volatile_values(shas: dict[str, str], tmp: Path, env: dict[str, str]) 
     )
 
 
+def mcp_session(env: dict[str, str]) -> tuple[bool, str]:
+    """Drive `themis mcp` the way an IDE assistant does: handshake, list, call.
+
+    The adapter's own functions are unit-tested and the SDK wiring has a live test; this
+    is the third thing neither covers — the installed console command, serving a real
+    compiled project, over a pipe a client opened.
+    """
+    import anyio
+    from mcp import ClientSession
+    from mcp.client.stdio import StdioServerParameters, stdio_client
+
+    async def session() -> tuple[bool, str]:
+        parameters = StdioServerParameters(
+            command=sys.executable,
+            args=["-m", "themis.cli", "mcp", "--project", "demo_project"],
+            env={**os.environ, "PYTHONPATH": str(SRC), **env},
+            cwd=str(REPO),
+        )
+        async with (
+            stdio_client(parameters) as (read_stream, write_stream),
+            ClientSession(read_stream, write_stream) as client,
+        ):
+            with anyio.fail_after(120):
+                await client.initialize()
+                listed = await client.list_tools()
+                answer = await client.call_tool("model_details", {"model": "fct_revenue"})
+        text = answer.content[0].text if answer.content else ""
+        ok = len(listed.tools) == 12 and not answer.is_error and "fct_revenue" in text
+        return ok, f"{len(listed.tools)} tools; {text.splitlines()[0][:120] if text else 'no text'}"
+
+    try:
+        return anyio.run(session)  # type: ignore[arg-type]
+    except Exception as exc:  # the point of the check is that this does not happen
+        return False, f"{type(exc).__name__}: {exc}"
+
+
 def check_agent_and_setup(
     shas: dict[str, str], tmp: Path, env: dict[str, str], *, ollama: bool
 ) -> None:
@@ -921,7 +957,6 @@ def check_agent_and_setup(
     )
     record("init never overwrites", (workdir / ".env").read_text() == "kept\n")
 
-    m = themis("mcp", "--project", "demo_project", env=env)
     try:
         import mcp  # noqa: F401
 
@@ -929,8 +964,12 @@ def check_agent_and_setup(
     except ImportError:
         installed = False
     if installed:
-        skip("mcp without the SDK says how to install it", "the optional SDK is installed")
+        # Never invoke `themis mcp` through themis(): with the SDK present it serves, and
+        # a server reading an inherited stdin blocks until the timeout. Speak the protocol.
+        served, detail = mcp_session(env)
+        record("an MCP client lists the tools and gets a real answer", served, detail)
     else:
+        m = themis("mcp", "--project", "demo_project", env=env, timeout=60)
         record(
             "mcp without the SDK says how to install it",
             m.returncode == 2 and "themis[mcp]" in m.stderr,
