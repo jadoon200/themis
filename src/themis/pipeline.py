@@ -12,7 +12,9 @@ from pathlib import Path
 
 from themis import conventions, vocabulary
 from themis.acquire.snapshot_builder import AcquireResult, acquire
+from themis.analyze import impact
 from themis.analyze.grain import infer_grains
+from themis.analyze.impact import Narrowing
 from themis.analyze.lineage import LineageIndex
 from themis.analyze.positioning import position_findings
 from themis.analyze.suggest import suggest_tests
@@ -56,6 +58,10 @@ class ReviewResult:
     # Seeds whose data changed, and every model built on them. A data change reviews no
     # SQL, so without this a PR editing only an FX-rate file reported zero changed models.
     seed_affected: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    # What Stage 3 was allowed to skip, and why it was not allowed to skip more. A
+    # measurement that did not happen looks exactly like one that found nothing, so this
+    # travels with the report rather than staying in a log line.
+    narrowing: Narrowing | None = None
     degraded_reason: str | None = None
     executed: bool = False
     execution: ExecutionResult | None = None
@@ -825,6 +831,10 @@ def review(
     provider: object | None = None,
     data_anchor: Path | None = None,
     history: HistoryLookup | None = None,
+    # Build and compare only the models that read a column the change touched. Off by
+    # default: every other refusal in THEMIS errs towards reporting too much, and this one
+    # errs towards measuring nothing at all.
+    narrow_execution: bool = False,
 ) -> ReviewResult:
     """Run the deterministic stages, optionally including execution.
 
@@ -877,6 +887,7 @@ def review(
     seed_affected = {seed: acquired.after.downstream_of(seed) for seed in acquired.changed_seeds}
 
     execution: ExecutionResult | None = None
+    narrowing: Narrowing | None = None
     if run_execution:
         # Measure descendants as well as the changed models themselves. A fan-out in an
         # intermediate model is invisible in its own row count when the join is the last
@@ -887,6 +898,29 @@ def review(
         targets = set(changed)
         for name in changed:
             targets.update(acquired.after.downstream_of(name))
+
+        if narrow_execution:
+            narrowing = impact.narrow(
+                changed=impact.dirty_columns(
+                    acquired.before,
+                    acquired.after,
+                    {c.model_name for c in contexts},
+                    dialect=settings.dialect,
+                ),
+                candidates=targets - changed,
+                graph=contexts[0].lineage.after if contexts and contexts[0].lineage else None,
+                snapshot=acquired.after,
+                changed_seeds=acquired.changed_seeds,
+            )
+            if narrowing.refused:
+                log.info("execute.narrow_refused", reason=narrowing.refused)
+            else:
+                log.info(
+                    "execute.narrowed",
+                    skipped=len(narrowing.excluded),
+                    models=sorted(narrowing.excluded)[:5],
+                )
+                targets = changed | set(narrowing.kept)
         # Two-pass building is only needed when something in the selection is
         # incremental; for everything else the second pass is wasted time.
         # Only the incremental models need a second pass, and only when they are in
@@ -988,6 +1022,7 @@ def review(
         models=len(contexts),
         findings=len(findings),
         skipped=len(skipped),
+        narrowing=narrowing,
         executed=bool(execution and execution.ran),
         llm=bool(llm_summary),
     )
@@ -1018,6 +1053,7 @@ def review(
         macro_affected=macro_affected,
         seed_affected=seed_affected,
         degraded_reason=acquired.degraded_reason,
+        narrowing=narrowing,
         executed=bool(execution and execution.ran),
         execution=execution,
         execution_requested=run_execution,

@@ -143,6 +143,8 @@ def render(
     untested_grains: tuple[str, ...] = (),
     llm: ReviewSummary | None = None,
     seed_affected: dict[str, tuple[str, ...]] | None = None,
+    # What Stage 3 was allowed to skip, and why it was not allowed to skip more.
+    narrowing: object | None = None,
     # (kind, reason) for every way the review checked less than it was asked to.
     incomplete: tuple[tuple[str, str], ...] = (),
     # A salt to redact with, or None for the full report. See `report.redact`.
@@ -222,6 +224,16 @@ def render(
             "grains": [_grain(g) for _, g in sorted((grains or {}).items())],
             "execution_deltas": [_delta(d) for _, d in sorted((deltas or {}).items())],
             "untested_grains": list(untested_grains),
+            # Named models, not a count: a model that was not measured has to be
+            # identifiable, or the saving is bought with a silence nobody can audit.
+            "execution_narrowing": (
+                {
+                    "refused": getattr(narrowing, "refused", None),
+                    "not_measured": dict(sorted(getattr(narrowing, "excluded", {}).items())),
+                }
+                if narrowing is not None
+                else None
+            ),
             # None rather than an empty object on a --no-llm run: a reader can tell a
             # review that had no model layer from one whose model layer did nothing.
             "model_layer": _model_layer(llm) if llm is not None else None,

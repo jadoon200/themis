@@ -59,6 +59,14 @@ def eval_cmd(
             "falls back to how each mutation was declared.",
         ),
     ] = True,
+    narrow: Annotated[
+        bool,
+        typer.Option(
+            "--narrow/--no-narrow",
+            help="Build only the models a change can reach. Run the corpus with it on to "
+            "prove the narrowing catches everything the full build catches.",
+        ),
+    ] = False,
     allow_dirty: Annotated[
         bool,
         typer.Option(
@@ -120,6 +128,7 @@ def eval_cmd(
             base_ref=base,
             use_llm=use_llm,
             use_execution=execute,
+            narrow_execution=narrow,
             allow_dirty=allow_dirty,
             variant=variant,
         )
