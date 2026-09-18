@@ -795,6 +795,22 @@ rates as (select * from fx),""",
         ),
     ),
     Mutation(
+        id="unruled_january_fx_rate_restated",
+        pr_description="Correct the January USD rate to the published ECB figure.",
+        description_is_honest=True,
+        kind=Kind.UNRULED,
+        expects_family="X",
+        description=(
+            "A rate for the earliest period in the seed is corrected. Every figure built "
+            "on January moves — five months after January closed. No SQL changed, so no "
+            "rule can read it; what makes it worth a reviewer's time is not that numbers "
+            "moved but *which* numbers: a period that has already been reported"
+        ),
+        relative_path="seeds/raw_fx_rates.csv",
+        find="USD,2026-01-01,0.97715100,ecb",
+        replace="USD,2026-01-01,1.07715100,ecb",
+    ),
+    Mutation(
         id="currency_dropped_from_regulatory_grain",
         pr_description=("Simplify the regulatory summary: report one row per entity and period."),
         description_is_honest=False,
