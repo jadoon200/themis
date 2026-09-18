@@ -1461,6 +1461,120 @@ network cannot reach. `themis doctor` now runs `dbt debug` behind the target gua
 first sign of that is a line in doctor rather than a failed compile in the middle of the
 first review.
 
+## Four questions asked of the research rather than of me
+
+The rules were mine. Whether they are the *right* rules is a question about banks, Trino and
+data profiling, not about this codebase, so it was put to the literature. Each of the four
+produced something that changed the code.
+
+### What actually causes restatements → F3004 and X0004
+
+Restatement post-mortems and the ECB's risk-data-aggregation guide keep returning to two
+shapes. One is a figure that is the right magnitude, the right sign, correctly formatted and
+reconciles to nothing. **F3004** is that: an amount denominated in the row's own currency,
+summed without the currency in the grain. Ten euros and ten dollars make twenty of no unit.
+Execution cannot see it — the total moves the way summing rows always moves a total — and no
+test in a project without tests catches it.
+
+It fires on **three models in the demo project as it stands**: `fct_account_period_summary`,
+`fct_revenue_reported` and `int_account_activity`. That project was written to look like the
+real thing, by someone who did not put them there on purpose. The rule is diff-aware, so they
+stay quiet until something touches them; THEMIS reviews a change, not a project.
+
+The other shape is not a defect class at all but a consequence: examiners follow lineage to
+find unexplained transformation steps and reconciliation breaks, and what they are looking
+for is a number that moved after it was published. **X0004** measures it. When the derived
+grain carries a period, the keyed comparison also records the latest period present, how many
+rows moved in any period before it, and the earliest one that did. Changing January's FX rate
+now reports *"2 row(s) changed in periods before 2026-06-01, the earliest being
+2026-01-01"* on both regulatory marts. It is never suppressed by another finding: "the join
+lost a predicate, fix it" and "last quarter is now a different number" are two conversations,
+and a reviewer can accept the first and still need the second.
+
+### Trino's own semantics → F8005, and a warning about the demo
+
+`select 5/2` is **2** on Trino and **2.5** on DuckDB. A ledger stores amounts in minor units
+precisely so they stay whole, which makes `amount_minor / 100` the natural conversion — and
+on Trino it discards every fractional unit, on every row.
+
+The corpus refused to call this a defect, and it was right to. The demo project builds on
+DuckDB, where the mutation produces byte-identical output, so the oracle reported "declared
+defect, measured the opposite". It is declared LATENT now, with the engine difference as the
+reason. **The demo warehouse is not the target warehouse**, and this is the first case where
+that difference hides a defect rather than merely changing a plan.
+
+### How other tools infer a key → seeds are counted, not guessed
+
+dbt-core's own proposal and Datafold both infer a primary key from something the project
+declares: a uniqueness test, a constraint, a contract. The projects this is built for declare
+none of it. That left seeds unable to have a grain at all — "seed data, not SQL — grain cannot
+be derived, only measured".
+
+But a seed *is* data and it is in the repository, so it can be counted: no warehouse, no
+build, no test anybody wrote. Two refusals matter more than the feature. A measurement is
+never taken as an identifier — the FX seed's thirty rates are all distinct, and `rate` would
+have been "unique", a key that pairs rows which are not the same row. And a monetary *name*
+only disqualifies a column whose values are also numbers, because `rate_date` matches the
+money vocabulary, holds dates, and is half of the real key. What it settles on is
+`(currency_code, rate_date)` — the pair the whole FX conversion turns on.
+
+A counted parent key then outranks a naming guess downstream, and the demo project goes from
+**7 proven grains to 16, and 10 unknowns to 3** — the three being intermediate models with
+joins and unions, where a grain genuinely is not derivable.
+
+Promoting anything from weak to proven changes what it suppresses, which this project has
+been burned by before, so the corpus was the test: **recall stayed at 100% and precision rose
+from 82% to 86%**, with the false-positive rate falling from 36% to 27%. Nothing real was
+suppressed and one spurious fan-out flag disappeared.
+
+| | before | after |
+|---|---|---|
+| proven grains (of 20 models) | 7 | **16** |
+| unknown | 10 | **3** |
+| corpus recall | 100% | 100% |
+| corpus precision | 82% | **86%** |
+
+**What it cost.** Findings per change went from a median of 1 to 2, and criticals from 11 to
+33. Reading the worst case rather than accepting the number: five findings for one fan-out —
+the join that causes it, two models measurably no longer unique on their key, and two closed
+periods restated. Cause, effect and consequence, each true, and the increase is stronger
+grains letting execution check uniqueness on models it previously could not. It is still a
+change in what a reviewer reads, and the number to watch.
+
+### Column-level impact → narrowing, and the bug it nearly shipped with
+
+SQLMesh's plan algorithm narrows a rebuild by column lineage: find the columns that changed,
+skip the descendants that do not read them. The same idea decides what Stage 3 builds, which
+on a real warehouse is the expensive part of a review.
+
+It is the one feature here whose failure mode is silence — a model that was never built looks
+exactly like a model that did not move — so it refuses unless it can prove the set: every
+change confined to named output columns, every model in the set traced, no changed seed. It is
+off by default and names what it skipped.
+
+**The corpus caught it failing anyway.** Narrowing asked the *after* graph who reads the
+changed columns; for a **removed** column there is no such thing in the after graph, so every
+model below it looked untouched, and the mart whose breakage was the defect never got built.
+The case declaring "this must fail to build" came back built. That is the mistake F6 was
+written around — *who reads the column I just removed can only be answered against the before
+graph* — made again one layer down, in the feature that was supposed to be paranoid. Both
+graphs are consulted now, and a test asserts the after graph alone still gets it wrong.
+
+Then the proof, on the same code, same cases, narrowing off and on:
+
+| | full build | narrowed |
+|---|---|---|
+| rules fired | 32 / 32 | 32 / 32 |
+| true positives | 19 | 19 |
+| false negatives | 0 | 0 |
+| recall / precision | 100% / 86% | 100% / 86% |
+| gate | pass | pass |
+
+**Identical verdicts, case for case**, with narrowing actually applied on 31 of them rather
+than refused. That is the evidence the roadmap asked for, and it is evidence about *this*
+project: twenty models with complete lineage. It stays opt-in until a real project says
+otherwise, which is the same reason everything else here waits on the work project.
+
 ## Known limitations
 
 Kept current. Several entries here were closed and are gone rather than left standing —
