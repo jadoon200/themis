@@ -159,3 +159,39 @@ predicate evaluated against each model's upstream. Noted, not built.
 - AltimateAI/altimate-code (MIT)
 - dbt-labs/dbt-mcp
 - sqlancer/sqlancer; VeriEQL; SJTU-IPADS/SQLSolver
+
+## Serving tools to an agent, and being written to by the project
+
+**dbt's own MCP server** (dbt Labs, open source) exposes a dbt project to an assistant:
+CLI commands, the Semantic Layer, model discovery, and SQL execution. It is the opposite
+end of the same road from `themis mcp`, and worth being able to say so: dbt's server runs
+SQL and needs the warehouse; THEMIS's serves what a review established — grain, column
+lineage, findings, SQL diffs, measured deltas — and cannot run anything. Somewhere with a
+production warehouse and a data-platform team, the two answer different questions, and the
+read-only one is the one that can be pointed at a change before it merges.
+
+**Sophrosyne — "Agentic Exploration of Relational Data Systems Needs Moderation"**
+(arXiv 2605.30862) argues that an agent let loose on a relational system needs layered
+moderation rather than a well-behaved model: read-only tools, query budgets, execution
+timeouts, provenance, human checkpoints. THEMIS satisfies the ones that apply by
+construction and does not need the rest: its tools run no SQL at all, so there is no budget
+or timeout to set, and every call the model makes is kept as a `ModelCall` with what it was
+shown. The one that is not free is the human checkpoint, and that is what the whole design
+already is — the agent answers questions, it does not decide anything.
+
+**Prompt injection through the artefact under review.** The literature through 2026 is
+consistent and unwelcome: a 2025 paper from OpenAI, Anthropic and Google DeepMind found
+twelve published defences bypassed at >90% by adaptive attackers, and the surveys that
+follow it agree the useful layer is architectural — limit what a successful injection can
+reach — rather than detection at the prompt. THEMIS was already strong on the first half
+by accident of its own rule ("the LLM never produces facts"): the agent has twelve
+read-only tools and no way to write, run SQL or reach the network, so a successful
+injection buys a wrong sentence, not an action.
+
+What it was not protected against was the *reviewer* being steered into silence, and that
+shaped both halves of the answer here. `analyze/injection.py` and F7004 report planted text
+to a person and never let the model layer settle it; the supervisor withholds a model that
+writes to the reviewer from every seat that could refute a finding, lower a severity or
+propose a rewrite. The detector is not claimed to be complete — the research says plainly
+that it cannot be — which is exactly why the control that matters is the withholding, and
+why F7004 is a finding a human reads rather than a filter that quietly passes things.

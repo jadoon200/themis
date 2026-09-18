@@ -139,3 +139,4 @@ uvx pip-audit -r resolved.txt                          # against the OSV databas
 | a prompt over ~2,048 tokens | Ollama silently dropped its beginning; the model answered half a question | the context window is always requested; an overflow is refused, not answered |
 | a key column with NULLs, or a large table | the paired-row join was unhashable on Trino — 66s for 200k rows | plain equality; a NULL key is refused with the reason |
 | 3,000 models | whole-project lineage took 24s | one pass per model, identical graph, half the time |
+| a comment written at the reviewer | an AI reviewer quoting it would be quoting honestly, and the self-check would pass it | reported as F7004, and the model that carries it is kept away from every seat that could refute a finding |

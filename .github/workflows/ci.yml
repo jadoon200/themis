@@ -49,6 +49,10 @@ jobs:
       THEMIS_TEST_POSTGRES_URL: postgresql+psycopg://themis:themis@127.0.0.1:5436/themis
       THEMIS_TEST_TRINO_HOST: 127.0.0.1
       THEMIS_TEST_TRINO_PORT: "8085"
+      # The MCP tests skip themselves without the optional SDK, which would leave the
+      # protocol adapter covered only by its own conversion functions — and those pass
+      # whatever the SDK renames. Here, a missing SDK fails instead of skipping.
+      THEMIS_REQUIRE_MCP: "1"
     steps:
       - uses: actions/checkout@v5
 
@@ -83,12 +87,6 @@ jobs:
         # They skip themselves when no engine is reachable, so a broken service
         # container would quietly drop the target engine from coverage.
         run: pytest tests/test_warehouse_trino.py -q --no-header | grep -q "passed"
-
-      - name: Confirm the MCP tests ran against the real SDK
-        # They skip themselves when the optional SDK is absent, so a dropped dev
-        # requirement would leave the protocol adapter covered only by its own
-        # conversion functions — which pass whatever the SDK renames.
-        run: pytest tests/test_agent_mcp_live.py -q --no-header -rN | grep -q "4 passed"
 
       - name: Confirm the Postgres queue tests actually ran
         # These skip themselves when no database is reachable, so a broken service

@@ -17,7 +17,12 @@ from typing import Any
 
 import pytest
 
-pytest.importorskip("mcp", reason="the optional MCP SDK is not installed")
+# Skipped when the optional extra is absent — unless the environment says it must be
+# there, which is how CI keeps this file from quietly skipping itself into uselessness.
+if os.environ.get("THEMIS_REQUIRE_MCP"):
+    import mcp  # noqa: F401  (a missing SDK must fail here, not skip)
+else:
+    pytest.importorskip("mcp", reason="the optional MCP SDK is not installed")
 
 import anyio
 from mcp import ClientSession

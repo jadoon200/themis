@@ -96,6 +96,24 @@
 - **Demo project.** A financial dbt project on DuckDB — general ledger, FX conversion,
   revenue recognition, regulatory mart. Macro-using and, deliberately, test-free.
 
+**Text written at the reviewer.** An automated review reads the SQL, so anyone who can
+edit a model can write to it — and every AI seat here verifies quotes, which a planted
+sentence passes because it really is in the model. Three layers: `analyze/injection.py`
+and F7004 report it to a person; the supervisor withholds such a model (and a
+pull-request description or convention that does the same) from every seat that could
+refute a finding, lower a severity or propose a rewrite; and the agent's tool results are
+fenced with a token chosen per session, after a fixed `>>>` in a comment was shown to
+forge a tool result outside the fence. Detection is deliberately the junior layer — the
+published defences get bypassed; not showing the text to the seat that could act on it
+does not. [EVAL](EVAL.md), [PRIOR_ART](PRIOR_ART.md).
+
+**MCP, against the real SDK.** The optional extra's dependency tree was reviewed before
+it was installed (11 new packages, no version of anything existing moved, no known
+vulnerabilities, no telemetry exporter, no egress — [WORK_SETUP](WORK_SETUP.md) has the
+table and the commands to repeat it). Four live tests speak the protocol over a real
+pipe, the component check drives the installed command as an IDE assistant would, and CI
+fails if either skips itself.
+
 ## Next
 
 **M2 — grounding depth.** Built. Column-level lineage, the grain lattice, macro and
@@ -131,16 +149,16 @@ report agree; token accounting was already done. The machine-learning lane is
 enough for the saving to show as time rather than as object counts — that number has to
 come from a real warehouse. After that, in rough order of what it would change:
 
-- **Filters in the tools, not enumeration in the model.** The agent's remaining wrong
-  answer named one of two regulatory marts from a list. A `downstream_models` that filters by
-  tag or materialization returns exactly the answer, with nothing left for an 8B model to
-  enumerate. The general rule: every "which X are Y" a reviewer asks should be one tool call.
+- **Tracing from the column asked about.** Built: the tag and materialization filters, so
+  "which X are Y" is one tool call and the count is THEMIS's. What is left is the agent's
+  last wrong answer — which columns of a mart come from an FX rate — where the model picks
+  an end to start from, finds nothing, and states the absence. One call that traces from the
+  named column would remove the choice. The general rule holds: every question a reviewer
+  asks should be one tool call, not a list for the model to work through.
 - **The agent, on real questions.** Its question set was written alongside its tools. The
   next measurement is questions reviewers actually ask on the work project, scored the same
   way — and a verification menu: letting a specialist that abstains *choose* a deterministic
   measurement (a distinct count, a paired-row sample) THEMIS then runs.
-- **MCP against the real SDK.** The adapter is tested without the SDK, which is an optional
-  extra pending a decision on its dependency tree.
 - **Column-precise impact.** Classify each change as additive, column-level, model-wide or
   unknown — the approach Recce's classifier takes after SQLMesh's — and use column lineage to
   build and measure only the models that read what changed. It saves Stage 3 the most time
