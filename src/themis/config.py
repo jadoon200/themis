@@ -120,6 +120,7 @@ class Settings(BaseSettings):
     # a reporting-currency name always wins, so `revenue_usd` is never called suspect.
     currency_column_hints: tuple[str, ...] = vocabulary.CURRENCY_HINTS
     period_column_hints: tuple[str, ...] = vocabulary.PERIOD_HINTS
+    minor_unit_hints: tuple[str, ...] = vocabulary.MINOR_UNIT_HINTS
     transaction_currency_hints: tuple[str, ...] = vocabulary.TRANSACTION_CURRENCY_HINTS
     reporting_currency_hints: tuple[str, ...] = vocabulary.REPORTING_CURRENCY_HINTS
 

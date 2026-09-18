@@ -109,6 +109,11 @@ PERIOD_HINTS: tuple[str, ...] = (
     "value_date",
 )
 
+# Amounts stored as whole minor units — cents, pence, satoshi — which is how a ledger
+# keeps money integral. Dividing one back to major units without casting first truncates
+# under Trino's integer division, and the loss is a fraction of a unit on every row.
+MINOR_UNIT_HINTS: tuple[str, ...] = ("_minor", "_cents", "_pence", "_sen", "minor_units")
+
 # Tags a project uses to say a model feeds reconciliation or external reporting.
 GOVERNED_TAGS: tuple[str, ...] = ("regulatory", "recon", "control")
 
@@ -121,6 +126,7 @@ class Vocabulary:
     money_hints: tuple[str, ...] = MONEY_HINTS
     sensitive_hints: tuple[str, ...] = SENSITIVE_HINTS
     currency_hints: tuple[str, ...] = CURRENCY_HINTS
+    minor_unit_hints: tuple[str, ...] = MINOR_UNIT_HINTS
     period_hints: tuple[str, ...] = PERIOD_HINTS
     transaction_currency_hints: tuple[str, ...] = TRANSACTION_CURRENCY_HINTS
     reporting_currency_hints: tuple[str, ...] = REPORTING_CURRENCY_HINTS
@@ -134,6 +140,10 @@ class Vocabulary:
     def is_sensitive(self, column: str) -> bool:
         lowered = column.lower()
         return any(hint in lowered for hint in self.sensitive_hints)
+
+    def is_minor_unit_amount(self, column: str) -> bool:
+        lowered = column.lower()
+        return any(hint in lowered for hint in self.minor_unit_hints)
 
     def is_period_column(self, column: str) -> bool:
         lowered = column.lower()
@@ -176,6 +186,7 @@ def from_settings(settings: object) -> Vocabulary:
         published_folders=getattr(settings, "published_folders", PUBLISHED_FOLDERS),
         currency_hints=getattr(settings, "currency_column_hints", CURRENCY_HINTS),
         period_hints=getattr(settings, "period_column_hints", PERIOD_HINTS),
+        minor_unit_hints=getattr(settings, "minor_unit_hints", MINOR_UNIT_HINTS),
         transaction_currency_hints=getattr(
             settings, "transaction_currency_hints", TRANSACTION_CURRENCY_HINTS
         ),

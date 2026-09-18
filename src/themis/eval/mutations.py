@@ -795,6 +795,22 @@ rates as (select * from fx),""",
         ),
     ),
     Mutation(
+        id="minor_units_divided_as_integers",
+        pr_description="Simplify the minor-to-major macro: one cast instead of two.",
+        description_is_honest=False,
+        kind=Kind.DEFECT,
+        expects_family="F8",
+        description=(
+            "The inner decimal cast leaves the minor-to-major macro, so the division "
+            "happens between whole numbers. Trino truncates those, and every ledger "
+            "amount in the project loses its fractional units — a plausible figure that "
+            "is quietly short, on every row, through every model the macro reaches"
+        ),
+        relative_path=_MACRO_MONEY,
+        find="cast(cast({{ expr }} as decimal(38, 6)) / 100 as decimal(38, 6))",
+        replace="cast({{ expr }} / 100 as decimal(38, 6))",
+    ),
+    Mutation(
         id="unruled_january_fx_rate_restated",
         pr_description="Correct the January USD rate to the published ECB figure.",
         description_is_honest=True,

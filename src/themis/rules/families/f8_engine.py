@@ -299,9 +299,140 @@ class UnorderedLimitRule(Rule):
         ]
 
 
+_INTEGER_TYPES = {
+    exp.DataType.Type.INT,
+    exp.DataType.Type.BIGINT,
+    exp.DataType.Type.SMALLINT,
+    exp.DataType.Type.TINYINT,
+}
+_EXACT_TYPES = {
+    exp.DataType.Type.DECIMAL,
+    exp.DataType.Type.DOUBLE,
+    exp.DataType.Type.FLOAT,
+    exp.DataType.Type.UDOUBLE,
+}
+
+
+def _declared_integers(ctx: RuleContext) -> set[str]:
+    """Columns this model's schema.yml declares as an integer type, lowercased."""
+    model = ctx.after
+    if model is None:
+        return set()
+    out: set[str] = set()
+    for column in model.columns:
+        declared = (column.data_type or "").strip().lower()
+        if declared.split("(")[0] in ("int", "integer", "bigint", "smallint", "tinyint"):
+            out.add(column.name.lower())
+    return out
+
+
+def _is_integral(expression: exp.Expression, ctx: RuleContext, integers: set[str]) -> bool:
+    """Whether this operand reaches Trino as a whole number.
+
+    Three ways to know, in descending strength: a cast to an integer type, a declared
+    integer column, and a name that says minor units. The last is a convention rather than
+    a fact, which is why the finding it produces is LIKELY and says so.
+    """
+    if isinstance(expression, exp.Cast):
+        return expression.to.this in _INTEGER_TYPES
+    if isinstance(expression, exp.Column):
+        name = expression.name.lower()
+        return name in integers or ctx.vocabulary.is_minor_unit_amount(name)
+    if isinstance(expression, exp.Literal):
+        return expression.is_int
+    return False
+
+
+def _guarded_by_exact_cast(division: exp.Div) -> bool:
+    """Whether either operand is already cast to a type that keeps the fraction."""
+    for side in (division.this, division.expression):
+        if isinstance(side, exp.Cast) and side.to.this in _EXACT_TYPES:
+            return True
+    return False
+
+
+def _truncating_divisions(sql: str, dialect: str, ctx: RuleContext) -> list[str]:
+    try:
+        parsed = parse_sql(sql, dialect=dialect)
+    except ParseError:
+        return []
+    integers = _declared_integers(ctx)
+    found: list[str] = []
+    for division in parsed.find_all(exp.Div):
+        if _guarded_by_exact_cast(division):
+            continue
+        if not _is_integral(division.this, ctx, integers):
+            continue
+        # A whole number over a whole number. Over a decimal, Trino widens and keeps it.
+        if not _is_integral(division.expression, ctx, integers):
+            continue
+        found.append(division.sql(dialect=dialect)[:80])
+    return found
+
+
+@dataclass
+class IntegerDivisionRule(Rule):
+    """A division of whole numbers, which Trino truncates rather than rounds.
+
+    `5 / 2` is `2`. A ledger stores amounts in minor units to keep them integral — that is
+    the point of minor units — so `amount_minor / 100` is the natural way to write the
+    conversion and it discards every fraction of a unit, on every row, with nothing in the
+    output looking wrong. The demo project's own macro casts to decimal first and carries a
+    comment about the time it did not.
+
+    Deliberately narrow. Dividing a decimal amount is ordinary and safe, so this fires only
+    where the numerator reaches the engine as a whole number: cast to one, declared as one,
+    or named as minor units.
+    """
+
+    rule_id: str = field(init=False, default="F8005")
+    family: str = field(init=False, default=FAMILY)
+    severity: Severity = field(init=False, default=Severity.HIGH)
+
+    def check(self, ctx: RuleContext) -> list[Finding]:
+        after_sql = ctx.after.analysable_sql if ctx.after else None
+        if after_sql is None:
+            return []
+        divisions = _truncating_divisions(after_sql, ctx.dialect, ctx)
+        if not divisions:
+            return []
+        before_sql = ctx.before.analysable_sql if ctx.before else None
+        if before_sql is not None:
+            already = set(_truncating_divisions(before_sql, ctx.dialect, ctx))
+            divisions = [d for d in divisions if d not in already]
+        if not divisions:
+            return []
+
+        return [
+            Finding(
+                rule_id=self.rule_id,
+                family=self.family,
+                title="Whole-number division, which Trino truncates",
+                severity=self.severity,
+                confidence=Confidence.LIKELY,
+                evidence=Evidence(
+                    model_name=ctx.model_name,
+                    file_path=ctx.after.file_path if ctx.after else None,
+                    note="; ".join(sorted(set(divisions))[:3]),
+                ),
+                consequence=(
+                    "Trino divides whole numbers as whole numbers: 5 / 2 is 2. Every "
+                    "fraction of a unit is discarded on every row, and the result is a "
+                    "plausible amount that is quietly short."
+                ),
+                suggestion=(
+                    "Cast to DECIMAL before dividing, as the project's own minor-to-major "
+                    "macro does: cast(amount_minor as decimal(38, 6)) / 100."
+                ),
+                blast_radius=ctx.blast_radius,
+            )
+        ]
+
+
 RULES: tuple[Rule, ...] = (
     CrossCatalogJoinRule(),
     CartesianJoinRule(),
     PartitionPruningLostRule(),
     UnorderedLimitRule(),
+    IntegerDivisionRule(),
 )
