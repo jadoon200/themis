@@ -1325,13 +1325,23 @@ def check_trino() -> None:
     )
 
 
+def _why(result: subprocess.CompletedProcess[str], chars: int) -> str:
+    """A failing check has to say what happened.
+
+    Both corpus checks once failed with a blank detail: the harness refuses a dirty
+    working tree and says so on stderr, which nothing was reading. The reason for a
+    failure is exactly what a check exists to hand back.
+    """
+    return (result.stdout[-chars:] + result.stderr[-chars:]).strip()
+
+
 def check_eval() -> None:
     print("\ncorpus harness")
     r = themis("eval", "--mutations", "defects", "--no-execute", timeout=1800)
     record(
         "corpus without execution: gate passes on the defects",
         r.returncode == 0 and "gate: pass" in r.stdout,
-        r.stdout[-500:],
+        _why(r, 500),
     )
     r = themis(
         "eval",
@@ -1347,7 +1357,7 @@ def check_eval() -> None:
     record(
         "generated mutations run, and nothing that moved went unreported",
         r.returncode == 0 and not missed,
-        r.stdout[-600:],
+        _why(r, 600),
     )
 
 

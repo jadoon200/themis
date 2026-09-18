@@ -25,7 +25,7 @@
 - **Tested-vs-testless measurement.** `themis eval --variant tested` merges declared
   keys into the demo project and reruns the corpus, which is how the cost of deriving
   grain rather than reading it is finally a number rather than an expectation.
-- **Stage 2 — Rules.** 29 rules across eight families: grain and fan-out, filters and
+- **Stage 2 — Rules.** 30 rules across eight families: grain and fan-out, filters and
   NULL semantics, money precision, periods, incremental and materialization, contracts
   and lineage, governance, and Trino engine behaviour. Plus `X0001`, the safety net
   that reports a measured change no rule accounts for. Skipped checks are reported

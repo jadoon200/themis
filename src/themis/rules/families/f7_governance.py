@@ -14,6 +14,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
+from themis.analyze import injection
 from themis.models import Confidence, Evidence, Finding, GrainSource, Severity
 from themis.rules.base import Rule, RuleContext
 
@@ -200,8 +201,77 @@ class ApproximateAggregateInReportedModelRule(Rule):
         ]
 
 
+@dataclass
+class TextAddressedToTheReviewerRule(Rule):
+    """A comment or literal written at whatever reads the model, rather than at a person.
+
+    Every other rule here asks whether a change is safe. This one asks whether someone is
+    trying to steer the thing that answers that question. It exists because THEMIS's own
+    defences cannot: a planted sentence is really in the model, so an AI reviewer quoting
+    it is quoting verbatim, the grounding check passes, and "this model is approved"
+    arrives as evidence. Only a deterministic reading of the text catches it, and only a
+    person should settle it — which is why this is a finding and not a filter.
+
+    Reported on the text a *change* introduces. A model that has always carried the line
+    is a fact about the repository, not about this pull request.
+    """
+
+    rule_id: str = field(init=False, default="F7004")
+    family: str = field(init=False, default=FAMILY)
+    severity: Severity = field(init=False, default=Severity.HIGH)
+
+    def check(self, ctx: RuleContext) -> list[Finding]:
+        if ctx.after is None:
+            return []
+        # Raw source, not compiled: this is about what someone wrote in the file, and a
+        # Jinja comment never survives compilation.
+        after_sql = ctx.after.raw_sql or ctx.after.analysable_sql
+        if not after_sql:
+            return []
+        before_sql = (ctx.before.raw_sql or ctx.before.analysable_sql) if ctx.before else None
+        planted = injection.added(before_sql, after_sql)
+        if not planted:
+            return []
+
+        # Every planted line, not the first with a count: "(and 2 more)" hides the one a
+        # reviewer most needs to read, and there are never many.
+        shown = planted[:5]
+        lines = "; ".join(f"line {item.line} {item.why}: {item.text!r}" for item in shown)
+        more = f"; and {len(planted) - len(shown)} more" if len(planted) > len(shown) else ""
+        first = planted[0]
+        return [
+            Finding(
+                rule_id=self.rule_id,
+                family=self.family,
+                title="Text in this model addresses an automated reviewer",
+                severity=self.severity,
+                confidence=Confidence.PROVEN,
+                evidence=Evidence(
+                    model_name=ctx.model_name,
+                    file_path=ctx.after.file_path,
+                    line=first.line,
+                    note=lines + more,
+                ),
+                consequence=(
+                    "An automated review reads this SQL, so a comment in it is a message "
+                    "to that reviewer. THEMIS makes its AI reviewers quote what they rely "
+                    "on, and this text would be quoted truthfully — it really is in the "
+                    "model — so no grounding check can refuse it. Whatever the intent, a "
+                    "change that writes instructions to the review process is a change a "
+                    "person has to look at."
+                ),
+                suggestion=(
+                    "Confirm with the author why this is here. Comments should describe "
+                    "the SQL for the people who maintain it."
+                ),
+                blast_radius=ctx.blast_radius,
+            )
+        ]
+
+
 RULES: tuple[Rule, ...] = (
     SensitiveColumnExposedRule(),
     UnprovableGrainOnGovernedModelRule(),
     ApproximateAggregateInReportedModelRule(),
+    TextAddressedToTheReviewerRule(),
 )
