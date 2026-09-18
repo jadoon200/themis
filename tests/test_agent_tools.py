@@ -359,6 +359,10 @@ def test_a_narrowed_lineage_question_with_no_answer_says_so_in_a_sentence() -> N
     )
     assert result.ok and result.data["columns"] == []
     assert f"is in {unrelated}" in result.text and "None of the" in result.text
+    # And the answer it emptied comes back with it: an empty result reads as "there is
+    # none", which the agent then reports honestly and wrongly.
+    assert result.data["all_columns"]
+    assert result.data["all_columns"][0] in result.text
 
 
 def test_looking_for_a_column_on_the_wrong_model_points_at_the_right_one() -> None:
@@ -369,3 +373,25 @@ def test_looking_for_a_column_on_the_wrong_model_points_at_the_right_one() -> No
     assert not result.ok
     assert "A column named amount exists on:" in result.text
     assert "in_model=" in result.text
+
+
+def test_narrowing_to_the_model_being_asked_about_is_ignored() -> None:
+    """A filter that empties itself by construction.
+
+    A column's sources and consumers live in other models, so `in_model` pointed at the
+    model in the question can only return nothing. The agent did exactly that — asked which
+    upstream column fct_revenue.amount_usd came from, it narrowed to fct_revenue, got
+    nothing, and refused a question that had been right since the first run.
+    """
+    workspace = Workspace(after=synthetic.project(40))
+    mart = next(
+        name
+        for name in sorted(workspace.after.models)
+        if name.startswith("fct_") and workspace.after.models[name].depends_on_models
+    )
+    plain = _run(workspace, "column_lineage", model=mart, column="reported_amount")
+    narrowed = _run(
+        workspace, "column_lineage", model=mart, column="reported_amount", in_model=mart
+    )
+    assert narrowed.ok
+    assert narrowed.text == plain.text

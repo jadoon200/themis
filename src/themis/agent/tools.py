@@ -366,6 +366,15 @@ def _column_lineage(workspace: Workspace, args: dict[str, Any]) -> ToolResult:
     # model. That is the enumeration an 8B model drops, so the second end is an argument:
     # the count in the reply is THEMIS's, and a partial answer is not quotable as a whole one.
     in_model = str(args["in_model"]).strip() if args.get("in_model") else None
+    # Pointed at the model being asked about, the filter empties itself: a column's sources
+    # and consumers live in *other* models by construction. Asked which upstream column
+    # fct_revenue.amount_usd comes from, the model narrowed to fct_revenue and got "none of
+    # the 3" — a new argument turning a question that had been right since run 1 into a
+    # refusal. Every optional argument is another way to be wrong, so the ones whose answer
+    # is knowably empty are ignored rather than obeyed.
+    if in_model is not None and in_model == name:
+        in_model = None
+    all_items = list(items)
     total = len(items)
     if in_model is not None:
         if (missing := _unknown_model(workspace, in_model)) is not None:
@@ -384,12 +393,22 @@ def _column_lineage(workspace: Workspace, args: dict[str, Any]) -> ToolResult:
         else ""
     )
     if not items:
-        if in_model is not None:
+        if in_model is not None and total:
+            # Never let the filter turn a real answer into nothing: the model reads an
+            # empty result as "there is none" and says so, honestly and wrongly. It gets
+            # the unfiltered answer, and the fact that none of it is in the model it asked
+            # about, in one reply.
+            unfiltered = "\n".join(f"{name}.{column} {label} {item}" for item in all_items[:10])
             return ToolResult(
                 text=(
                     f"None of the {total} column(s) {name}.{column} {label} is in "
-                    f"{in_model}.{caveat}"
+                    f"{in_model}. What it {label}:\n{unfiltered}{caveat}"
                 ),
+                data={"columns": [], "all_columns": all_items, "untraced": untraced},
+            )
+        if in_model is not None:
+            return ToolResult(
+                text=f"{name}.{column} {label} no column at all, in {in_model} or anywhere.",
                 data={"columns": [], "untraced": untraced},
             )
         empty = "no upstream model column" if direction == "upstream" else "no downstream column"
