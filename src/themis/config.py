@@ -119,6 +119,7 @@ class Settings(BaseSettings):
     # Units. A project that spells its transaction-currency amounts differently sets these;
     # a reporting-currency name always wins, so `revenue_usd` is never called suspect.
     currency_column_hints: tuple[str, ...] = vocabulary.CURRENCY_HINTS
+    period_column_hints: tuple[str, ...] = vocabulary.PERIOD_HINTS
     transaction_currency_hints: tuple[str, ...] = vocabulary.TRANSACTION_CURRENCY_HINTS
     reporting_currency_hints: tuple[str, ...] = vocabulary.REPORTING_CURRENCY_HINTS
 

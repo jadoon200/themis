@@ -295,3 +295,207 @@ def test_the_report_says_which_columns_the_sql_made_volatile() -> None:
     text = markdown.render([finding], skipped=[], models_reviewed=1, executed=True)
     assert "because the SQL makes them differ in any two builds" in text
     assert "`processed_at`" in text
+
+
+# --- a period that was already reported ----------------------------------------------------
+
+
+def _delta_with_keyed(**keyed: object) -> ExecutionDelta:
+    from themis.models import KeyedDiff
+
+    return ExecutionDelta(
+        model_name="fct_regulatory_summary",
+        rows_before=100,
+        rows_after=100,
+        keyed=KeyedDiff(key=("period_month", "entity_code"), **keyed),  # type: ignore[arg-type]
+    )
+
+
+def _result(delta: ExecutionDelta):
+    from themis.execute.runner import ExecutionResult
+
+    return ExecutionResult(deltas={delta.model_name: delta})
+
+
+def _snapshot_with(tags: tuple[str, ...]):
+    from themis.models import Backend
+    from themis.snapshot import ModelNode, ProjectSnapshot
+
+    node = ModelNode(
+        name="fct_regulatory_summary",
+        unique_id="model.t.fct_regulatory_summary",
+        file_path="models/marts/fct_regulatory_summary.sql",
+        tags=tags,
+    )
+    return ProjectSnapshot(
+        revision="r", backend=Backend.MANIFEST, models={node.name: node}, child_map={}
+    )
+
+
+def test_a_figure_moving_in_a_closed_period_is_reported_on_its_own() -> None:
+    """A restatement is a different conversation from the defect that caused it.
+
+    "The join lost a predicate" is something to fix before merging. "Last quarter's
+    reported revenue is now a different number" is an event with a process attached. A
+    reviewer can accept the first and still have to be told the second.
+    """
+    from themis.pipeline import restated_period_findings
+    from themis.vocabulary import DEFAULT
+
+    delta = _delta_with_keyed(
+        period_column="period_month",
+        latest_period="2026-09",
+        prior_period_rows=12,
+        earliest_changed_period="2026-06",
+        rows_changed=12,
+    )
+    (finding,) = restated_period_findings(_result(delta), _snapshot_with(("regulatory",)), DEFAULT)
+    assert finding.rule_id == "X0004"
+    assert finding.confidence is Confidence.MEASURED
+    # Critical only because it is measured *and* the model is governed.
+    assert finding.severity is Severity.CRITICAL
+    assert "12 row(s) changed in periods before 2026-09" in (finding.evidence.note or "")
+    assert "2026-06" in (finding.evidence.note or "")
+
+
+def test_an_ungoverned_model_restating_a_period_is_high_not_critical() -> None:
+    from themis.pipeline import restated_period_findings
+    from themis.vocabulary import DEFAULT
+
+    delta = _delta_with_keyed(
+        period_column="period_month", latest_period="2026-09", prior_period_rows=3
+    )
+    (finding,) = restated_period_findings(_result(delta), _snapshot_with(()), DEFAULT)
+    assert finding.severity is Severity.HIGH
+
+
+def test_a_change_confined_to_the_open_period_says_nothing() -> None:
+    """The common case, and it must be silent or the finding means nothing."""
+    from themis.pipeline import restated_period_findings
+    from themis.vocabulary import DEFAULT
+
+    delta = _delta_with_keyed(
+        period_column="period_month",
+        latest_period="2026-09",
+        prior_period_rows=0,
+        rows_changed=40,
+    )
+    assert restated_period_findings(_result(delta), _snapshot_with(("regulatory",)), DEFAULT) == []
+
+
+def test_a_grain_with_no_period_in_it_is_never_guessed_at() -> None:
+    from themis.pipeline import restated_period_findings
+    from themis.vocabulary import DEFAULT
+
+    delta = _delta_with_keyed(prior_period_rows=5)  # no period_column: nothing was measured
+    assert restated_period_findings(_result(delta), _snapshot_with(("regulatory",)), DEFAULT) == []
+
+
+@pytest.fixture
+def periods(tmp_path: Path) -> Iterator[DuckDBClient]:
+    """Three periods, with one row changed in the earliest and one in the latest."""
+    db = tmp_path / "periods.duckdb"
+    con = duckdb.connect(str(db))
+    con.execute("create schema base; create schema head;")
+    for schema in ("base", "head"):
+        con.execute(
+            f"create table {schema}.fct (period_month varchar, entity_code varchar, revenue double)"
+        )
+    con.execute(
+        """insert into base.fct values
+        ('2026-06', 'A', 100.0), ('2026-06', 'B', 200.0),
+        ('2026-07', 'A', 110.0), ('2026-07', 'B', 210.0),
+        ('2026-08', 'A', 120.0), ('2026-08', 'B', 220.0)"""
+    )
+    con.execute(
+        """insert into head.fct values
+        ('2026-06', 'A', 100.0), ('2026-06', 'B', 999.0),
+        ('2026-07', 'A', 110.0), ('2026-07', 'B', 210.0),
+        ('2026-08', 'A', 120.0), ('2026-08', 'B', 888.0)"""
+    )
+    con.close()
+    client = DuckDBClient(db)
+    try:
+        yield client
+    finally:
+        client.close()
+
+
+def _period_grain() -> Grain:
+    return Grain(
+        model_name="fct",
+        columns=("period_month", "entity_code"),
+        source=GrainSource.MEASURED,
+        rows_per_key=1.0,
+    )
+
+
+def test_rows_changed_in_an_earlier_period_are_counted_and_the_earliest_named(
+    periods: DuckDBClient,
+) -> None:
+    keyed, reason = pair_rows(
+        periods,
+        "fct",
+        base_schema="base",
+        head_schema="head",
+        head_grain=_period_grain(),
+        base_grain=_period_grain(),
+        max_rows=1000,
+    )
+    assert reason is None and keyed is not None
+    assert keyed.period_column == "period_month"
+    assert keyed.latest_period == "2026-08"
+    # 2026-06 B moved; 2026-08 B moved too but that is the period still open.
+    assert keyed.prior_period_rows == 1
+    assert keyed.earliest_changed_period == "2026-06"
+    assert keyed.restates_a_closed_period
+
+
+def test_a_change_only_in_the_latest_period_is_not_a_restatement(tmp_path: Path) -> None:
+    db = tmp_path / "open.duckdb"
+    con = duckdb.connect(str(db))
+    con.execute("create schema base; create schema head;")
+    for schema in ("base", "head"):
+        con.execute(
+            f"create table {schema}.fct (period_month varchar, entity_code varchar, revenue double)"
+        )
+    con.execute("insert into base.fct values ('2026-07', 'A', 1.0), ('2026-08', 'A', 2.0)")
+    con.execute("insert into head.fct values ('2026-07', 'A', 1.0), ('2026-08', 'A', 9.0)")
+    con.close()
+    client = DuckDBClient(db)
+    try:
+        keyed, reason = pair_rows(
+            client,
+            "fct",
+            base_schema="base",
+            head_schema="head",
+            head_grain=_period_grain(),
+            base_grain=_period_grain(),
+            max_rows=1000,
+        )
+    finally:
+        client.close()
+    assert reason is None and keyed is not None
+    assert keyed.rows_changed == 1
+    assert keyed.prior_period_rows == 0
+    assert not keyed.restates_a_closed_period
+
+
+def test_one_period_in_the_table_can_never_be_a_restatement(warehouse: DuckDBClient) -> None:
+    """Its key does carry a period, and every row is in it — so nothing is *earlier*."""
+    keyed, _ = _pair(warehouse)
+    assert keyed is not None
+    assert keyed.period_column == "period"
+    assert keyed.rows_changed  # rows did move
+    assert keyed.prior_period_rows == 0 and not keyed.restates_a_closed_period
+
+
+def test_a_grain_with_no_period_column_at_all_measures_nothing_about_periods(
+    warehouse: DuckDBClient,
+) -> None:
+    keyed, _ = _pair(
+        warehouse, head_grain=_unique(("entry_id",)), base_grain=_unique(("entry_id",))
+    )
+    assert keyed is not None
+    assert keyed.period_column is None
+    assert keyed.latest_period is None and keyed.prior_period_rows == 0

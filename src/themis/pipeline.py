@@ -23,12 +23,14 @@ from themis.execute.runner import ExecutionResult, execute
 from themis.logging import get_logger
 from themis.models import (
     Confidence,
+    Evidence,
     ExecutionDelta,
     Finding,
     FindingHistory,
     Grain,
     GrainSource,
     KeyedDiff,
+    Severity,
     sum_moved,
 )
 from themis.review.supervisor import ReviewSummary
@@ -289,6 +291,72 @@ def _merge_volatile(
         for model, columns in side.items():
             merged[model] = merged.get(model, frozenset()) | columns
     return merged
+
+
+def restated_period_findings(
+    result: ExecutionResult,
+    after: ProjectSnapshot,
+    vocab: Vocabulary = DEFAULT_VOCABULARY,
+) -> list[Finding]:
+    """Models where a figure moved in a period that was already reported.
+
+    Separate from every other finding on purpose, and never suppressed by one. "The join
+    lost a predicate" and "last quarter's reported revenue is now a different number" are
+    two different conversations: the first is a defect to fix before merging, the second is
+    a restatement, which in a bank is an event with a process attached — disclosure,
+    sign-off, sometimes a filing. A reviewer can accept the first and still need to be told
+    the second.
+
+    Only measured, never inferred. It needs a period in the derived grain, both builds
+    counted unique on that grain, and rows that actually moved in a period earlier than the
+    latest one present. Nothing about this can be established by reading SQL.
+    """
+    out: list[Finding] = []
+    for name, delta in sorted(result.deltas.items()):
+        keyed = delta.keyed
+        if keyed is None or not keyed.restates_a_closed_period:
+            continue
+        model = after.models.get(name)
+        governed = bool(model and vocab.is_governed(model.tags))
+        earliest = keyed.earliest_changed_period or "an earlier period"
+        latest = keyed.latest_period or "the latest period"
+        out.append(
+            Finding(
+                rule_id="X0004",
+                family="X",
+                title=f"`{name}` changes a period that was already reported",
+                severity=Severity.CRITICAL if governed else Severity.HIGH,
+                confidence=Confidence.MEASURED,
+                evidence=Evidence(
+                    model_name=name,
+                    note=(
+                        f"{keyed.prior_period_rows:,} row(s) changed in periods before "
+                        f"{latest}, the earliest being {earliest}, keyed on "
+                        f"{', '.join(keyed.key)}"
+                    ),
+                    identity="",
+                ),
+                consequence=(
+                    "Building both revisions moved figures for periods that are not the "
+                    "current one. Whatever else this change is, it restates numbers that "
+                    "have already been published"
+                    + (
+                        " from a model tagged for regulatory reporting or reconciliation."
+                        if governed
+                        else "."
+                    )
+                    + " That is a decision with a process attached, not a detail of the "
+                    "implementation."
+                ),
+                suggestion=(
+                    "If the restatement is intended, say so on the change and follow "
+                    "whatever your reporting process requires. If it is not, bound the "
+                    "change to the open period."
+                ),
+                blast_radius=after.downstream_of(name),
+            )
+        )
+    return out
 
 
 def unexplained_change_findings(
@@ -857,6 +925,9 @@ def review(
                     vocab=vocab,
                 )
             )
+            # Not suppressed by anything above it: a rule explaining *why* the numbers moved
+            # does not tell a reviewer that what moved was a period already reported.
+            findings.extend(restated_period_findings(execution, acquired.after, vocab))
             grains = {**grains, **execution.measured_grains}
         else:
             log.warning("execute.skipped", reason=execution.skipped_reason)

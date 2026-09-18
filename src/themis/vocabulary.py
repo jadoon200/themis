@@ -94,6 +94,21 @@ REPORTING_CURRENCY_HINTS: tuple[str, ...] = (
     "_rpt_ccy",
 )
 
+# Columns naming the accounting period a row belongs to. A change that moves a figure in a
+# period that has already been reported is a restatement, whatever else it is.
+PERIOD_HINTS: tuple[str, ...] = (
+    "period",
+    "month",
+    "quarter",
+    "fiscal",
+    "as_of",
+    "asof",
+    "reporting_date",
+    "business_date",
+    "cob_date",
+    "value_date",
+)
+
 # Tags a project uses to say a model feeds reconciliation or external reporting.
 GOVERNED_TAGS: tuple[str, ...] = ("regulatory", "recon", "control")
 
@@ -106,6 +121,7 @@ class Vocabulary:
     money_hints: tuple[str, ...] = MONEY_HINTS
     sensitive_hints: tuple[str, ...] = SENSITIVE_HINTS
     currency_hints: tuple[str, ...] = CURRENCY_HINTS
+    period_hints: tuple[str, ...] = PERIOD_HINTS
     transaction_currency_hints: tuple[str, ...] = TRANSACTION_CURRENCY_HINTS
     reporting_currency_hints: tuple[str, ...] = REPORTING_CURRENCY_HINTS
     governed_tags: tuple[str, ...] = GOVERNED_TAGS
@@ -118,6 +134,10 @@ class Vocabulary:
     def is_sensitive(self, column: str) -> bool:
         lowered = column.lower()
         return any(hint in lowered for hint in self.sensitive_hints)
+
+    def is_period_column(self, column: str) -> bool:
+        lowered = column.lower()
+        return any(hint in lowered for hint in self.period_hints)
 
     def is_currency_column(self, column: str) -> bool:
         lowered = column.lower()
@@ -155,6 +175,7 @@ def from_settings(settings: object) -> Vocabulary:
         governed_tags=getattr(settings, "governed_tags", GOVERNED_TAGS),
         published_folders=getattr(settings, "published_folders", PUBLISHED_FOLDERS),
         currency_hints=getattr(settings, "currency_column_hints", CURRENCY_HINTS),
+        period_hints=getattr(settings, "period_column_hints", PERIOD_HINTS),
         transaction_currency_hints=getattr(
             settings, "transaction_currency_hints", TRANSACTION_CURRENCY_HINTS
         ),

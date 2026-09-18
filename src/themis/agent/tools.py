@@ -532,6 +532,7 @@ def _rule(workspace: Workspace, args: dict[str, Any]) -> ToolResult:
         "X0001": "a measured change no rule accounts for — the safety net under every rule",
         "X0002": "the head revision no longer builds",
         "X0003": "a changed dbt file THEMIS does not analyse — a snapshot, for instance",
+        "X0004": "a measured change to a period that had already been reported",
     }
     if wanted in safety:
         return ToolResult(text=f"{wanted}: {safety[wanted]}", data={"rule_id": wanted})

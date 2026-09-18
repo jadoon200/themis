@@ -184,6 +184,19 @@ class KeyedDiff(BaseModel):
     # never included in a redacted report, because key values can identify a customer.
     sample_keys: tuple[str, ...] = ()
 
+    # Set when the key carries an accounting period. A change that moves a figure in a
+    # period earlier than the latest one is a restatement of something already reported,
+    # whatever else it is — which is a different conversation from a change to the period
+    # still open, and the one an auditor has.
+    period_column: str | None = None
+    latest_period: str | None = None
+    prior_period_rows: int = 0
+    earliest_changed_period: str | None = None
+
+    @property
+    def restates_a_closed_period(self) -> bool:
+        return self.prior_period_rows > 0 and self.period_column is not None
+
     @property
     def moved(self) -> bool:
         return bool(self.rows_added or self.rows_removed or self.rows_changed)
