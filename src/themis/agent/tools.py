@@ -114,6 +114,18 @@ def _describe(workspace: Workspace, name: str) -> str:
     return f"{name} ({model.materialization}) — tags: {', '.join(model.tags) or 'none'}"
 
 
+def _any_tag(workspace: Workspace, names: list[str], value: str) -> bool:
+    lowered = value.lower()
+    return any(
+        lowered == tag.lower() for name in names for tag in workspace.after.models[name].tags
+    )
+
+
+def _any_materialization(workspace: Workspace, names: list[str], value: str) -> bool:
+    lowered = value.lower()
+    return any(workspace.after.models[name].materialization.lower() == lowered for name in names)
+
+
 def _filtered(
     workspace: Workspace, names: list[str], args: dict[str, Any]
 ) -> tuple[list[str], str]:
@@ -126,6 +138,28 @@ def _filtered(
     """
     tagged = str(args["tagged"]).strip() if args.get("tagged") else None
     materialized = str(args["materialized"]).strip() if args.get("materialized") else None
+
+    # A value put in the wrong argument is answered, not refused. Asked which downstream
+    # models were incremental, the model filled `tagged="incremental"`; the tool truthfully
+    # said none was *tagged* incremental, and the answer became "there are none" — a filter
+    # that had just fixed one question breaking another. Nothing here is ambiguous: no tag
+    # is named `incremental` and no materialization is named `regulatory`, so the answer is
+    # the one the caller meant, with the swap stated in the reply so nobody is misled.
+    if (
+        tagged is not None
+        and materialized is None
+        and not _any_tag(workspace, names, tagged)
+        and _any_materialization(workspace, names, tagged)
+    ):
+        tagged, materialized = None, tagged
+    elif (
+        materialized is not None
+        and tagged is None
+        and not _any_materialization(workspace, names, materialized)
+        and _any_tag(workspace, names, materialized)
+    ):
+        tagged, materialized = materialized, None
+
     kept = names
     if tagged is not None:
         lowered = tagged.lower()

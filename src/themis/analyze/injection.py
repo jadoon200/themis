@@ -77,6 +77,16 @@ _SIGNALS: tuple[tuple[re.Pattern[str], str], ...] = (
 )
 
 
+# Zero-width, word-joiner and bidi controls: invisible to a person reading the diff,
+# invisible to a regex looking for "ignore all previous", and fully legible to a model.
+_INVISIBLE = re.compile(r"[\u200b-\u200f\u202a-\u202e\u2060-\u2064\ufeff\u00ad]")
+
+
+def _legible(text: str) -> str:
+    """What the text says once characters that are there only to hide it are removed."""
+    return _INVISIBLE.sub("", text)
+
+
 @dataclass(frozen=True)
 class Planted:
     """One stretch of text that addresses a reader rather than describing the SQL."""
@@ -122,16 +132,17 @@ def _commented_regions(sql: str) -> list[tuple[int, str]]:
             regions.append((line, body))
             line += body.count("\n")
             index = end
-        elif char == "'":
+        elif char in "'\"":
+            quote = char
             index += 1
             start_line = line
             literal: list[str] = []
             while index < length:
-                if sql[index] == "'" and sql.startswith("''", index):
-                    literal.append("'")
+                if sql[index] == quote and sql.startswith(quote * 2, index):
+                    literal.append(quote)
                     index += 2
                     continue
-                if sql[index] == "'":
+                if sql[index] == quote:
                     index += 1
                     break
                 if sql[index] == "\n":
@@ -147,7 +158,8 @@ def _commented_regions(sql: str) -> list[tuple[int, str]]:
 def planted_text(sql: str) -> tuple[Planted, ...]:
     """Comments and literals in ``sql`` that address a reader instead of describing it."""
     found: list[Planted] = []
-    for line, body in _commented_regions(sql):
+    for line, raw_body in _commented_regions(sql):
+        body = _legible(raw_body)
         if not body.strip():
             continue
         for pattern, why in _SIGNALS:
@@ -157,6 +169,23 @@ def planted_text(sql: str) -> tuple[Planted, ...]:
             excerpt = " ".join(body.split())
             found.append(Planted(line=line, text=excerpt[:160], why=why))
             break  # one reason per region is enough to make a person look at it
+    return tuple(found)
+
+
+def addresses_a_reader(text: str) -> tuple[Planted, ...]:
+    """The same signals over plain prose: a pull-request description, a convention.
+
+    These arrive as text rather than as a file with comments in it, and they reach the
+    reviewers too — intent reads the description, every specialist pack carries the
+    conventions. Whoever opens a change writes both.
+    """
+    found: list[Planted] = []
+    for number, raw_line in enumerate(text.splitlines() or [""], start=1):
+        line = _legible(raw_line)
+        for pattern, why in _SIGNALS:
+            if pattern.search(line):
+                found.append(Planted(line=number, text=" ".join(line.split())[:160], why=why))
+                break
     return tuple(found)
 
 

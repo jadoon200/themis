@@ -273,3 +273,34 @@ def test_downstream_models_can_be_narrowed_by_tag_and_by_materialization() -> No
     )
     if views.data["models"]:
         assert "materialized as view" in views.text
+
+
+def test_a_filter_value_put_in_the_wrong_argument_is_still_answered() -> None:
+    """Asked which downstream models were incremental, the model filled `tagged`.
+
+    The tool answered truthfully — none was *tagged* incremental — and the agent reported
+    that there were none. The filter that had just fixed one question had broken another.
+    No tag here is named after a materialization, so the value is unambiguous and the
+    answer is the one that was meant, described as what it actually is.
+    """
+    workspace = _tagged_project()
+    source = next(
+        name
+        for name in sorted(workspace.after.models)
+        if name.startswith("stg_") and len(workspace.after.downstream_of(name)) > 1
+    )
+    as_tag = _run(workspace, "downstream_models", model=source, tagged="table")
+    as_materialization = _run(workspace, "downstream_models", model=source, materialized="table")
+    assert as_tag.data["models"] == as_materialization.data["models"]
+    assert "materialized as table" in as_tag.text
+
+    swapped = _run(workspace, "search_models", query="fct_", materialized="regulatory")
+    by_tag = _run(workspace, "search_models", query="fct_", tagged="regulatory")
+    assert swapped.data["models"] == by_tag.data["models"]
+
+
+def test_a_value_that_is_neither_a_tag_nor_a_materialization_is_not_quietly_swapped() -> None:
+    workspace = _tagged_project()
+    result = _run(workspace, "search_models", query="fct_", tagged="nonsense")
+    assert result.data["models"] == []
+    assert "is tagged nonsense" in result.text
