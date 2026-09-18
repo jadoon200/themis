@@ -57,6 +57,14 @@ class Settings(BaseSettings):
     # The agent's final answer cites every claim, so it runs longer than a specialist's
     # verdict: at 400 tokens an answer listing a column chain was cut off mid-JSON.
     llm_agent_max_output_tokens: int = 1500
+    # How many findings the model layer may be spent on in one review. A refactor touching
+    # fifty models produces hundreds of findings, each one a specialist call and possibly a
+    # fix call, and a local 8B model answers in ten to twenty seconds — an hour of reviewing
+    # for a change someone wants an answer about now. The bound is on the findings rather
+    # than on a clock, so the same review twice gives the same report, and the ones dropped
+    # are the lowest-ranked by the same rubric the report prints. What is skipped is
+    # counted and shown, never silent.
+    llm_max_findings_reviewed: int = 60
 
     # --- execution (Stage 3) -------------------------------------------------
     execute_enabled: bool = False

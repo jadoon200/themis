@@ -118,6 +118,7 @@ def _model_layer(llm: ReviewSummary) -> dict[str, Any]:
         "suppressed": llm.suppressed,
         "rejected_by_selfcheck": llm.rejected_by_selfcheck,
         "withheld_for_planted_text": llm.withheld_for_planted_text,
+        "not_reviewed_for_budget": llm.not_reviewed_for_budget,
         "explained": llm.explained,
         # The intent pass: what the author's description does not account for. It has no
         # rule behind it and so no finding to attach to, which is why it went missing
@@ -187,6 +188,7 @@ def render(
                         "suppressed": llm.suppressed,
                         "rejected_by_selfcheck": llm.rejected_by_selfcheck,
                         "withheld_for_planted_text": llm.withheld_for_planted_text,
+                        "not_reviewed_for_budget": llm.not_reviewed_for_budget,
                         "explained": llm.explained,
                         "undisclosed_changes": len(llm.undisclosed),
                         "calls": llm.usage.calls,

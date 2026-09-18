@@ -152,6 +152,7 @@ def review(
             suppressed=result.llm.suppressed,
             rejected=result.llm.rejected_by_selfcheck,
             withheld=result.llm.withheld_for_planted_text,
+            not_reviewed=result.llm.not_reviewed_for_budget,
             calls=usage.calls,
             tokens=usage.prompt_tokens + usage.completion_tokens,
             seconds=round(usage.seconds, 1),
