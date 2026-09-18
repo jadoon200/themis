@@ -177,3 +177,87 @@ def test_non_monetary_case_is_ignored() -> None:
     before = "select case when t = 'a' then offset else -1 * offset end as delta from x"
     after = "select case when t = 'b' then offset else -1 * offset end as delta from x"
     assert SignConventionChangedRule().check(_ctx(before, after)) == []
+
+
+# --- F3004: an amount in its own currency, summed across currencies ------------------------
+
+_GROUPED = """
+select period_month, currency_code, sum(amount_txn_ccy) as revenue_txn_ccy
+from entries
+group by period_month, currency_code
+"""
+
+_MIXED = """
+select period_month, sum(amount_txn_ccy) as revenue_txn_ccy
+from entries
+group by period_month
+"""
+
+
+def test_a_transaction_currency_amount_summed_without_the_currency_is_flagged() -> None:
+    from themis.rules.families.f3_money import MixedCurrencyTotalRule
+
+    (finding,) = MixedCurrencyTotalRule().check(_ctx(_GROUPED, _MIXED))
+    assert finding.rule_id == "F3004"
+    assert finding.severity is Severity.HIGH
+    assert "revenue_txn_ccy = sum(amount_txn_ccy)" in (finding.evidence.note or "")
+    assert "no unit" in finding.consequence
+
+
+def test_the_same_sum_with_the_currency_in_the_grain_is_silent() -> None:
+    from themis.rules.families.f3_money import MixedCurrencyTotalRule
+
+    assert MixedCurrencyTotalRule().check(_ctx(_MIXED, _GROUPED)) == []
+
+
+def test_an_already_converted_amount_sums_correctly_and_is_never_flagged() -> None:
+    """`revenue_usd` is monetary and denominated and adds up perfectly.
+
+    Flagging it would mean firing on the correct way to write the thing this rule asks
+    for, in every model that converts — which is how a family gets ignored.
+    """
+    from themis.rules.families.f3_money import MixedCurrencyTotalRule
+
+    converted = "select period_month, sum(amount_usd) as revenue_usd from e group by period_month"
+    assert MixedCurrencyTotalRule().check(_ctx(None, converted)) == []
+
+
+def test_a_model_restricted_to_one_currency_is_not_flagged() -> None:
+    from themis.rules.families.f3_money import MixedCurrencyTotalRule
+
+    pinned = (
+        "select period_month, sum(amount_txn_ccy) as t from e "
+        "where currency_code = 'USD' group by period_month"
+    )
+    assert MixedCurrencyTotalRule().check(_ctx(None, pinned)) == []
+
+
+def test_a_positional_group_by_still_counts_as_grouping_by_the_currency() -> None:
+    from themis.rules.families.f3_money import MixedCurrencyTotalRule
+
+    positional = "select period_month, currency_code, sum(amount_txn_ccy) as t from e group by 1, 2"
+    assert MixedCurrencyTotalRule().check(_ctx(None, positional)) == []
+
+
+def test_a_model_that_has_always_summed_this_way_is_not_reported_on_an_unrelated_edit() -> None:
+    """Diff-aware, like the rest of the family. THEMIS reviews a change, not a project."""
+    from themis.rules.families.f3_money import MixedCurrencyTotalRule
+
+    edited = _MIXED.replace("from entries", "from entries -- a comment")
+    assert MixedCurrencyTotalRule().check(_ctx(_MIXED, edited)) == []
+
+
+def test_an_inner_grouping_does_not_excuse_an_outer_sum() -> None:
+    """A subtree search would read the CTE's GROUP BY as proof and stay silent."""
+    from themis.rules.families.f3_money import MixedCurrencyTotalRule
+
+    nested = """
+    with per_currency as (
+        select period_month, currency_code, sum(amount_txn_ccy) as amount_txn_ccy
+        from entries group by period_month, currency_code
+    )
+    select period_month, sum(amount_txn_ccy) as revenue_txn_ccy
+    from per_currency group by period_month
+    """
+    (finding,) = MixedCurrencyTotalRule().check(_ctx(None, nested))
+    assert "revenue_txn_ccy" in (finding.evidence.note or "")

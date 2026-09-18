@@ -63,6 +63,37 @@ SENSITIVE_HINTS: tuple[str, ...] = (
     "last_name",
 )
 
+# Columns naming the currency a row is denominated in. Summing an amount across rows of
+# different currencies produces a number with no unit, which is the failure these exist to
+# recognise: it looks like money, it ties to nothing, and nothing about it is malformed.
+CURRENCY_HINTS: tuple[str, ...] = ("currency", "ccy_code", "curr_code", "iso_currency")
+
+# Amounts that are denominated in whatever currency the row happens to be in. Summing one
+# without grouping by the currency mixes units. Names, because dbt projects rarely declare
+# types and never declare units — a project that spells it differently sets this.
+TRANSACTION_CURRENCY_HINTS: tuple[str, ...] = (
+    "txn_ccy",
+    "trade_ccy",
+    "local_ccy",
+    "local_amount",
+    "amount_lcy",
+    "original_amount",
+    "source_amount",
+)
+
+# Amounts already converted to one reporting currency, which sum correctly across rows.
+# Checked first: `revenue_usd` is monetary and denominated, and must never be reported.
+REPORTING_CURRENCY_HINTS: tuple[str, ...] = (
+    "_usd",
+    "_eur",
+    "_gbp",
+    "_chf",
+    "_jpy",
+    "_base_ccy",
+    "_reporting_ccy",
+    "_rpt_ccy",
+)
+
 # Tags a project uses to say a model feeds reconciliation or external reporting.
 GOVERNED_TAGS: tuple[str, ...] = ("regulatory", "recon", "control")
 
@@ -74,6 +105,9 @@ PUBLISHED_FOLDERS: tuple[str, ...] = ("marts/", "reporting/", "published/", "exp
 class Vocabulary:
     money_hints: tuple[str, ...] = MONEY_HINTS
     sensitive_hints: tuple[str, ...] = SENSITIVE_HINTS
+    currency_hints: tuple[str, ...] = CURRENCY_HINTS
+    transaction_currency_hints: tuple[str, ...] = TRANSACTION_CURRENCY_HINTS
+    reporting_currency_hints: tuple[str, ...] = REPORTING_CURRENCY_HINTS
     governed_tags: tuple[str, ...] = GOVERNED_TAGS
     published_folders: tuple[str, ...] = PUBLISHED_FOLDERS
 
@@ -84,6 +118,22 @@ class Vocabulary:
     def is_sensitive(self, column: str) -> bool:
         lowered = column.lower()
         return any(hint in lowered for hint in self.sensitive_hints)
+
+    def is_currency_column(self, column: str) -> bool:
+        lowered = column.lower()
+        return any(hint in lowered for hint in self.currency_hints)
+
+    def is_transaction_currency_amount(self, column: str) -> bool:
+        """An amount denominated in the row's own currency, so summing it mixes units.
+
+        A reporting-currency name wins: `revenue_usd` is monetary and denominated and
+        sums perfectly well, and calling it suspect would flag the correct case in every
+        model that converts.
+        """
+        lowered = column.lower()
+        if any(hint in lowered for hint in self.reporting_currency_hints):
+            return False
+        return any(hint in lowered for hint in self.transaction_currency_hints)
 
     def is_governed(self, tags: tuple[str, ...] | list[str]) -> bool:
         wanted = {tag.lower() for tag in self.governed_tags}
@@ -104,4 +154,11 @@ def from_settings(settings: object) -> Vocabulary:
         sensitive_hints=getattr(settings, "sensitive_column_hints", SENSITIVE_HINTS),
         governed_tags=getattr(settings, "governed_tags", GOVERNED_TAGS),
         published_folders=getattr(settings, "published_folders", PUBLISHED_FOLDERS),
+        currency_hints=getattr(settings, "currency_column_hints", CURRENCY_HINTS),
+        transaction_currency_hints=getattr(
+            settings, "transaction_currency_hints", TRANSACTION_CURRENCY_HINTS
+        ),
+        reporting_currency_hints=getattr(
+            settings, "reporting_currency_hints", REPORTING_CURRENCY_HINTS
+        ),
     )

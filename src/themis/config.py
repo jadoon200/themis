@@ -116,6 +116,11 @@ class Settings(BaseSettings):
     sensitive_column_hints: tuple[str, ...] = vocabulary.SENSITIVE_HINTS
     governed_tags: tuple[str, ...] = vocabulary.GOVERNED_TAGS
     published_folders: tuple[str, ...] = vocabulary.PUBLISHED_FOLDERS
+    # Units. A project that spells its transaction-currency amounts differently sets these;
+    # a reporting-currency name always wins, so `revenue_usd` is never called suspect.
+    currency_column_hints: tuple[str, ...] = vocabulary.CURRENCY_HINTS
+    transaction_currency_hints: tuple[str, ...] = vocabulary.TRANSACTION_CURRENCY_HINTS
+    reporting_currency_hints: tuple[str, ...] = vocabulary.REPORTING_CURRENCY_HINTS
 
     # --- manifest cache ------------------------------------------------------
     # Compiled manifests are content-addressed by git revision, so the base compile a
