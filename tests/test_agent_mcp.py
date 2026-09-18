@@ -37,7 +37,9 @@ def test_missing_and_unknown_arguments_are_refused_with_an_example() -> None:
     )
     assert is_error
     assert "missing column" in text and "unknown col" in text
-    assert '"direction": "upstream"' in text
+    # The example shows the shape of a correct call — asserted by its arguments rather than
+    # by its values, which are free to change as the tool learns to answer more.
+    assert '"model":' in text and '"column":' in text
 
 
 def test_an_unknown_tool_lists_the_real_ones() -> None:

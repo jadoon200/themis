@@ -362,8 +362,147 @@ class SignConventionChangedRule(Rule):
         return findings
 
 
+def _currency_grouped(select: exp.Select, vocabulary: Vocabulary) -> bool:
+    """Whether this select's own GROUP BY carries the currency."""
+    group = select.args.get("group")
+    if group is None:
+        return False
+    for expression in group.expressions:
+        if any(
+            vocabulary.is_currency_column(column.name) for column in expression.find_all(exp.Column)
+        ):
+            return True
+        if isinstance(expression, exp.Literal):
+            # `group by 3` — positional. Resolve it against the projection.
+            try:
+                position = int(expression.name) - 1
+            except ValueError:
+                continue
+            if 0 <= position < len(select.expressions):
+                projected = select.expressions[position]
+                if any(
+                    vocabulary.is_currency_column(column.name)
+                    for column in projected.find_all(exp.Column)
+                ):
+                    return True
+    return False
+
+
+def _currency_pinned(select: exp.Select, vocabulary: Vocabulary) -> bool:
+    """Whether this select restricts itself to a single currency.
+
+    `where currency_code = 'USD'` makes a sum across rows perfectly sound, and a rule that
+    flagged it would be flagging the correct way to write the thing it asks for.
+    """
+    where = select.args.get("where")
+    if where is None:
+        return False
+    for equality in where.find_all(exp.EQ):
+        left, right = equality.left, equality.right
+        for column, other in ((left, right), (right, left)):
+            if (
+                isinstance(column, exp.Column)
+                and vocabulary.is_currency_column(column.name)
+                and isinstance(other, exp.Literal)
+            ):
+                return True
+    return False
+
+
+def _mixed_currency_sums(sql: str, dialect: str, vocabulary: Vocabulary) -> dict[str, str]:
+    """Aggregates over a transaction-currency amount with no currency in the grain.
+
+    Returns the alias (or column) of each, with the column it aggregates.
+    """
+    try:
+        parsed = parse_sql(sql, dialect=dialect)
+    except ParseError:
+        return {}
+    found: dict[str, str] = {}
+    for select in parsed.find_all(exp.Select):
+        # Read the select's own args. A subtree search proves the wrong scope: the GROUP BY
+        # of an inner CTE says nothing about an aggregate in an outer one.
+        if _currency_grouped(select, vocabulary) or _currency_pinned(select, vocabulary):
+            continue
+        for projection in select.expressions:
+            for aggregate in projection.find_all(exp.Sum):
+                for column in aggregate.find_all(exp.Column):
+                    if vocabulary.is_transaction_currency_amount(column.name):
+                        name = projection.alias_or_name or column.name
+                        found[name] = column.name
+    return found
+
+
+@dataclass
+class MixedCurrencyTotalRule(Rule):
+    """An amount in the row's own currency, summed without the currency in the grain.
+
+    The total that results has no unit. Ten euros and ten dollars make twenty of nothing,
+    and nothing about the number looks wrong: it is the right magnitude, it is positive, it
+    has two decimal places, and it reconciles to nothing at all. No test in a project
+    without tests catches it, and execution cannot either — the row count holds and the
+    total moves only in the way summing more rows always moves a total.
+
+    Named, not typed, because dbt projects rarely declare types and never declare units.
+    A reporting-currency name always wins, so `revenue_usd` — monetary, denominated, and
+    perfectly summable — is never called suspect. A project that spells its own columns
+    differently sets `THEMIS_TRANSACTION_CURRENCY_HINTS`.
+    """
+
+    rule_id: str = field(init=False, default="F3004")
+    family: str = field(init=False, default=FAMILY)
+    severity: Severity = field(init=False, default=Severity.HIGH)
+
+    def check(self, ctx: RuleContext) -> list[Finding]:
+        after_sql = ctx.after.analysable_sql if ctx.after else None
+        if after_sql is None:
+            return []
+        mixed = _mixed_currency_sums(after_sql, ctx.dialect, ctx.vocabulary)
+        if not mixed:
+            return []
+        # Diff-aware, like the rest of this family: a model that has always summed this way
+        # is a fact about the project, and reporting it on an unrelated edit is how a
+        # reviewer learns to skip the family.
+        before_sql = ctx.before.analysable_sql if ctx.before else None
+        if before_sql is not None:
+            already = _mixed_currency_sums(before_sql, ctx.dialect, ctx.vocabulary)
+            mixed = {name: column for name, column in mixed.items() if name not in already}
+        if not mixed:
+            return []
+
+        listed = ", ".join(f"{name} = sum({column})" for name, column in sorted(mixed.items()))
+        return [
+            Finding(
+                rule_id=self.rule_id,
+                family=self.family,
+                title="An amount in its own currency is summed across currencies",
+                severity=self.severity,
+                # The names are a heuristic; whether these rows really span currencies is
+                # a question about the data, which this rule cannot answer alone.
+                confidence=Confidence.LIKELY,
+                evidence=Evidence(
+                    model_name=ctx.model_name,
+                    file_path=ctx.after.file_path if ctx.after else None,
+                    note=f"{listed} — no currency column in the GROUP BY, and no single "
+                    "currency in the WHERE",
+                ),
+                consequence=(
+                    "Amounts denominated in different currencies are added together, so "
+                    "the total has no unit. It will look entirely reasonable — right "
+                    "magnitude, right sign, two decimal places — and reconcile to nothing."
+                ),
+                suggestion=(
+                    "Group by the currency as well, restrict the model to one currency, or "
+                    "sum the converted amount instead."
+                ),
+                blast_radius=ctx.blast_radius,
+            )
+        ]
+
+
 RULES: tuple[Rule, ...] = (
     MoneyAsFloatRule(),
     DecimalScaleReducedRule(),
     SignConventionChangedRule(),
+    MixedCurrencyTotalRule(),
 )

@@ -14,6 +14,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from themis.analyze import seeds
+from themis.analyze.seeds import seed_key
 from themis.analyze.volatility import invocation_window, mask_invocation_literals
 from themis.logging import get_logger
 from themis.models import Backend
@@ -56,6 +58,44 @@ def _hook_texts(value: Any) -> tuple[str, ...]:
         else:
             out.append(str(item))
     return tuple(text for text in out if text)
+
+
+# Manifest schema versions THEMIS has been read against, model for model, with real
+# manifests rather than a reading of dbt's changelog: `python scripts/dbt_versions.py`
+# compiles the demo project with each dbt release and compares what the loader makes of it.
+# dbt 1.8 through 1.12 all emit v12 and all parse identically.
+VERIFIED_MANIFEST_SCHEMAS = frozenset({"v11", "v12"})
+
+
+def _schema_version(metadata: dict[str, Any]) -> str | None:
+    """The `vN` out of `https://schemas.getdbt.com/dbt/manifest/v12.json`."""
+    url = metadata.get("dbt_schema_version")
+    if not isinstance(url, str) or "/" not in url:
+        return None
+    return url.rsplit("/", 1)[-1].removesuffix(".json") or None
+
+
+def _with_seed_key(model: ModelNode, project_dir: Path) -> ModelNode:
+    """Count a seed's key from the CSV in the repository, where there is one.
+
+    Only when the whole file was read: "unique in the first 50,000 rows" is a different
+    claim, and a grain that is asserted must be asserted over all of it.
+    """
+    if not model.is_seed or not model.file_path:
+        return model
+    path = project_dir / model.file_path
+    if not path.exists() or path.suffix.lower() != ".csv":
+        return model
+    try:
+        # The cap is read here rather than bound as a default, so it is one value at call
+        # time and not whatever it was when this module was imported.
+        key = seed_key(path.read_text(errors="replace"), max_rows=seeds.MAX_ROWS)
+    except OSError as exc:  # an unreadable seed is not a reason to fail a review
+        log.debug("manifest.seed_unreadable", seed=model.name, error=str(exc)[:120])
+        return model
+    if key is None or not key.complete:
+        return model
+    return model.model_copy(update={"seed_key": key.columns})
 
 
 def _model_from_node(
@@ -136,7 +176,9 @@ def _tests_from_nodes(nodes: dict[str, Any]) -> tuple[DeclaredTest, ...]:
     return tuple(tests)
 
 
-def load_manifest(path: Path, *, revision: str, backend: Backend) -> ProjectSnapshot:
+def load_manifest(
+    path: Path, *, revision: str, backend: Backend, project_dir: Path | None = None
+) -> ProjectSnapshot:
     """Build a snapshot from a manifest on disk."""
     if not path.exists():
         raise ManifestError(f"no manifest at {path}")
@@ -164,6 +206,8 @@ def load_manifest(path: Path, *, revision: str, backend: Backend) -> ProjectSnap
         for uid, node in nodes.items()
         if node.get("resource_type") in ("model", "seed")
     }
+    if project_dir is not None:
+        models = {name: _with_seed_key(model, project_dir) for name, model in models.items()}
     macros = {
         node["name"]: MacroNode(
             name=str(node["name"]),
@@ -206,6 +250,17 @@ def load_manifest(path: Path, *, revision: str, backend: Backend) -> ProjectSnap
         exposures=exposures,
         child_map=child_map,
     )
+    schema = _schema_version(metadata)
+    if schema is not None and schema not in VERIFIED_MANIFEST_SCHEMAS:
+        # Not a refusal. THEMIS reads the fields it needs and a newer dbt will most likely
+        # still provide them — but if something has moved, the failure would otherwise be a
+        # quiet misreading, and a person deserves to know which side of the line they are on.
+        log.warning(
+            "manifest.schema_not_verified",
+            schema=schema,
+            dbt_version=metadata.get("dbt_version"),
+            verified=sorted(VERIFIED_MANIFEST_SCHEMAS),
+        )
     log.info(
         "manifest.loaded",
         revision=revision[:8],
@@ -213,6 +268,7 @@ def load_manifest(path: Path, *, revision: str, backend: Backend) -> ProjectSnap
         macros=len(macros),
         tests=len(snapshot.tests),
         compiled=snapshot.has_compiled_sql,
+        schema=schema,
     )
     if not snapshot.has_compiled_sql:
         # Loud, not silent. With macro-heavy models a parse-only manifest cannot

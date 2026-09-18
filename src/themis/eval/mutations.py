@@ -795,6 +795,87 @@ rates as (select * from fx),""",
         ),
     ),
     Mutation(
+        id="minor_units_divided_as_integers",
+        pr_description="Simplify the minor-to-major macro: one cast instead of two.",
+        description_is_honest=False,
+        # LATENT, and the reason is the engine. Trino divides whole numbers as whole
+        # numbers — `select 5/2` is 2 — while DuckDB, which the demo project builds on,
+        # returns 2.5. So the defect is real on the engine this tool targets and produces
+        # byte-identical output on the one the corpus can measure. Declaring it a defect
+        # scored it "measured the opposite", which was the oracle telling the truth.
+        kind=Kind.LATENT,
+        expects_family="F8",
+        description=(
+            "The inner decimal cast leaves the minor-to-major macro, so the division "
+            "happens between whole numbers. Trino truncates those and every ledger amount "
+            "loses its fractional units — a plausible figure that is quietly short, on "
+            "every row. DuckDB returns 2.5 for 5/2 where Trino returns 2, so the demo "
+            "project cannot demonstrate it by building: caught by reading the SQL or not "
+            "at all, which is what latent means here"
+        ),
+        relative_path=_MACRO_MONEY,
+        find="cast(cast({{ expr }} as decimal(38, 6)) / 100 as decimal(38, 6))",
+        replace="cast({{ expr }} / 100 as decimal(38, 6))",
+    ),
+    Mutation(
+        id="unruled_january_fx_rate_restated",
+        pr_description="Correct the January USD rate to the published ECB figure.",
+        description_is_honest=True,
+        kind=Kind.UNRULED,
+        expects_family="X",
+        description=(
+            "A rate for the earliest period in the seed is corrected. Every figure built "
+            "on January moves — five months after January closed. No SQL changed, so no "
+            "rule can read it; what makes it worth a reviewer's time is not that numbers "
+            "moved but *which* numbers: a period that has already been reported"
+        ),
+        relative_path="seeds/raw_fx_rates.csv",
+        find="USD,2026-01-01,0.97715100,ecb",
+        replace="USD,2026-01-01,1.07715100,ecb",
+    ),
+    Mutation(
+        id="currency_dropped_from_regulatory_grain",
+        pr_description=("Simplify the regulatory summary: report one row per entity and period."),
+        description_is_honest=False,
+        kind=Kind.DEFECT,
+        expects_family="F3",
+        description=(
+            "The currency leaves the grain of the regulatory summary while the "
+            "transaction-currency amount is still summed. Euro and dollar revenue are "
+            "added together, so the reported figure has no unit — right magnitude, right "
+            "sign, two decimal places, and reconciling to nothing"
+        ),
+        relative_path=_MART_SUMMARY,
+        # Both the projection and the GROUP BY: dropping it from one alone is valid SQL
+        # that still groups per currency, which is a different change entirely.
+        find=(
+            "        period_month,\n"
+            "        entity_code,\n"
+            "        currency_code,\n"
+            "        count(*)                        as entry_count,\n"
+            "        count(distinct contract_id)     as contract_count,\n"
+            "        sum(amount_txn_ccy)             as revenue_txn_ccy,\n"
+            "        sum(amount_usd)                 as revenue_usd\n"
+            "    from revenue\n"
+            "    group by\n"
+            "        period_month,\n"
+            "        entity_code,\n"
+            "        currency_code\n"
+        ),
+        replace=(
+            "        period_month,\n"
+            "        entity_code,\n"
+            "        count(*)                        as entry_count,\n"
+            "        count(distinct contract_id)     as contract_count,\n"
+            "        sum(amount_txn_ccy)             as revenue_txn_ccy,\n"
+            "        sum(amount_usd)                 as revenue_usd\n"
+            "    from revenue\n"
+            "    group by\n"
+            "        period_month,\n"
+            "        entity_code\n"
+        ),
+    ),
+    Mutation(
         id="latent_comment_addressed_to_the_reviewer",
         pr_description="Document the FX conversion step.",
         description_is_honest=False,

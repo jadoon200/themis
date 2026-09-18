@@ -55,6 +55,17 @@ def review(
         bool,
         typer.Option("--execute/--no-execute", help="Build base and head and diff real results."),
     ] = False,
+    narrow: Annotated[
+        bool,
+        typer.Option(
+            "--narrow/--no-narrow",
+            help=(
+                "With --execute, build only the models that read a column the change "
+                "touched. Refuses to narrow unless it can prove the set, and names what "
+                "it skipped."
+            ),
+        ),
+    ] = False,
     pr_description: Annotated[
         str | None,
         typer.Option(
@@ -121,6 +132,7 @@ def review(
             settings=settings,
             target=target,
             run_execution=execute or settings.execute_enabled,
+            narrow_execution=narrow,
             run_llm=not no_llm,
             pr_description=pr_description,
             prod_manifest=prod_manifest,
@@ -152,6 +164,7 @@ def review(
             suppressed=result.llm.suppressed,
             rejected=result.llm.rejected_by_selfcheck,
             withheld=result.llm.withheld_for_planted_text,
+            not_reviewed=result.llm.not_reviewed_for_budget,
             calls=usage.calls,
             tokens=usage.prompt_tokens + usage.completion_tokens,
             seconds=round(usage.seconds, 1),
@@ -205,6 +218,7 @@ def review(
                 untested_grains=result.untested_grains,
                 llm=result.llm,
                 seed_affected=result.seed_affected,
+                narrowing=result.narrowing,
                 incomplete=result.incomplete,
                 redact=settings.redact_salt if redact else None,
             )

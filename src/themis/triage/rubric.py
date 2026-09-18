@@ -194,6 +194,26 @@ def _score(finding: Finding, *, governed: bool) -> tuple[float, tuple[str, ...]]
     return max(total, 1.0), tuple(components)
 
 
+def review_order(findings: list[Finding], *, governed_models: frozenset[str]) -> list[Finding]:
+    """The findings, worst first, by the same score the report ranks them with.
+
+    Used to decide what a bounded model layer spends its calls on. Sharing the rubric
+    matters: a reviewer reading "12 findings were not shown to the model layer" can take
+    for granted that the twelve are the ones at the bottom of the report they are reading,
+    not a different twelve chosen by a different rule.
+    """
+
+    def key(finding: Finding) -> tuple[float, str, str]:
+        governed = finding.evidence.model_name in governed_models or any(
+            name in governed_models for name in finding.blast_radius
+        )
+        score, _ = _score(finding, governed=governed)
+        # Rule and model break ties, so two runs of one review agree on the order.
+        return (-score, finding.rule_id, finding.evidence.model_name or "")
+
+    return sorted(findings, key=key)
+
+
 def triage(
     findings: list[Finding], *, governed_models: frozenset[str] = frozenset()
 ) -> list[Triaged]:

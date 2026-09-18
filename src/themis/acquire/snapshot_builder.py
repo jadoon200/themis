@@ -63,6 +63,33 @@ class AcquireResult:
         return tuple(sorted(names))
 
     @property
+    def unanalysed_changes(self) -> tuple[str, ...]:
+        """Changed dbt files this review did not look at, by path.
+
+        A snapshot is the case that found this. `resource_type` is filtered to models and
+        seeds at load, and a snapshot lives in `snapshots/`, so a change to one resolved to
+        no node, matched no folder fallback, and fell out of the review without a word — a
+        pull request that only touches snapshots would be reported as "No findings". In a
+        bank a snapshot is slowly-changing reference data, which is exactly the kind of
+        change somebody wants read.
+
+        Analysing them is a feature with its own semantics and is not built. Saying that a
+        change was not analysed costs nothing and is the difference between a blind spot
+        and a silent one, so these are reported as skipped checks and make a review
+        incomplete for the merge gate.
+        """
+        out: list[str] = []
+        for change in self.changed:
+            if change.status == "D":
+                continue
+            if not change.path.endswith(".sql"):
+                continue
+            if self._nodes_for(change) or change.is_model or change.is_macro:
+                continue
+            out.append(change.path)
+        return tuple(sorted(out))
+
+    @property
     def changed_seeds(self) -> tuple[str, ...]:
         """Seeds whose CSV changed.
 
@@ -156,7 +183,9 @@ def _compile_snapshot(
         cached = cache.get(cache_key)
         if cached is not None:
             try:
-                return load_manifest(cached, revision=revision, backend=Backend.MANIFEST)
+                return load_manifest(
+                    cached, revision=revision, backend=Backend.MANIFEST, project_dir=project_dir
+                )
             except ManifestError as exc:
                 # A cached manifest that will not load is a cache problem, not a
                 # project problem. Fall through and compile it properly.
@@ -183,7 +212,12 @@ def _compile_snapshot(
                 target_path=target_dir,
             )
             snapshot = load_manifest(
-                compiled.manifest_path, revision=revision, backend=Backend.MANIFEST
+                compiled.manifest_path,
+                revision=revision,
+                backend=Backend.MANIFEST,
+                # The seeds of *this* revision, which is the checkout that was just
+                # compiled — not whatever is in the caller's working tree.
+                project_dir=project_dir,
             )
             if compiled.error is not None:
                 # Never cached: a partial compile is a fact about one attempt, not about

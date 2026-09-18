@@ -122,8 +122,8 @@ themis agent --base main --head HEAD "What did the review find, and what changed
 A local model investigates by calling THEMIS's own tools — grain, lineage, what is
 downstream, the findings, the SQL diff, what execution measured — and every claim in its
 answer must quote a tool result verbatim, or the answer is refused. It chooses which fact
-to fetch; it never produces one. Across 23 questions it answered 18 of 19 and refused all 4
-that no tool can answer; every run, including the ones that went backwards, is in
+to fetch; it never produces one. Across 23 questions it answered **19 of 19** and refused all
+4 that no tool can answer; every run, including the two that went backwards, is in
 docs/EVAL.md. The same tools are served to any MCP client by `themis mcp` (optional extra,
 tested against the real SDK; tool results contain SQL, so connect only local-model clients
 to proprietary projects).
@@ -233,11 +233,11 @@ executes SQL during analysis.
 
 A proof of concept. See `docs/ROADMAP.md` for what is built and what is next, and
 `docs/EVAL.md` for the measurements, including where THEMIS does worse than it looks
-like it should. On the 47-case corpus: **100% recall, all 30 rules firing, every
+like it should. On the 50-case corpus: **100% recall, all 32 rules firing, every
 behaviour-preserving control silent** — and CI fails if any of that stops being true.
-Four of four deliberately safe changes are still flagged (recall-first, by design),
-which puts precision at 82% and the false-positive rate at 36%; those two figures move
-with how many safe cases the corpus holds, so the four-of-four is the one to read.
+Three of the deliberately safe changes are still flagged (recall-first, by design),
+which puts precision at 86% and the false-positive rate at 27%; those two figures move
+with how many safe cases the corpus holds, so the three-of-eleven is the one to read.
 
 That CI gate is recent. Until September 2026 the corpus job ran against a project it had
 not built, measured 9 of 29 rules, and passed — `docs/EVAL.md` records what else a review

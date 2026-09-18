@@ -1209,6 +1209,8 @@ Every run is recorded, including the ones that went backwards, in order:
 | 3 | tuned, after quote-format changes | 10 / 14 | 3 | 1 | 3 / 3 |
 | 4 | tuned, after run 3's fixes | **12 / 14** | 1 | 1 | **3 / 3** |
 | 5 | tuned + held-out together (23), after the tag filter | **18 / 19** | 1 | 0 | **4 / 4** |
+| 6 | the same 23, after adding a lineage filter | 16 / 19 | 1 | 2 | **4 / 4** |
+| 7 | the same 23, after the filter was made unable to empty itself | **19 / 19** | 0 | 0 | **4 / 4** |
 
 **The multi-hop questions found the tools wrong before they found the model wrong.** Asked
 what an FX rate feeds, the lineage tool answered "feeds no downstream column" — downstream
@@ -1244,13 +1246,29 @@ ambiguous, since no tag here is named after a materialization, so it is now answ
 it belongs and the reply says which it was. Both questions are right in run 5, and no
 answer was wrongly refused for the first time since run 1.
 
-**What remains, after run 5.** One grounded-but-wrong answer, the hardest question in the
-set: which columns of a mart are computed, directly or indirectly, from an FX rate. It has
-been wrong, then right, then refused, then wrong again across four runs without the tools
-changing under it — the model picks a starting point, finds nothing, and states the absence.
-An absence it *checked* is exactly the answer the citation check cannot catch, and the fix
-belongs in the tools again: tracing from the column asked about, in one call, rather than
-leaving the model to choose which end to start from.
+**Run 6 is the clearest evidence in this file that a tool change is not a free improvement.**
+The fix for run 5's last wrong answer was the obvious one: "which columns of M come from
+X.c" names two ends, so `column_lineage` took `in_model` and the question became one call.
+It answered that question — and cost two others. Asked which upstream column
+`fct_revenue.amount_usd` comes from, the model narrowed to `fct_revenue` itself, where a
+column's own sources can never be, got nothing back, and refused a question that had been
+right since run 1. Sixteen of nineteen, down from eighteen. **Every optional argument is
+another way to be wrong**, and a tool that can return a bare nothing eventually will.
+
+**Run 7: 19 of 19, and 4 of 4 refused — the first clean sweep.** Two changes, both the rule
+the tool registry already stated and neither of them a prompt instruction. A filter pointed
+at the model in the question is ignored, because its answer is knowably empty. A filter that
+genuinely matches nothing returns *the answer it emptied* alongside the fact that none of it
+is in the model asked about — so the model has the material to answer instead of an absence
+to report. The question that had been wrong, right, refused and wrong again across five runs
+is now right, and so is every other one.
+
+**What that is and is not.** Twenty-three questions, written by the person who wrote the
+tools, against the project the tools were built on. A clean sweep here means the tools answer
+the questions somebody who knew them thought to ask; it says nothing yet about the questions
+a reviewer asks about their own models. The six held-out questions have now been run three
+times and are no longer held out in any useful sense — the next honest set has to come from
+the work project.
 
 **Two things found along the way that were not agent problems.** The grounding check shared by
 the specialists skipped pieces of a quote shorter than a phrase — so
@@ -1363,9 +1381,11 @@ either way. Two evasions were closed because they are cheap and known — a doub
 identifier carrying the text, and zero-width or bidi characters that break a regex while
 leaving the sentence legible to a model — and others certainly remain.
 
-**What is still exposed.** `themis ask` embeds a finding's evidence note, so the planted
-text appears there in quotes; it can produce a wrong answer to a question, but it cannot
-suppress a finding or change a report. An injection in a model nobody's finding names is
+**What is still exposed.** `themis ask` used to embed a finding's evidence note, which for
+F7004 *is* the planted comment quoted in full — the one place where reporting an injection
+would have delivered it. The fact now travels and the wording does not: ask says the model
+contains text addressed at an automated reviewer and points at the report, which still
+quotes it, because a person has to read it to judge it. An injection in a model nobody's finding names is
 never read by a seat at all. And the whole control is scoped to what THEMIS reads: a
 reviewer's *own* IDE assistant, pointed at the same repository, has none of this.
 
@@ -1393,6 +1413,167 @@ blocked until the 900-second timeout killed the run. The adapter's own conversio
 could never have shown that. Four live tests now speak the protocol over a real pipe, the
 component check drives the installed command as an IDE assistant would, and CI fails if
 either skips itself.
+
+## What a project that is not this one would bring
+
+Four questions the demo project cannot answer about itself, answered here rather than at
+the office, where finding them out costs a failed first run.
+
+**A different dbt version.** The manifest is the primary grounding backend, and nobody at
+work is on the release this project develops against. The previous answer was a reading of
+dbt's changelog, which is not evidence. `scripts/dbt_versions.py` now builds an environment
+per release, compiles the demo project with each, and compares every field the loader reads
+— materialization, tags, incremental strategy, unique key, dependencies, compiled SQL.
+**dbt 1.8, 1.9, 1.10 and 1.12 all emit manifest v12 and all parse identically, model for
+model.** The 1.8 manifest is committed as a fixture so CI keeps guarding the oldest
+supported version, and a schema version outside the verified set now warns rather than
+refusing: a newer dbt will most likely still provide what THEMIS reads, and failing closed
+would block a review that would have worked.
+
+**`{{ source(...) }}`.** Every staging model in the demo project reads a seed through
+`ref()`, so the path *every* staging model at work begins with had never been run. A source
+is not a node in `manifest.nodes` and reaches a model only as a dependency of another
+resource type. It works: a real compiled project on two source tables loads, keeps its
+graph, derives its mart's grain and traces column lineage through, with the source's own
+columns honestly untraced rather than reported as nothing. No bug — but it was an
+assumption, and now it is a test.
+
+**A changed snapshot, which was a silent blind spot.** A snapshot is neither a model nor a
+seed, so a changed snapshot file resolved to no node, matched no folder fallback, and fell
+out of the review without a word: a pull request touching only snapshots would have been
+reported as "No findings". Execution never selects the file either, so the X0001 safety net
+could not catch it. Analysing snapshots is a feature with its own semantics and is not
+built; saying a file was not analysed costs nothing, so it is X0003 among the skipped checks
+and makes the review incomplete for the merge gate. **A blind spot that says so is a
+different thing from a silent one.**
+
+**A fifty-model refactor.** An ordinary pull request, and hundreds of findings — each one
+still open being a specialist call and possibly a fix call, at ten to twenty seconds on a
+local 8B model. Nothing bounded that. The bound is on findings rather than on a clock, so
+two runs of one review still agree, and it is spent worst-first by the rubric the report
+already ranks with: "twelve were not shown to the model layer" means the twelve at the
+bottom of the report in front of you. Every finding is still reported; only the adjudication
+is rationed.
+
+**And one that doctor should have been answering all along.** Everything about a profile can
+be right while the connection is not — SSO not signed in, a token expired, a host this
+network cannot reach. `themis doctor` now runs `dbt debug` behind the target guard, so the
+first sign of that is a line in doctor rather than a failed compile in the middle of the
+first review.
+
+## Four questions asked of the research rather than of me
+
+The rules were mine. Whether they are the *right* rules is a question about banks, Trino and
+data profiling, not about this codebase, so it was put to the literature. Each of the four
+produced something that changed the code.
+
+### What actually causes restatements → F3004 and X0004
+
+Restatement post-mortems and the ECB's risk-data-aggregation guide keep returning to two
+shapes. One is a figure that is the right magnitude, the right sign, correctly formatted and
+reconciles to nothing. **F3004** is that: an amount denominated in the row's own currency,
+summed without the currency in the grain. Ten euros and ten dollars make twenty of no unit.
+Execution cannot see it — the total moves the way summing rows always moves a total — and no
+test in a project without tests catches it.
+
+It fires on **three models in the demo project as it stands**: `fct_account_period_summary`,
+`fct_revenue_reported` and `int_account_activity`. That project was written to look like the
+real thing, by someone who did not put them there on purpose. The rule is diff-aware, so they
+stay quiet until something touches them; THEMIS reviews a change, not a project.
+
+The other shape is not a defect class at all but a consequence: examiners follow lineage to
+find unexplained transformation steps and reconciliation breaks, and what they are looking
+for is a number that moved after it was published. **X0004** measures it. When the derived
+grain carries a period, the keyed comparison also records the latest period present, how many
+rows moved in any period before it, and the earliest one that did. Changing January's FX rate
+now reports *"2 row(s) changed in periods before 2026-06-01, the earliest being
+2026-01-01"* on both regulatory marts. It is never suppressed by another finding: "the join
+lost a predicate, fix it" and "last quarter is now a different number" are two conversations,
+and a reviewer can accept the first and still need the second.
+
+### Trino's own semantics → F8005, and a warning about the demo
+
+`select 5/2` is **2** on Trino and **2.5** on DuckDB. A ledger stores amounts in minor units
+precisely so they stay whole, which makes `amount_minor / 100` the natural conversion — and
+on Trino it discards every fractional unit, on every row.
+
+The corpus refused to call this a defect, and it was right to. The demo project builds on
+DuckDB, where the mutation produces byte-identical output, so the oracle reported "declared
+defect, measured the opposite". It is declared LATENT now, with the engine difference as the
+reason. **The demo warehouse is not the target warehouse**, and this is the first case where
+that difference hides a defect rather than merely changing a plan.
+
+### How other tools infer a key → seeds are counted, not guessed
+
+dbt-core's own proposal and Datafold both infer a primary key from something the project
+declares: a uniqueness test, a constraint, a contract. The projects this is built for declare
+none of it. That left seeds unable to have a grain at all — "seed data, not SQL — grain cannot
+be derived, only measured".
+
+But a seed *is* data and it is in the repository, so it can be counted: no warehouse, no
+build, no test anybody wrote. Two refusals matter more than the feature. A measurement is
+never taken as an identifier — the FX seed's thirty rates are all distinct, and `rate` would
+have been "unique", a key that pairs rows which are not the same row. And a monetary *name*
+only disqualifies a column whose values are also numbers, because `rate_date` matches the
+money vocabulary, holds dates, and is half of the real key. What it settles on is
+`(currency_code, rate_date)` — the pair the whole FX conversion turns on.
+
+A counted parent key then outranks a naming guess downstream, and the demo project goes from
+**7 proven grains to 16, and 10 unknowns to 3** — the three being intermediate models with
+joins and unions, where a grain genuinely is not derivable.
+
+Promoting anything from weak to proven changes what it suppresses, which this project has
+been burned by before, so the corpus was the test: **recall stayed at 100% and precision rose
+from 82% to 86%**, with the false-positive rate falling from 36% to 27%. Nothing real was
+suppressed and one spurious fan-out flag disappeared.
+
+| | before | after |
+|---|---|---|
+| proven grains (of 20 models) | 7 | **16** |
+| unknown | 10 | **3** |
+| corpus recall | 100% | 100% |
+| corpus precision | 82% | **86%** |
+
+**What it cost.** Findings per change went from a median of 1 to 2, and criticals from 11 to
+33. Reading the worst case rather than accepting the number: five findings for one fan-out —
+the join that causes it, two models measurably no longer unique on their key, and two closed
+periods restated. Cause, effect and consequence, each true, and the increase is stronger
+grains letting execution check uniqueness on models it previously could not. It is still a
+change in what a reviewer reads, and the number to watch.
+
+### Column-level impact → narrowing, and the bug it nearly shipped with
+
+SQLMesh's plan algorithm narrows a rebuild by column lineage: find the columns that changed,
+skip the descendants that do not read them. The same idea decides what Stage 3 builds, which
+on a real warehouse is the expensive part of a review.
+
+It is the one feature here whose failure mode is silence — a model that was never built looks
+exactly like a model that did not move — so it refuses unless it can prove the set: every
+change confined to named output columns, every model in the set traced, no changed seed. It is
+off by default and names what it skipped.
+
+**The corpus caught it failing anyway.** Narrowing asked the *after* graph who reads the
+changed columns; for a **removed** column there is no such thing in the after graph, so every
+model below it looked untouched, and the mart whose breakage was the defect never got built.
+The case declaring "this must fail to build" came back built. That is the mistake F6 was
+written around — *who reads the column I just removed can only be answered against the before
+graph* — made again one layer down, in the feature that was supposed to be paranoid. Both
+graphs are consulted now, and a test asserts the after graph alone still gets it wrong.
+
+Then the proof, on the same code, same cases, narrowing off and on:
+
+| | full build | narrowed |
+|---|---|---|
+| rules fired | 32 / 32 | 32 / 32 |
+| true positives | 19 | 19 |
+| false negatives | 0 | 0 |
+| recall / precision | 100% / 86% | 100% / 86% |
+| gate | pass | pass |
+
+**Identical verdicts, case for case**, with narrowing actually applied on 31 of them rather
+than refused. That is the evidence the roadmap asked for, and it is evidence about *this*
+project: twenty models with complete lineage. It stays opt-in until a real project says
+otherwise, which is the same reason everything else here waits on the work project.
 
 ## Known limitations
 

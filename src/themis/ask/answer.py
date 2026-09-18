@@ -54,6 +54,24 @@ class Answer:
     refusal_reason: str | None = None
 
 
+def _safe_note(finding: object) -> str:
+    """A finding's evidence, with F7004's quoted text left out.
+
+    F7004 reports a comment written at an automated reviewer, and its evidence is that
+    comment, quoted. Putting it in this prompt would hand the instruction to the very kind
+    of reader it was written for — the one place in THEMIS where reporting an injection
+    would deliver it. The report still quotes it in full, because a person has to read it
+    to judge it; here the fact is what matters and the wording is not.
+    """
+    note = str(getattr(finding, "evidence_note", "") or "")
+    if getattr(finding, "rule_id", "") != "F7004":
+        return note
+    return (
+        "this model contains text addressed at an automated reviewer; the wording is in "
+        "the report, and is deliberately not repeated here"
+    )
+
+
 def render_facts(facts: RetrievedFacts) -> str:
     """Lay out the retrieved facts for the model. Nothing is computed here."""
     run = facts.run
@@ -89,7 +107,7 @@ def render_facts(facts: RetrievedFacts) -> str:
                 f"(severity {finding.severity}, confidence {finding.confidence}){status}"
             )
             if finding.evidence_note:
-                lines.append(f"    evidence: {finding.evidence_note}")
+                lines.append(f"    evidence: {_safe_note(finding)}")
             if finding.consequence:
                 lines.append(f"    consequence: {finding.consequence}")
     else:

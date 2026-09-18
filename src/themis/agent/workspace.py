@@ -43,7 +43,12 @@ class Workspace:
         dialect: str = "trino",
         conventions: tuple[Convention, ...] = (),
     ) -> Workspace:
-        snapshot = load_manifest(manifest, revision="manifest", backend=Backend.MANIFEST)
+        # `<project>/target/manifest.json` is where dbt puts it. When it is somewhere
+        # else, nothing is assumed: the seeds simply go unread.
+        project = manifest.parent.parent if manifest.parent.name == "target" else None
+        snapshot = load_manifest(
+            manifest, revision="manifest", backend=Backend.MANIFEST, project_dir=project
+        )
         return cls(after=snapshot, dialect=dialect, conventions=conventions)
 
     @classmethod

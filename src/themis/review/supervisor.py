@@ -32,6 +32,8 @@ from themis.review.specialists import (
     specialist_for,
 )
 from themis.snapshot import ProjectSnapshot
+from themis.triage.rubric import review_order
+from themis.vocabulary import from_settings as vocabulary_from_settings
 
 log = get_logger(__name__)
 
@@ -61,6 +63,8 @@ class ReviewSummary:
     # Findings whose model writes to the reviewer, kept away from every seat that
     # could act on what it says. Counted so the skip is visible, like every other.
     withheld_for_planted_text: int = 0
+    # Findings the model layer had no budget left for. Counted, like every other skip.
+    not_reviewed_for_budget: int = 0
     undisclosed: list[str] = field(default_factory=list)
     # Every call made, with what it was shown and what it answered. Held in memory and
     # written only if the run is saved: the pipeline has no database, and a training
@@ -186,7 +190,33 @@ def review(
         summary.withheld_for_planted_text += 1
         pr_description = None
 
+    # What the budget is spent on: the worst findings, by the rubric the report ranks with.
+    # A reviewer told that twelve were not shown to the model layer can then take for
+    # granted they are the twelve at the bottom of the report in front of them.
+    budget = max(0, settings.llm_max_findings_reviewed)
+    within_budget: set[int] = set()
+    if len(findings) > budget:
+        vocabulary = vocabulary_from_settings(settings)
+        governed = frozenset(
+            name for name, model in snapshot.models.items() if vocabulary.is_governed(model.tags)
+        )
+        ordered = review_order(findings, governed_models=governed)
+        within_budget = {id(finding) for finding in ordered[:budget]}
+        summary.not_reviewed_for_budget = len(findings) - budget
+        log.warning(
+            "supervisor.budget",
+            findings=len(findings),
+            reviewed=budget,
+            not_reviewed=summary.not_reviewed_for_budget,
+        )
+    else:
+        within_budget = {id(finding) for finding in findings}
+
     for finding in findings:
+        if id(finding) not in within_budget:
+            reviewed.append(finding)
+            continue
+
         # The related model as well: a pack carries "the SQL of the model being joined
         # to", so text planted in a neighbour reaches the same seat by another door.
         if finding.rule_id != "F7004" and any(

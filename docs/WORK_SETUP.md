@@ -139,4 +139,7 @@ uvx pip-audit -r resolved.txt                          # against the OSV databas
 | a prompt over ~2,048 tokens | Ollama silently dropped its beginning; the model answered half a question | the context window is always requested; an overflow is refused, not answered |
 | a key column with NULLs, or a large table | the paired-row join was unhashable on Trino — 66s for 200k rows | plain equality; a NULL key is refused with the reason |
 | 3,000 models | whole-project lineage took 24s | one pass per model, identical graph, half the time |
+| a dbt version other than this project's | unknown — the answer was a reading of dbt's changelog | verified against real 1.8, 1.9, 1.10 and 1.12 manifests, field for field; an unverified schema version warns rather than failing |
+| every staging model reading `{{ source(...) }}` | untested — the demo project has no source at all | a real compiled source-rooted project is in the test suite |
+| a refactor touching fifty models | hundreds of findings, each a model call, an hour of reviewing | bounded by `THEMIS_LLM_MAX_FINDINGS_REVIEWED` (60), spent worst-first and counted |
 | a comment written at the reviewer | an AI reviewer quoting it would be quoting honestly, and the self-check would pass it | reported as F7004, and the model that carries it is kept away from every seat that could refute a finding |

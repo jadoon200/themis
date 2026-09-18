@@ -79,6 +79,10 @@ class ModelNode(BaseModel):
     tags: tuple[str, ...] = ()
     meta: dict[str, str] = Field(default_factory=dict)
     columns: tuple[ColumnSchema, ...] = ()
+    # For a seed only: columns measured unique across the CSV in the repository. A seed is
+    # the one place a project keeps its data, so its grain can be counted rather than
+    # inferred — without a warehouse, a build, or a test anybody wrote.
+    seed_key: tuple[str, ...] = ()
     contract_enforced: bool = False
     # Table properties and hooks. Hive- and Iceberg-backed projects express
     # partitioning and write behaviour here rather than through dbt's own configs, so
