@@ -321,8 +321,22 @@ def _column_lineage(workspace: Workspace, args: dict[str, Any]) -> ToolResult:
         )
     if column not in graph.outputs.get(name, ()):
         known = ", ".join(graph.outputs.get(name, ())[:20])
+        # Where that column *does* exist. The agent's last wrong answer started here: asked
+        # which columns of a mart come from an FX rate, it looked for `rate` on the mart,
+        # found nothing, and reported the absence — an absence it had checked, which is
+        # exactly what a citation check cannot catch. A dead end has to offer a next step.
+        elsewhere = sorted(
+            other for other, columns in graph.outputs.items() if other != name and column in columns
+        )
+        hint = ""
+        if elsewhere:
+            hint = (
+                f" A column named {column} exists on: {', '.join(elsewhere[:5])}. To find what "
+                f"it feeds in {name}, ask about it there with direction=downstream and "
+                f"in_model={name}."
+            )
         return ToolResult(
-            text=f"{name} has no output column {column}. Its columns: {known}", ok=False
+            text=f"{name} has no output column {column}. Its columns: {known}{hint}", ok=False
         )
     refs = (
         graph.sources_of(name, column)
@@ -347,6 +361,17 @@ def _column_lineage(workspace: Workspace, args: dict[str, Any]) -> ToolResult:
                 ),
                 data={"columns": [], "untraced_roots": roots},
             )
+    # "Which columns of the mart come from this rate" names two ends, and answering it used
+    # to mean reading a list of every column the rate feeds and keeping the ones on that
+    # model. That is the enumeration an 8B model drops, so the second end is an argument:
+    # the count in the reply is THEMIS's, and a partial answer is not quotable as a whole one.
+    in_model = str(args["in_model"]).strip() if args.get("in_model") else None
+    total = len(items)
+    if in_model is not None:
+        if (missing := _unknown_model(workspace, in_model)) is not None:
+            return missing
+        items = [item for item in items if item.split(".")[0] == in_model]
+
     untraced = sorted(
         model
         for model in related
@@ -359,6 +384,14 @@ def _column_lineage(workspace: Workspace, args: dict[str, Any]) -> ToolResult:
         else ""
     )
     if not items:
+        if in_model is not None:
+            return ToolResult(
+                text=(
+                    f"None of the {total} column(s) {name}.{column} {label} is in "
+                    f"{in_model}.{caveat}"
+                ),
+                data={"columns": [], "untraced": untraced},
+            )
         empty = "no upstream model column" if direction == "upstream" else "no downstream column"
         return ToolResult(
             text=f"{name}.{column} {label} {empty}.{caveat}",
@@ -389,6 +422,14 @@ def _column_lineage(workspace: Workspace, args: dict[str, Any]) -> ToolResult:
             for item in items
         ]
     lines.sort(key=lambda line: (" indirectly " in line, line))
+    if in_model is not None:
+        headline = (
+            f"{len(items)} of the {total} column(s) {name}.{column} {label} are in {in_model}:\n"
+        )
+        return ToolResult(
+            text=headline + _limited(lines, "columns") + caveat,
+            data={"columns": items, "untraced": untraced},
+        )
     return ToolResult(
         text=_limited(lines, "columns") + caveat,
         data={"columns": items, "untraced": untraced},
@@ -619,17 +660,28 @@ def registry() -> dict[str, Tool]:
         Tool(
             "column_lineage",
             "Which upstream columns a column is computed from, or which downstream columns it "
-            "feeds. direction is 'upstream' (default) or 'downstream'.",
+            "feeds. direction is 'upstream' (default) or 'downstream'. Give in_model to ask "
+            "only about one model's columns — 'which columns of M come from X.c' is "
+            "column_lineage(model=X, column=c, direction=downstream, in_model=M).",
             _object(
                 {
                     "model": _MODEL,
                     "column": {"type": "string"},
                     "direction": {"type": "string", "enum": ["upstream", "downstream"]},
+                    "in_model": {
+                        "type": "string",
+                        "description": "Keep only the columns belonging to this model.",
+                    },
                 },
                 ("model", "column"),
             ),
             _column_lineage,
-            {"model": "stg_orders", "column": "amount", "direction": "upstream"},
+            {
+                "model": "stg_orders",
+                "column": "amount",
+                "direction": "downstream",
+                "in_model": "fct_revenue",
+            },
         ),
         Tool(
             "downstream_models",

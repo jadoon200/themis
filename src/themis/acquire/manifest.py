@@ -58,6 +58,21 @@ def _hook_texts(value: Any) -> tuple[str, ...]:
     return tuple(text for text in out if text)
 
 
+# Manifest schema versions THEMIS has been read against, model for model, with real
+# manifests rather than a reading of dbt's changelog: `python scripts/dbt_versions.py`
+# compiles the demo project with each dbt release and compares what the loader makes of it.
+# dbt 1.8 through 1.12 all emit v12 and all parse identically.
+VERIFIED_MANIFEST_SCHEMAS = frozenset({"v11", "v12"})
+
+
+def _schema_version(metadata: dict[str, Any]) -> str | None:
+    """The `vN` out of `https://schemas.getdbt.com/dbt/manifest/v12.json`."""
+    url = metadata.get("dbt_schema_version")
+    if not isinstance(url, str) or "/" not in url:
+        return None
+    return url.rsplit("/", 1)[-1].removesuffix(".json") or None
+
+
 def _model_from_node(
     unique_id: str, node: dict[str, Any], *, mask: Callable[[str], str] | None = None
 ) -> ModelNode:
@@ -206,6 +221,17 @@ def load_manifest(path: Path, *, revision: str, backend: Backend) -> ProjectSnap
         exposures=exposures,
         child_map=child_map,
     )
+    schema = _schema_version(metadata)
+    if schema is not None and schema not in VERIFIED_MANIFEST_SCHEMAS:
+        # Not a refusal. THEMIS reads the fields it needs and a newer dbt will most likely
+        # still provide them — but if something has moved, the failure would otherwise be a
+        # quiet misreading, and a person deserves to know which side of the line they are on.
+        log.warning(
+            "manifest.schema_not_verified",
+            schema=schema,
+            dbt_version=metadata.get("dbt_version"),
+            verified=sorted(VERIFIED_MANIFEST_SCHEMAS),
+        )
     log.info(
         "manifest.loaded",
         revision=revision[:8],
@@ -213,6 +239,7 @@ def load_manifest(path: Path, *, revision: str, backend: Backend) -> ProjectSnap
         macros=len(macros),
         tests=len(snapshot.tests),
         compiled=snapshot.has_compiled_sql,
+        schema=schema,
     )
     if not snapshot.has_compiled_sql:
         # Loud, not silent. With macro-heavy models a parse-only manifest cannot
