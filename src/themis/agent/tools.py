@@ -95,6 +95,94 @@ def _not_a_review(tool: str) -> ToolResult:
 # --- project tools -----------------------------------------------------------------------
 
 
+_TAGGED = {
+    "type": "string",
+    "description": "Keep only models carrying this tag, e.g. regulatory.",
+}
+_MATERIALIZED = {
+    "type": "string",
+    "description": "Keep only models with this materialization, e.g. incremental.",
+}
+
+
+def _describe(workspace: Workspace, name: str) -> str:
+    model = workspace.after.models.get(name)
+    if model is None:
+        return name
+    # Materialization and tags on every line: "which of these are incremental" otherwise
+    # costs one more tool call per model, and a small step budget runs out.
+    return f"{name} ({model.materialization}) — tags: {', '.join(model.tags) or 'none'}"
+
+
+def _any_tag(workspace: Workspace, names: list[str], value: str) -> bool:
+    lowered = value.lower()
+    return any(
+        lowered == tag.lower() for name in names for tag in workspace.after.models[name].tags
+    )
+
+
+def _any_materialization(workspace: Workspace, names: list[str], value: str) -> bool:
+    lowered = value.lower()
+    return any(workspace.after.models[name].materialization.lower() == lowered for name in names)
+
+
+def _filtered(
+    workspace: Workspace, names: list[str], args: dict[str, Any]
+) -> tuple[list[str], str]:
+    """Apply the tag/materialization filters, and say in words what was applied.
+
+    The filter exists because asking an 8B model to read a list and keep the rows with a
+    tag is where it drops one. Answering "which of these are regulatory" is then a lookup,
+    not a list comprehension it has to perform in prose — and the count in the reply is
+    THEMIS's, so a partial answer stops being quotable as a complete one.
+    """
+    tagged = str(args["tagged"]).strip() if args.get("tagged") else None
+    materialized = str(args["materialized"]).strip() if args.get("materialized") else None
+
+    # A value put in the wrong argument is answered, not refused. Asked which downstream
+    # models were incremental, the model filled `tagged="incremental"`; the tool truthfully
+    # said none was *tagged* incremental, and the answer became "there are none" — a filter
+    # that had just fixed one question breaking another. Nothing here is ambiguous: no tag
+    # is named `incremental` and no materialization is named `regulatory`, so the answer is
+    # the one the caller meant, with the swap stated in the reply so nobody is misled.
+    if (
+        tagged is not None
+        and materialized is None
+        and not _any_tag(workspace, names, tagged)
+        and _any_materialization(workspace, names, tagged)
+    ):
+        tagged, materialized = None, tagged
+    elif (
+        materialized is not None
+        and tagged is None
+        and not _any_materialization(workspace, names, materialized)
+        and _any_tag(workspace, names, materialized)
+    ):
+        tagged, materialized = materialized, None
+
+    kept = names
+    if tagged is not None:
+        lowered = tagged.lower()
+        kept = [
+            name
+            for name in kept
+            if any(lowered == tag.lower() for tag in workspace.after.models[name].tags)
+        ]
+    if materialized is not None:
+        lowered = materialized.lower()
+        kept = [
+            name for name in kept if workspace.after.models[name].materialization.lower() == lowered
+        ]
+    described = ""
+    if tagged is not None and materialized is not None:
+        described = f" tagged {tagged} and materialized as {materialized}"
+    elif tagged is not None:
+        described = f" tagged {tagged}"
+    elif materialized is not None:
+        described = f" materialized as {materialized}"
+    return kept, described
+
+
 def _search_models(workspace: Workspace, args: dict[str, Any]) -> ToolResult:
     query = str(args.get("query", "")).lower()
     matches = sorted(
@@ -102,16 +190,24 @@ def _search_models(workspace: Workspace, args: dict[str, Any]) -> ToolResult:
         for name, model in workspace.after.models.items()
         if query in name.lower() and not model.is_seed
     )
+    kept, described = _filtered(workspace, matches, args)
     if not matches:
         return ToolResult(text=f"No model name contains {query!r}.", data={"models": []})
-    lines = []
-    for name in matches:
-        model = workspace.after.models[name]
-        lines.append(f"{name} ({model.materialization}) — tags: {', '.join(model.tags) or 'none'}")
-    return ToolResult(
-        text=f"{len(matches)} model(s) matching {query!r}:\n" + _limited(lines, "models"),
-        data={"models": matches},
-    )
+    if not kept:
+        return ToolResult(
+            text=(
+                f"None of the {len(matches)} model(s) matching {query!r} is{described}."
+                if described
+                else f"No model name contains {query!r}."
+            ),
+            data={"models": []},
+        )
+    lines = [_describe(workspace, name) for name in kept]
+    if described:
+        headline = f"{len(kept)} of the {len(matches)} model(s) matching {query!r} are{described}:"
+    else:
+        headline = f"{len(matches)} model(s) matching {query!r}:"
+    return ToolResult(text=headline + "\n" + _limited(lines, "models"), data={"models": kept})
 
 
 def _model_details(workspace: Workspace, args: dict[str, Any]) -> ToolResult:
@@ -320,19 +416,18 @@ def _downstream(workspace: Workspace, args: dict[str, Any]) -> ToolResult:
     names = list(workspace.after.downstream_of(name))
     if not names:
         return ToolResult(text=f"Nothing is built on {name}.", data={"models": []})
-    lines = []
-    for child in names:
-        model = workspace.after.models.get(child)
-        if model is None:
-            lines.append(child)
-            continue
-        # Materialization and tags on every line: "which downstream models are incremental"
-        # otherwise costs one more tool call per model, and a small step budget runs out.
-        lines.append(f"{child} ({model.materialization}) — tags: {', '.join(model.tags) or 'none'}")
-    return ToolResult(
-        text=f"{len(names)} model(s) downstream of {name}:\n" + _limited(lines, "models"),
-        data={"models": names},
-    )
+    kept, described = _filtered(workspace, names, args)
+    if not kept:
+        return ToolResult(
+            text=f"None of the {len(names)} model(s) downstream of {name} is{described}.",
+            data={"models": []},
+        )
+    lines = [_describe(workspace, child) for child in kept]
+    if described:
+        headline = f"{len(kept)} of the {len(names)} model(s) downstream of {name} are{described}:"
+    else:
+        headline = f"{len(names)} model(s) downstream of {name}:"
+    return ToolResult(text=headline + "\n" + _limited(lines, "models"), data={"models": kept})
 
 
 def _conventions(workspace: Workspace, args: dict[str, Any]) -> ToolResult:
@@ -488,10 +583,14 @@ def registry() -> dict[str, Tool]:
     tools = (
         Tool(
             "search_models",
-            "Find models whose name contains some text. Use it when unsure of an exact name.",
-            _object({"query": {"type": "string"}}, ("query",)),
+            "Find models whose name contains some text, optionally only those with a given "
+            "tag or materialization. Use it when unsure of an exact name.",
+            _object(
+                {"query": {"type": "string"}, "tagged": _TAGGED, "materialized": _MATERIALIZED},
+                ("query",),
+            ),
             _search_models,
-            {"query": "revenue"},
+            {"query": "revenue", "tagged": "regulatory"},
         ),
         Tool(
             "model_details",
@@ -534,10 +633,13 @@ def registry() -> dict[str, Tool]:
         ),
         Tool(
             "downstream_models",
-            "Every model built on a model, with their tags. Shows what a change can reach.",
-            _object({"model": _MODEL}, ("model",)),
+            "Every model built on a model, with their tags — or only those carrying a given "
+            "tag or materialization. Shows what a change can reach.",
+            _object(
+                {"model": _MODEL, "tagged": _TAGGED, "materialized": _MATERIALIZED}, ("model",)
+            ),
             _downstream,
-            {"model": "stg_orders"},
+            {"model": "stg_orders", "tagged": "regulatory"},
         ),
         Tool(
             "conventions",

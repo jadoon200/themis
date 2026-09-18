@@ -151,6 +151,7 @@ def review(
             settled_without_llm=result.llm.settled_without_llm,
             suppressed=result.llm.suppressed,
             rejected=result.llm.rejected_by_selfcheck,
+            withheld=result.llm.withheld_for_planted_text,
             calls=usage.calls,
             tokens=usage.prompt_tokens + usage.completion_tokens,
             seconds=round(usage.seconds, 1),

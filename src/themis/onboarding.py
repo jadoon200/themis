@@ -302,6 +302,18 @@ def _check_redaction(settings: Settings) -> Check:
     )
 
 
+def _check_mcp() -> Check:
+    """Whether `themis mcp` can serve — optional, so absence is a skip and never a fail."""
+    if importlib.util.find_spec("mcp") is None:
+        return Check(
+            "mcp server",
+            "skip",
+            "the optional SDK is not installed (only needed to serve an MCP client)",
+            "uv pip install 'themis[mcp]'",
+        )
+    return Check("mcp server", "ok", "SDK present; results carry SQL, connect a local-model client")
+
+
 def run_checks(project: Path, settings: Settings, *, target: str) -> list[Check]:
     project = project.resolve()
     checks = [_check_python(), _check_dbt(), _check_project(project)]
@@ -309,6 +321,7 @@ def run_checks(project: Path, settings: Settings, *, target: str) -> list[Check]
     checks += [_check_allowlist(settings, target), _check_git(project), _check_manifest(project)]
     checks += _check_model(settings)
     checks += [_check_database(settings), _check_conventions(project), _check_redaction(settings)]
+    checks.append(_check_mcp())
     return checks
 
 

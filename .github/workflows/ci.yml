@@ -49,6 +49,10 @@ jobs:
       THEMIS_TEST_POSTGRES_URL: postgresql+psycopg://themis:themis@127.0.0.1:5436/themis
       THEMIS_TEST_TRINO_HOST: 127.0.0.1
       THEMIS_TEST_TRINO_PORT: "8085"
+      # The MCP tests skip themselves without the optional SDK, which would leave the
+      # protocol adapter covered only by its own conversion functions — and those pass
+      # whatever the SDK renames. Here, a missing SDK fails instead of skipping.
+      THEMIS_REQUIRE_MCP: "1"
     steps:
       - uses: actions/checkout@v5
 

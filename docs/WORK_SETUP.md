@@ -97,6 +97,39 @@ or the answer is refused. `--json` shows every tool it called and every quote it
   findings. They rank repeated findings, are shown to specialists as precedent, and label
   the captured model calls (`themis dataset --judged-only`).
 
+## 8. Serve the tools to an IDE assistant (optional)
+
+```bash
+uv pip install 'themis[mcp]'
+themis mcp --project /path/to/dbt/project
+```
+
+The same twelve read-only tools the built-in agent uses, over MCP stdio, so an assistant in
+the IDE can investigate a change with THEMIS's evidence. **Tool results contain the SQL under
+review.** MCP sends nothing anywhere itself — the client decides where results go, and a
+client backed by a hosted model sends them to that provider. Connect only a local-model
+client to a proprietary project. THEMIS cannot enforce that from the server side, which is
+why it is said here, in `themis mcp --help`, and on startup.
+
+### What the optional SDK brings, and what was checked
+
+The extra is optional because a deployment that never serves MCP should not have to review
+another dependency tree. Before it went into the dev requirements this is what was checked
+(2026-09-18, `mcp` 2.2.0). Re-run it when the pin moves.
+
+| question | answer |
+|---|---|
+| how much is new | 11 packages, and not one of them an upgrade or downgrade of something THEMIS already had — nothing in the existing tree moved version |
+| known vulnerabilities | none, `pip-audit` over all 28 resolved packages |
+| who published them | `mcp`, `mcp-types`, `pyjwt`, `cryptography`, `sse-starlette` and `python-multipart` carry PyPI attestations naming their GitHub repository and publishing workflow; `httpx2`/`httpcore2` (pydantic), `truststore` (vendored by pip) and `cffi`/`pycparser` do not |
+| does it phone home | no. OpenTelemetry arrives as the API only — no SDK, no exporter package — so its spans are no-ops. A test serves a whole session under an audit hook and asserts the process resolved no host and opened no connection |
+| what reaches the network | nothing from the server: stdio only, down the client's own pipe |
+
+```bash
+uv pip compile <(echo 'mcp>=2.2,<3') -o resolved.txt   # exactly what would be installed
+uvx pip-audit -r resolved.txt                          # against the OSV database
+```
+
 ## What was fixed because a real project would have hit it
 
 | on a real project | what happened | now |
@@ -106,3 +139,4 @@ or the answer is refused. `--json` shows every tool it called and every quote it
 | a prompt over ~2,048 tokens | Ollama silently dropped its beginning; the model answered half a question | the context window is always requested; an overflow is refused, not answered |
 | a key column with NULLs, or a large table | the paired-row join was unhashable on Trino — 66s for 200k rows | plain equality; a NULL key is refused with the reason |
 | 3,000 models | whole-project lineage took 24s | one pass per model, identical graph, half the time |
+| a comment written at the reviewer | an AI reviewer quoting it would be quoting honestly, and the self-check would pass it | reported as F7004, and the model that carries it is kept away from every seat that could refute a finding |

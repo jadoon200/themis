@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from themis.analyze import injection
 from themis.analyze.lineage import ColumnGraph
 from themis.config import Settings
 from themis.conventions import Convention
@@ -57,6 +58,9 @@ class ReviewSummary:
     # adjudications because it is a different job: not deciding whether a finding is
     # real, only suggesting why an already-certain number moved.
     explained: int = 0
+    # Findings whose model writes to the reviewer, kept away from every seat that
+    # could act on what it says. Counted so the skip is visible, like every other.
+    withheld_for_planted_text: int = 0
     undisclosed: list[str] = field(default_factory=list)
     # Every call made, with what it was shown and what it answered. Held in memory and
     # written only if the run is saved: the pipeline has no database, and a training
@@ -66,6 +70,23 @@ class ReviewSummary:
     @property
     def skipped_as_settled(self) -> int:
         return self.settled_without_llm
+
+
+def _addresses_the_reviewer(snapshot: ProjectSnapshot, model_name: str | None) -> bool:
+    """Whether this model contains text written at whatever reviews it.
+
+    F7004 reports such text to a person. This decides something else: whether the model
+    layer is allowed to touch findings about it. It is not — a specialist can refute a
+    finding or lower its severity, so a model that can steer one has a way to switch off
+    the very check it tripped, and the self-check cannot object because the planted line
+    is genuinely in the model.
+    """
+    if model_name is None:
+        return False
+    model = snapshot.models.get(model_name)
+    if model is None:
+        return False
+    return bool(injection.planted_text(model.raw_sql or model.compiled_sql or ""))
 
 
 def _needs_adjudication(finding: Finding) -> bool:
@@ -143,7 +164,44 @@ def review(
     summary = ReviewSummary()
     reviewed: list[Finding] = []
 
+    # Conventions are read at the reviewed revision, so the same change can add one, and
+    # they reach every specialist as context. One written at the reviewer is dropped.
+    kept_conventions = tuple(
+        convention
+        for convention in conventions
+        if not injection.addresses_a_reader(
+            f"{convention.condition} {convention.guidance} {convention.implication}"
+        )
+    )
+    if len(kept_conventions) != len(conventions):
+        log.warning("supervisor.convention_addresses_the_reviewer")
+        summary.withheld_for_planted_text += len(conventions) - len(kept_conventions)
+        conventions = kept_conventions
+
+    if pr_description and injection.addresses_a_reader(pr_description):
+        # The description is written by whoever opened the change, and intent is the one
+        # seat with no rule behind it. A description telling it what to conclude is not
+        # shown to anything; the deterministic findings stand on their own.
+        log.warning("supervisor.description_addresses_the_reviewer")
+        summary.withheld_for_planted_text += 1
+        pr_description = None
+
     for finding in findings:
+        # The related model as well: a pack carries "the SQL of the model being joined
+        # to", so text planted in a neighbour reaches the same seat by another door.
+        if finding.rule_id != "F7004" and any(
+            _addresses_the_reviewer(snapshot, name)
+            for name in (finding.evidence.model_name, finding.evidence.related_model)
+        ):
+            log.warning(
+                "supervisor.withheld",
+                model=finding.evidence.model_name,
+                rule=finding.rule_id,
+            )
+            summary.withheld_for_planted_text += 1
+            reviewed.append(finding)
+            continue
+
         if not _needs_adjudication(finding):
             # X0001 means "the numbers moved and nothing accounts for it". The
             # measurement is settled, so there is nothing to adjudicate — but the cause
@@ -222,6 +280,11 @@ def review(
     # refuted, and only for what a reviewer will actually be shown.
     reviewed = _propose_fixes(
         reviewed,
+        withheld=frozenset(
+            finding.evidence.model_name
+            for finding in reviewed
+            if _addresses_the_reviewer(snapshot, finding.evidence.model_name)
+        ),
         provider=provider,
         settings=settings,
         snapshot=snapshot,
@@ -269,6 +332,7 @@ def _propose_fixes(
     usage: Usage,
     record: list[ModelCall] | None = None,
     conventions: tuple[Convention, ...] = (),
+    withheld: frozenset[str | None] = frozenset(),
 ) -> list[Finding]:
     """Attach corrected SQL where a model can write it, and nothing where it cannot.
 
@@ -279,6 +343,12 @@ def _propose_fixes(
     out: list[Finding] = []
     for finding in findings:
         if finding.suppressed_reason or not finding.evidence.sql_after:
+            out.append(finding)
+            continue
+        # A model that writes to the reviewer does not get a rewrite proposed from the
+        # same text: the fix seat reads the SQL, and the suggestion lands in a report a
+        # person may paste back into the model.
+        if finding.evidence.model_name in withheld:
             out.append(finding)
             continue
         pack = build_pack(

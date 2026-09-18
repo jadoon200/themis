@@ -4,3 +4,7 @@ mypy>=1.11
 pytest>=8.2
 pytest-cov>=5.0
 types-pyyaml>=6.0
+# The optional MCP extra, installed for development so tests/test_agent_mcp_live.py runs
+# against the real SDK instead of skipping itself. Deliberately not in requirements.txt:
+# serving MCP is opt-in, and a deployment that never does should not carry the SDK's tree.
+mcp>=2.2,<3
