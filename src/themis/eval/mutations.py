@@ -798,13 +798,20 @@ rates as (select * from fx),""",
         id="minor_units_divided_as_integers",
         pr_description="Simplify the minor-to-major macro: one cast instead of two.",
         description_is_honest=False,
-        kind=Kind.DEFECT,
+        # LATENT, and the reason is the engine. Trino divides whole numbers as whole
+        # numbers — `select 5/2` is 2 — while DuckDB, which the demo project builds on,
+        # returns 2.5. So the defect is real on the engine this tool targets and produces
+        # byte-identical output on the one the corpus can measure. Declaring it a defect
+        # scored it "measured the opposite", which was the oracle telling the truth.
+        kind=Kind.LATENT,
         expects_family="F8",
         description=(
             "The inner decimal cast leaves the minor-to-major macro, so the division "
-            "happens between whole numbers. Trino truncates those, and every ledger "
-            "amount in the project loses its fractional units — a plausible figure that "
-            "is quietly short, on every row, through every model the macro reaches"
+            "happens between whole numbers. Trino truncates those and every ledger amount "
+            "loses its fractional units — a plausible figure that is quietly short, on "
+            "every row. DuckDB returns 2.5 for 5/2 where Trino returns 2, so the demo "
+            "project cannot demonstrate it by building: caught by reading the SQL or not "
+            "at all, which is what latent means here"
         ),
         relative_path=_MACRO_MONEY,
         find="cast(cast({{ expr }} as decimal(38, 6)) / 100 as decimal(38, 6))",

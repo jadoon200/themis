@@ -909,6 +909,11 @@ def review(
                 ),
                 candidates=targets - changed,
                 graph=contexts[0].lineage.after if contexts and contexts[0].lineage else None,
+                # The revision in which a removed column still exists, and the only one
+                # that can say what used to read it.
+                before_graph=(
+                    contexts[0].lineage.before if contexts and contexts[0].lineage else None
+                ),
                 snapshot=acquired.after,
                 changed_seeds=acquired.changed_seeds,
             )

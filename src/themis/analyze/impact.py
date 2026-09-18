@@ -157,14 +157,23 @@ def narrow(
     graph: ColumnGraph | None,
     snapshot: ProjectSnapshot,
     changed_seeds: tuple[str, ...] = (),
+    before_graph: ColumnGraph | None = None,
 ) -> Narrowing:
     """Which of ``candidates`` a change can reach, or a refusal to decide.
 
     ``changed`` maps each changed model to its dirty output columns, or None where the
     change could not be confined to columns.
+
+    Both revisions' graphs are consulted, and the *before* one is not optional. Who reads a
+    column this change **removed** has an answer only there: in the after graph the column
+    is gone, nothing resolves to it, and every model below it looks untouched. Asking the
+    after graph alone excluded the mart whose build the removal was supposed to break, and
+    the corpus case declared "this must fail to build" came back built — the same mistake
+    F6 was written around, made again one layer down.
     """
     keep_all = frozenset(candidates)
-    if graph is None:
+    graphs = [g for g in (graph, before_graph) if g is not None]
+    if not graphs:
         return Narrowing(kept=keep_all, refused="column lineage was not built for this review")
     if changed_seeds:
         return Narrowing(
@@ -181,7 +190,9 @@ def narrow(
                 "named columns, so every column below it may move"
             ),
         )
-    untraced = sorted(name for name in candidates | set(changed) if not graph.is_traced(name))
+    untraced = sorted(
+        name for name in candidates | set(changed) if not all(g.is_traced(name) for g in graphs)
+    )
     if untraced:
         return Narrowing(
             kept=keep_all,
@@ -194,8 +205,9 @@ def narrow(
     reached: set[str] = set()
     for model, columns in changed.items():
         for column in columns or ():
-            for ref in graph.consumers_of(model, column):
-                reached.add(ref.model)
+            for one in graphs:
+                for ref in one.consumers_of(model, column):
+                    reached.add(ref.model)
 
     kept: set[str] = set()
     excluded: dict[str, str] = {}

@@ -163,3 +163,44 @@ def test_dirty_columns_reports_a_model_it_cannot_read_as_unconfined() -> None:
     before = _snapshot(stg_entries=STAGING)
     after = ProjectSnapshot(revision="r", backend=Backend.MANIFEST, models={})
     assert dirty_columns(before, after, {"stg_entries"}, dialect="duckdb") == {"stg_entries": None}
+
+
+def test_a_removed_column_is_traced_in_the_revision_where_it_still_exists() -> None:
+    """The failure the corpus caught, and the mistake F6 was already written around.
+
+    Who reads a column this change *removed* has an answer only in the before graph. In
+    the after graph the column is gone, nothing resolves to it, every model below looks
+    untouched — and the mart whose build the removal was supposed to break is skipped. The
+    corpus case that declares "this must fail to build" came back built.
+    """
+    before = _snapshot(stg_entries=STAGING, mart_amount=MART_AMOUNT, mart_count=MART_COUNT)
+    after_staging = STAGING.replace("    amount_usd,\n", "")
+    after = _snapshot(stg_entries=after_staging, mart_amount=MART_AMOUNT, mart_count=MART_COUNT)
+
+    index = LineageIndex(before_snapshot=before, after_snapshot=after)
+    result = narrow(
+        changed={"stg_entries": ("amount_usd",)},
+        candidates={"mart_amount", "mart_count"},
+        graph=index.after,
+        before_graph=index.before,
+        snapshot=after,
+    )
+    # mart_amount reads the removed column in the revision that still has it.
+    assert "mart_amount" in result.kept
+    assert "mart_amount" not in result.excluded
+
+
+def test_the_after_graph_alone_would_have_missed_it() -> None:
+    """The control for the control: without the before graph, the bug comes back."""
+    before = _snapshot(stg_entries=STAGING, mart_amount=MART_AMOUNT, mart_count=MART_COUNT)
+    after_staging = STAGING.replace("    amount_usd,\n", "")
+    after = _snapshot(stg_entries=after_staging, mart_amount=MART_AMOUNT, mart_count=MART_COUNT)
+
+    index = LineageIndex(before_snapshot=before, after_snapshot=after)
+    blind = narrow(
+        changed={"stg_entries": ("amount_usd",)},
+        candidates={"mart_amount", "mart_count"},
+        graph=index.after,
+        snapshot=after,
+    )
+    assert "mart_amount" in blind.excluded
