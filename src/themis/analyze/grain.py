@@ -328,6 +328,17 @@ def infer_model_grain(
     model: ModelNode, snapshot: ProjectSnapshot, *, dialect: str = "trino"
 ) -> Grain:
     """Derive one model's grain from the highest-confidence source available."""
+    # A seed's grain is counted, not derived: the data is in the repository, so the
+    # columns that identify a row can be read off the CSV. It ranks with a warehouse
+    # measurement because it is one — over the whole file, or it is not reported at all.
+    if model.seed_key:
+        return Grain(
+            model_name=model.name,
+            columns=model.seed_key,
+            source=GrainSource.MEASURED,
+            note="counted unique across every row of the seed CSV",
+        )
+
     sql = model.analysable_sql
     if sql is not None:
         structural = _structural_grain(sql, dialect)
@@ -384,7 +395,10 @@ def _unknown_reason(model: ModelNode, snapshot: ProjectSnapshot) -> str:
     when they already did reads as the tool being broken.
     """
     if model.is_seed:
-        return "seed data, not SQL — grain cannot be derived, only measured"
+        return (
+            "seed data — no column, or pair of columns, is unique across the CSV "
+            "(measurements are never taken as identifiers)"
+        )
     if model.analysable_sql is None:
         if snapshot.has_compiled_sql:
             return (
@@ -463,7 +477,15 @@ def infer_grains(snapshot: ProjectSnapshot, *, dialect: str = "trino") -> dict[s
     for _ in range(10):
         changed = False
         for name, grain in grains.items():
-            if grain.source is not GrainSource.UNKNOWN:
+            # A naming heuristic is replaceable too. It says "column naming only — not
+            # asserted", and a key carried unchanged from a parent that was *counted* is a
+            # stronger statement than a name. It matters on exactly the models it sounds
+            # like it would not: the FX reference table was guessed as (currency_code)
+            # when the seed it passes through is measured (currency_code, rate_date), and
+            # the difference between those two is the whole of the fan-out this tool
+            # exists to catch. Propagation still refuses a join, a set operation, or a key
+            # the projection drops.
+            if grain.source not in (GrainSource.UNKNOWN, GrainSource.HEURISTIC):
                 continue
             inherited = _propagate(snapshot.models[name], grains, dialect)
             if inherited is not None:

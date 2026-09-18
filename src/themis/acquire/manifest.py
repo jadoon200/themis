@@ -14,6 +14,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from themis.analyze import seeds
+from themis.analyze.seeds import seed_key
 from themis.analyze.volatility import invocation_window, mask_invocation_literals
 from themis.logging import get_logger
 from themis.models import Backend
@@ -71,6 +73,29 @@ def _schema_version(metadata: dict[str, Any]) -> str | None:
     if not isinstance(url, str) or "/" not in url:
         return None
     return url.rsplit("/", 1)[-1].removesuffix(".json") or None
+
+
+def _with_seed_key(model: ModelNode, project_dir: Path) -> ModelNode:
+    """Count a seed's key from the CSV in the repository, where there is one.
+
+    Only when the whole file was read: "unique in the first 50,000 rows" is a different
+    claim, and a grain that is asserted must be asserted over all of it.
+    """
+    if not model.is_seed or not model.file_path:
+        return model
+    path = project_dir / model.file_path
+    if not path.exists() or path.suffix.lower() != ".csv":
+        return model
+    try:
+        # The cap is read here rather than bound as a default, so it is one value at call
+        # time and not whatever it was when this module was imported.
+        key = seed_key(path.read_text(errors="replace"), max_rows=seeds.MAX_ROWS)
+    except OSError as exc:  # an unreadable seed is not a reason to fail a review
+        log.debug("manifest.seed_unreadable", seed=model.name, error=str(exc)[:120])
+        return model
+    if key is None or not key.complete:
+        return model
+    return model.model_copy(update={"seed_key": key.columns})
 
 
 def _model_from_node(
@@ -151,7 +176,9 @@ def _tests_from_nodes(nodes: dict[str, Any]) -> tuple[DeclaredTest, ...]:
     return tuple(tests)
 
 
-def load_manifest(path: Path, *, revision: str, backend: Backend) -> ProjectSnapshot:
+def load_manifest(
+    path: Path, *, revision: str, backend: Backend, project_dir: Path | None = None
+) -> ProjectSnapshot:
     """Build a snapshot from a manifest on disk."""
     if not path.exists():
         raise ManifestError(f"no manifest at {path}")
@@ -179,6 +206,8 @@ def load_manifest(path: Path, *, revision: str, backend: Backend) -> ProjectSnap
         for uid, node in nodes.items()
         if node.get("resource_type") in ("model", "seed")
     }
+    if project_dir is not None:
+        models = {name: _with_seed_key(model, project_dir) for name, model in models.items()}
     macros = {
         node["name"]: MacroNode(
             name=str(node["name"]),

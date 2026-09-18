@@ -183,7 +183,9 @@ def _compile_snapshot(
         cached = cache.get(cache_key)
         if cached is not None:
             try:
-                return load_manifest(cached, revision=revision, backend=Backend.MANIFEST)
+                return load_manifest(
+                    cached, revision=revision, backend=Backend.MANIFEST, project_dir=project_dir
+                )
             except ManifestError as exc:
                 # A cached manifest that will not load is a cache problem, not a
                 # project problem. Fall through and compile it properly.
@@ -210,7 +212,12 @@ def _compile_snapshot(
                 target_path=target_dir,
             )
             snapshot = load_manifest(
-                compiled.manifest_path, revision=revision, backend=Backend.MANIFEST
+                compiled.manifest_path,
+                revision=revision,
+                backend=Backend.MANIFEST,
+                # The seeds of *this* revision, which is the checkout that was just
+                # compiled — not whatever is in the caller's working tree.
+                project_dir=project_dir,
             )
             if compiled.error is not None:
                 # Never cached: a partial compile is a fact about one attempt, not about
