@@ -304,3 +304,94 @@ def test_a_value_that_is_neither_a_tag_nor_a_materialization_is_not_quietly_swap
     result = _run(workspace, "search_models", query="fct_", tagged="nonsense")
     assert result.data["models"] == []
     assert "is tagged nonsense" in result.text
+
+
+def test_a_two_ended_question_is_one_call() -> None:
+    """ "Which columns of M come from X.c" names two ends, and used to need both read.
+
+    The agent's last wrong answer was this question: it looked for the source column on the
+    target model, found nothing, and reported the absence. With the second end as an
+    argument, the count in the reply is THEMIS's and there is nothing to enumerate.
+    """
+    workspace = Workspace(after=synthetic.project(40))
+    source = next(
+        name
+        for name in sorted(workspace.after.models)
+        if name.startswith("stg_") and workspace.after.downstream_of(name)
+    )
+    whole = _run(workspace, "column_lineage", model=source, column="amount", direction="downstream")
+    assert whole.ok and whole.data["columns"]
+
+    target = whole.data["columns"][0].split(".")[0]
+    narrowed = _run(
+        workspace,
+        "column_lineage",
+        model=source,
+        column="amount",
+        direction="downstream",
+        in_model=target,
+    )
+    assert narrowed.ok
+    assert all(item.split(".")[0] == target for item in narrowed.data["columns"])
+    assert narrowed.text.startswith(f"{len(narrowed.data['columns'])} of the ")
+    assert f"are in {target}" in narrowed.text
+
+
+def test_a_narrowed_lineage_question_with_no_answer_says_so_in_a_sentence() -> None:
+    workspace = Workspace(after=synthetic.project(40))
+    source = next(
+        name
+        for name in sorted(workspace.after.models)
+        if name.startswith("stg_") and workspace.after.downstream_of(name)
+    )
+    unrelated = next(
+        name
+        for name in sorted(workspace.after.models)
+        if name.startswith("stg_") and name != source
+    )
+    result = _run(
+        workspace,
+        "column_lineage",
+        model=source,
+        column="amount",
+        direction="downstream",
+        in_model=unrelated,
+    )
+    assert result.ok and result.data["columns"] == []
+    assert f"is in {unrelated}" in result.text and "None of the" in result.text
+    # And the answer it emptied comes back with it: an empty result reads as "there is
+    # none", which the agent then reports honestly and wrongly.
+    assert result.data["all_columns"]
+    assert result.data["all_columns"][0] in result.text
+
+
+def test_looking_for_a_column_on_the_wrong_model_points_at_the_right_one() -> None:
+    """A dead end has to offer a next step, or it gets reported as an absence."""
+    workspace = Workspace(after=synthetic.project(40))
+    mart = next(name for name in sorted(workspace.after.models) if name.startswith("fct_"))
+    result = _run(workspace, "column_lineage", model=mart, column="amount")
+    assert not result.ok
+    assert "A column named amount exists on:" in result.text
+    assert "in_model=" in result.text
+
+
+def test_narrowing_to_the_model_being_asked_about_is_ignored() -> None:
+    """A filter that empties itself by construction.
+
+    A column's sources and consumers live in other models, so `in_model` pointed at the
+    model in the question can only return nothing. The agent did exactly that — asked which
+    upstream column fct_revenue.amount_usd came from, it narrowed to fct_revenue, got
+    nothing, and refused a question that had been right since the first run.
+    """
+    workspace = Workspace(after=synthetic.project(40))
+    mart = next(
+        name
+        for name in sorted(workspace.after.models)
+        if name.startswith("fct_") and workspace.after.models[name].depends_on_models
+    )
+    plain = _run(workspace, "column_lineage", model=mart, column="reported_amount")
+    narrowed = _run(
+        workspace, "column_lineage", model=mart, column="reported_amount", in_model=mart
+    )
+    assert narrowed.ok
+    assert narrowed.text == plain.text

@@ -12,7 +12,9 @@ from pathlib import Path
 
 from themis import conventions, vocabulary
 from themis.acquire.snapshot_builder import AcquireResult, acquire
+from themis.analyze import impact
 from themis.analyze.grain import infer_grains
+from themis.analyze.impact import Narrowing
 from themis.analyze.lineage import LineageIndex
 from themis.analyze.positioning import position_findings
 from themis.analyze.suggest import suggest_tests
@@ -23,12 +25,14 @@ from themis.execute.runner import ExecutionResult, execute
 from themis.logging import get_logger
 from themis.models import (
     Confidence,
+    Evidence,
     ExecutionDelta,
     Finding,
     FindingHistory,
     Grain,
     GrainSource,
     KeyedDiff,
+    Severity,
     sum_moved,
 )
 from themis.review.supervisor import ReviewSummary
@@ -54,6 +58,10 @@ class ReviewResult:
     # Seeds whose data changed, and every model built on them. A data change reviews no
     # SQL, so without this a PR editing only an FX-rate file reported zero changed models.
     seed_affected: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    # What Stage 3 was allowed to skip, and why it was not allowed to skip more. A
+    # measurement that did not happen looks exactly like one that found nothing, so this
+    # travels with the report rather than staying in a log line.
+    narrowing: Narrowing | None = None
     degraded_reason: str | None = None
     executed: bool = False
     execution: ExecutionResult | None = None
@@ -289,6 +297,80 @@ def _merge_volatile(
         for model, columns in side.items():
             merged[model] = merged.get(model, frozenset()) | columns
     return merged
+
+
+def restated_period_findings(
+    result: ExecutionResult,
+    after: ProjectSnapshot,
+    vocab: Vocabulary = DEFAULT_VOCABULARY,
+) -> list[Finding]:
+    """Models where a figure moved in a period that was already reported.
+
+    Separate from every other finding on purpose, and never suppressed by one. "The join
+    lost a predicate" and "last quarter's reported revenue is now a different number" are
+    two different conversations: the first is a defect to fix before merging, the second is
+    a restatement, which in a bank is an event with a process attached — disclosure,
+    sign-off, sometimes a filing. A reviewer can accept the first and still need to be told
+    the second.
+
+    Only measured, never inferred. It needs a period in the derived grain, both builds
+    counted unique on that grain, and rows that actually moved in a period earlier than the
+    latest one present. Nothing about this can be established by reading SQL.
+    """
+    out: list[Finding] = []
+    for name, delta in sorted(result.deltas.items()):
+        keyed = delta.keyed
+        if keyed is None or not keyed.restates_a_closed_period:
+            continue
+        model = after.models.get(name)
+        governed = bool(model and vocab.is_governed(model.tags))
+        # Only where the figures land. One change moves every model beneath it, and a
+        # restatement repeated down the chain is the noise that made X0001 attribute to
+        # roots: it turned one fact into five findings, four of which name a model nobody
+        # reports. "Already reported" means a model somebody reads — one that is governed,
+        # or one nothing is built on. It cost the corpus a median of two findings per
+        # change against one before, which is the number to watch, not the rate.
+        if not governed and after.downstream_of(name):
+            continue
+        earliest = keyed.earliest_changed_period or "an earlier period"
+        latest = keyed.latest_period or "the latest period"
+        out.append(
+            Finding(
+                rule_id="X0004",
+                family="X",
+                title=f"`{name}` changes a period that was already reported",
+                severity=Severity.CRITICAL if governed else Severity.HIGH,
+                confidence=Confidence.MEASURED,
+                evidence=Evidence(
+                    model_name=name,
+                    note=(
+                        f"{keyed.prior_period_rows:,} row(s) changed in periods before "
+                        f"{latest}, the earliest being {earliest}, keyed on "
+                        f"{', '.join(keyed.key)}"
+                    ),
+                    identity="",
+                ),
+                consequence=(
+                    "Building both revisions moved figures for periods that are not the "
+                    "current one. Whatever else this change is, it restates numbers that "
+                    "have already been published"
+                    + (
+                        " from a model tagged for regulatory reporting or reconciliation."
+                        if governed
+                        else "."
+                    )
+                    + " That is a decision with a process attached, not a detail of the "
+                    "implementation."
+                ),
+                suggestion=(
+                    "If the restatement is intended, say so on the change and follow "
+                    "whatever your reporting process requires. If it is not, bound the "
+                    "change to the open period."
+                ),
+                blast_radius=after.downstream_of(name),
+            )
+        )
+    return out
 
 
 def unexplained_change_findings(
@@ -749,6 +831,10 @@ def review(
     provider: object | None = None,
     data_anchor: Path | None = None,
     history: HistoryLookup | None = None,
+    # Build and compare only the models that read a column the change touched. Off by
+    # default: every other refusal in THEMIS errs towards reporting too much, and this one
+    # errs towards measuring nothing at all.
+    narrow_execution: bool = False,
 ) -> ReviewResult:
     """Run the deterministic stages, optionally including execution.
 
@@ -783,12 +869,25 @@ def review(
     contexts = build_contexts(acquired, grains, dialect=settings.dialect, vocab=vocab)
     findings, skipped = run_rules(contexts)
 
+    # A changed dbt file no stage looked at. A snapshot is the case: it is not a model or a
+    # seed, so it resolves to no node and would drop out of the review without a word. What
+    # is not analysed is said, and counts towards the review being incomplete.
+    skipped += [
+        SkippedRule(
+            rule_id="X0003",
+            model_name=Path(path).stem,
+            reason=f"{path} is not a model, seed or macro — THEMIS did not analyse it",
+        )
+        for path in acquired.unanalysed_changes
+    ]
+
     macro_affected = {
         macro: acquired.after.models_using_macro(macro) for macro in acquired.changed_macros
     }
     seed_affected = {seed: acquired.after.downstream_of(seed) for seed in acquired.changed_seeds}
 
     execution: ExecutionResult | None = None
+    narrowing: Narrowing | None = None
     if run_execution:
         # Measure descendants as well as the changed models themselves. A fan-out in an
         # intermediate model is invisible in its own row count when the join is the last
@@ -799,6 +898,34 @@ def review(
         targets = set(changed)
         for name in changed:
             targets.update(acquired.after.downstream_of(name))
+
+        if narrow_execution:
+            narrowing = impact.narrow(
+                changed=impact.dirty_columns(
+                    acquired.before,
+                    acquired.after,
+                    {c.model_name for c in contexts},
+                    dialect=settings.dialect,
+                ),
+                candidates=targets - changed,
+                graph=contexts[0].lineage.after if contexts and contexts[0].lineage else None,
+                # The revision in which a removed column still exists, and the only one
+                # that can say what used to read it.
+                before_graph=(
+                    contexts[0].lineage.before if contexts and contexts[0].lineage else None
+                ),
+                snapshot=acquired.after,
+                changed_seeds=acquired.changed_seeds,
+            )
+            if narrowing.refused:
+                log.info("execute.narrow_refused", reason=narrowing.refused)
+            else:
+                log.info(
+                    "execute.narrowed",
+                    skipped=len(narrowing.excluded),
+                    models=sorted(narrowing.excluded)[:5],
+                )
+                targets = changed | set(narrowing.kept)
         # Two-pass building is only needed when something in the selection is
         # incremental; for everything else the second pass is wasted time.
         # Only the incremental models need a second pass, and only when they are in
@@ -845,6 +972,9 @@ def review(
                     vocab=vocab,
                 )
             )
+            # Not suppressed by anything above it: a rule explaining *why* the numbers moved
+            # does not tell a reviewer that what moved was a period already reported.
+            findings.extend(restated_period_findings(execution, acquired.after, vocab))
             grains = {**grains, **execution.measured_grains}
         else:
             log.warning("execute.skipped", reason=execution.skipped_reason)
@@ -897,6 +1027,7 @@ def review(
         models=len(contexts),
         findings=len(findings),
         skipped=len(skipped),
+        narrowing=narrowing,
         executed=bool(execution and execution.ran),
         llm=bool(llm_summary),
     )
@@ -927,6 +1058,7 @@ def review(
         macro_affected=macro_affected,
         seed_affected=seed_affected,
         degraded_reason=acquired.degraded_reason,
+        narrowing=narrowing,
         executed=bool(execution and execution.ran),
         execution=execution,
         execution_requested=run_execution,

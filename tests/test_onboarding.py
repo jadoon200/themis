@@ -144,3 +144,46 @@ def test_the_optional_mcp_sdk_is_reported_but_never_fails_a_project(
     monkeypatch.setattr(onboarding.importlib.util, "find_spec", lambda name: None)
     absent = onboarding._check_mcp()
     assert absent.status == "skip" and absent.fix == "uv pip install 'themis[mcp]'"
+
+
+def test_the_connection_is_never_tested_against_a_target_the_allowlist_refuses(
+    project: Path,
+) -> None:
+    """doctor must not connect to production to tell you production is off limits."""
+    settings = Settings(execute_allowed_targets=("dev",))
+    check = onboarding._check_connection(project, settings, "prod")
+    assert check.status == "skip" and "allowlist" in check.detail
+
+
+def test_a_warehouse_that_cannot_be_reached_is_a_failure_with_the_command_to_run(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Everything about a profile can be right while the connection is not.
+
+    Without this the first sign is a failed compile in the middle of a review, reported as
+    whatever dbt said about it, leaving the person to guess which half is wrong.
+    """
+    from themis.acquire import dbt_runner
+
+    class Result:
+        stdout = "Connection test: [ERROR]\nCould not connect: SSO token expired"
+        stderr = ""
+        returncode = 1
+
+    monkeypatch.setattr(dbt_runner, "run_dbt", lambda *a, **k: Result())
+    check = onboarding._check_connection(project, Settings(execute_allowed_targets=("dev",)), "dev")
+    assert check.status == "fail"
+    assert "dbt debug --target dev" in (check.fix or "")
+
+
+def test_a_reachable_warehouse_passes(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from themis.acquire import dbt_runner
+
+    class Result:
+        stdout = "Connection test: [OK connection ok]\nAll checks passed!"
+        stderr = ""
+        returncode = 0
+
+    monkeypatch.setattr(dbt_runner, "run_dbt", lambda *a, **k: Result())
+    check = onboarding._check_connection(project, Settings(execute_allowed_targets=("dev",)), "dev")
+    assert check.status == "ok"

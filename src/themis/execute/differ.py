@@ -136,6 +136,7 @@ def pair_rows(
     max_rows: int,
     ignore: tuple[str, ...] = (),
     volatile: frozenset[str] = frozenset(),
+    vocabulary: Vocabulary = DEFAULT_VOCABULARY,
 ) -> tuple[KeyedDiff | None, str | None]:
     """Compare base and head row by row on a key both builds have been counted unique on.
 
@@ -206,12 +207,19 @@ def pair_rows(
     )
     numeric = frozenset(after.numeric_columns)
 
+    # A period in the key makes one more question answerable in the same pass, and it is
+    # the one a bank asks first: did anything move in a period that has already been
+    # reported? Only from the key, because that is the column the rows are identified by —
+    # a period column that is not part of the grain says nothing about which row is which.
+    period = next((column for column in key if vocabulary.is_period_column(column)), None)
+
     paired = client.paired_rows(
         (base_schema, model),
         (head_schema, model),
         key=key,
         columns=comparable,
         numeric=numeric,
+        period=period,
     )
     if paired is None:
         return None, "the paired comparison could not be run"
@@ -226,6 +234,10 @@ def pair_rows(
             ignored_columns=skipped,
             volatile_columns=unstable,
             sample_keys=paired.sample_keys,
+            period_column=period,
+            latest_period=paired.latest_period,
+            prior_period_rows=paired.prior_period_rows,
+            earliest_changed_period=paired.earliest_changed_period,
         ),
         None,
     )

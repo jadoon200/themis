@@ -118,6 +118,7 @@ def _model_layer(llm: ReviewSummary) -> dict[str, Any]:
         "suppressed": llm.suppressed,
         "rejected_by_selfcheck": llm.rejected_by_selfcheck,
         "withheld_for_planted_text": llm.withheld_for_planted_text,
+        "not_reviewed_for_budget": llm.not_reviewed_for_budget,
         "explained": llm.explained,
         # The intent pass: what the author's description does not account for. It has no
         # rule behind it and so no finding to attach to, which is why it went missing
@@ -142,6 +143,8 @@ def render(
     untested_grains: tuple[str, ...] = (),
     llm: ReviewSummary | None = None,
     seed_affected: dict[str, tuple[str, ...]] | None = None,
+    # What Stage 3 was allowed to skip, and why it was not allowed to skip more.
+    narrowing: object | None = None,
     # (kind, reason) for every way the review checked less than it was asked to.
     incomplete: tuple[tuple[str, str], ...] = (),
     # A salt to redact with, or None for the full report. See `report.redact`.
@@ -187,6 +190,7 @@ def render(
                         "suppressed": llm.suppressed,
                         "rejected_by_selfcheck": llm.rejected_by_selfcheck,
                         "withheld_for_planted_text": llm.withheld_for_planted_text,
+                        "not_reviewed_for_budget": llm.not_reviewed_for_budget,
                         "explained": llm.explained,
                         "undisclosed_changes": len(llm.undisclosed),
                         "calls": llm.usage.calls,
@@ -220,6 +224,16 @@ def render(
             "grains": [_grain(g) for _, g in sorted((grains or {}).items())],
             "execution_deltas": [_delta(d) for _, d in sorted((deltas or {}).items())],
             "untested_grains": list(untested_grains),
+            # Named models, not a count: a model that was not measured has to be
+            # identifiable, or the saving is bought with a silence nobody can audit.
+            "execution_narrowing": (
+                {
+                    "refused": getattr(narrowing, "refused", None),
+                    "not_measured": dict(sorted(getattr(narrowing, "excluded", {}).items())),
+                }
+                if narrowing is not None
+                else None
+            ),
             # None rather than an empty object on a --no-llm run: a reader can tell a
             # review that had no model layer from one whose model layer did nothing.
             "model_layer": _model_layer(llm) if llm is not None else None,

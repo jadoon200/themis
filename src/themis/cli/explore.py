@@ -47,7 +47,9 @@ def grain(
         )
         raise typer.Exit(code=2)
 
-    snapshot = load_manifest(manifest_path, revision="HEAD", backend=Backend.MANIFEST)
+    snapshot = load_manifest(
+        manifest_path, revision="HEAD", backend=Backend.MANIFEST, project_dir=project
+    )
     grains = infer_grains(snapshot, dialect=settings.dialect)
 
     proven = sum(1 for g in grains.values() if g.is_proven)
@@ -102,7 +104,9 @@ def suggest_tests_cmd(
         )
         raise typer.Exit(code=2)
 
-    snapshot = load_manifest(manifest_path, revision="HEAD", backend=Backend.MANIFEST)
+    snapshot = load_manifest(
+        manifest_path, revision="HEAD", backend=Backend.MANIFEST, project_dir=project
+    )
     grains = infer_grains(snapshot, dialect=settings.dialect)
     # Column lineage supplies each model's real output columns, so a key naming
     # something the final SELECT never projects is dropped rather than printed.
@@ -168,7 +172,9 @@ def profile_cmd(
         )
         raise typer.Exit(code=2)
 
-    snapshot = load_manifest(manifest_path, revision="HEAD", backend=Backend.MANIFEST)
+    snapshot = load_manifest(
+        manifest_path, revision="HEAD", backend=Backend.MANIFEST, project_dir=project
+    )
     result = profile(
         snapshot,
         infer_grains(snapshot, dialect=settings.dialect),
@@ -275,7 +281,9 @@ def lineage(
         )
         raise typer.Exit(code=2)
 
-    snapshot = load_manifest(manifest_path, revision="HEAD", backend=Backend.MANIFEST)
+    snapshot = load_manifest(
+        manifest_path, revision="HEAD", backend=Backend.MANIFEST, project_dir=project
+    )
     graph = build_column_graph(snapshot, dialect=settings.dialect)
 
     if column is not None:

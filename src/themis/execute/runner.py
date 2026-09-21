@@ -456,6 +456,7 @@ def _measure(
                 max_rows=max_rows,
                 ignore=keyed_ignore,
                 volatile=(volatile_columns or {}).get(model, frozenset()),
+                vocabulary=vocab,
             )
             deltas[model] = deltas[model].model_copy(
                 update={"keyed": keyed, "keyed_skipped_reason": keyed_reason}

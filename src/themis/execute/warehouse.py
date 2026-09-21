@@ -67,6 +67,11 @@ class PairedRows:
     rows_changed: int
     columns_changed: dict[str, int]
     sample_keys: tuple[str, ...]
+    # Only when the key carries a period. The latest period in the base build, how many
+    # rows moved in a period earlier than it, and the earliest such period.
+    latest_period: str | None = None
+    prior_period_rows: int = 0
+    earliest_changed_period: str | None = None
 
 
 # The marker a paired row carries to say which side it came from. Quoted everywhere it
@@ -88,6 +93,7 @@ def paired_rows_sql(
     numeric: frozenset[str],
     quote: Any,
     sample_limit: int = 5,
+    period: str | None = None,
 ) -> tuple[str, str]:
     """The two queries a keyed comparison needs: counts, and a few example keys.
 
@@ -124,17 +130,26 @@ def paired_rows_sql(
     key_text = ", ".join(
         f"coalesce(cast(coalesce(h.{q(k)}, b.{q(k)}) as varchar), 'NULL')" for k in key
     )
+    period_select = (
+        f", coalesce(h.{q(period)}, b.{q(period)}) as {q('period_value')}"
+        if period is not None
+        else ""
+    )
     paired = (
         f"with b as (select 1 as {side}, {selected} from {base_ref}), "
         f"h as (select 1 as {side}, {selected} from {head_ref}), "
         "paired as (select "
         f"b.{side} as in_base, h.{side} as in_head, "
         f"concat_ws(' | ', {key_text}) as key_text"
+        + period_select
         + (", " + ", ".join(flags) if flags else "")
         + f" from b full outer join h on {join}) "
     )
     both = "in_base is not null and in_head is not null"
     any_changed = " or ".join(f"{q('__changed_' + str(i))} = 1" for i in range(len(columns)))
+    differs_for_period = "in_base is null or in_head is null" + (
+        f" or ({any_changed})" if columns else ""
+    )
 
     counts = [
         "sum(case when in_base is null then 1 else 0 end)",
@@ -145,6 +160,24 @@ def paired_rows_sql(
             for i in range(len(columns))
         ),
     ]
+    if period is not None:
+        # A period in the key makes one more question answerable, and it is the question a
+        # bank asks first: did anything move in a period that has already been reported?
+        # The latest period is the one still open; a row that changed in any earlier period
+        # is a restatement, whatever else the change is. Measured in the same pass, because
+        # a second query over the same tables is the expensive part.
+        counts += [
+            f"max(cast({q('period_value')} as varchar))",
+            (
+                f"sum(case when ({differs_for_period}) and {q('period_value')} < "
+                f"(select max({q(period)}) from b) then 1 else 0 end)"
+            ),
+            (
+                f"min(case when ({differs_for_period}) and {q('period_value')} < "
+                f"(select max({q(period)}) from b) "
+                f"then cast({q('period_value')} as varchar) end)"
+            ),
+        ]
     counts_sql = paired + "select " + ", ".join(counts) + " from paired"
 
     differs = "in_base is null or in_head is null" + (f" or ({any_changed})" if columns else "")
@@ -164,23 +197,42 @@ def _paired_rows(
     columns: tuple[str, ...],
     numeric: frozenset[str],
     quote: Any,
+    period: str | None = None,
 ) -> PairedRows | None:
     counts_sql, sample_sql = paired_rows_sql(
-        base_ref, head_ref, key=key, columns=columns, numeric=numeric, quote=quote
+        base_ref,
+        head_ref,
+        key=key,
+        columns=columns,
+        numeric=numeric,
+        quote=quote,
+        period=period,
     )
     rows = run(counts_sql)
     if not rows or rows[0][0] is None:
         return None
-    values = [int(v or 0) for v in rows[0]]
+    values = [int(v or 0) for v in rows[0][: 3 + len(columns)]]
     samples = run(sample_sql)
+    period_values: list[Any] = list(rows[0][3 + len(columns) :]) if period is not None else []
     return PairedRows(
         rows_added=values[0],
         rows_removed=values[1],
         rows_changed=values[2],
         columns_changed={
-            column: count for column, count in zip(columns, values[3:], strict=False) if count
+            column: count
+            for column, count in zip(columns, values[3 : 3 + len(columns)], strict=False)
+            if count
         },
         sample_keys=tuple(str(row[0]) for row in samples if row and row[0] is not None),
+        latest_period=(
+            str(period_values[0]) if period_values and period_values[0] is not None else None
+        ),
+        prior_period_rows=(int(period_values[1] or 0) if len(period_values) > 1 else 0),
+        earliest_changed_period=(
+            str(period_values[2])
+            if len(period_values) > 2 and period_values[2] is not None
+            else None
+        ),
     )
 
 
@@ -203,6 +255,7 @@ class WarehouseClient(Protocol):
         key: tuple[str, ...],
         columns: tuple[str, ...],
         numeric: frozenset[str],
+        period: str | None = None,
     ) -> PairedRows | None: ...
 
     def close(self) -> None: ...
@@ -300,6 +353,7 @@ class DuckDBClient:
         key: tuple[str, ...],
         columns: tuple[str, ...],
         numeric: frozenset[str],
+        period: str | None = None,
     ) -> PairedRows | None:
         """Pair base and head rows on ``key`` and count what differs."""
         return _paired_rows(
@@ -310,6 +364,7 @@ class DuckDBClient:
             columns=columns,
             numeric=numeric,
             quote=self._quote,
+            period=period,
         )
 
     def close(self) -> None:
@@ -443,6 +498,7 @@ class TrinoClient:
         key: tuple[str, ...],
         columns: tuple[str, ...],
         numeric: frozenset[str],
+        period: str | None = None,
     ) -> PairedRows | None:
         """Pair base and head rows on ``key`` and count what differs."""
         return _paired_rows(
@@ -453,6 +509,7 @@ class TrinoClient:
             columns=columns,
             numeric=numeric,
             quote=self._quote,
+            period=period,
         )
 
     def close(self) -> None:

@@ -689,3 +689,58 @@ def test_lines_joined_with_commas_are_still_grounded() -> None:
     assert selfcheck.quote_is_grounded(
         "stg_fx_rates looks unique on (currency_code), but that is heuristic", context
     )
+
+
+def test_a_change_with_hundreds_of_findings_does_not_spend_hundreds_of_model_calls() -> None:
+    """A refactor touching fifty models is a normal pull request and an hour of reviewing.
+
+    Each open finding is a specialist call and possibly a fix call, at ten to twenty
+    seconds on a local 8B model. The bound is on findings rather than on a clock, so the
+    same review twice produces the same report — and what it skips is counted, not silent.
+    """
+    findings = [
+        _finding().model_copy(update={"rule_id": f"F100{i % 9}", "title": f"finding {i}"})
+        for i in range(25)
+    ]
+    provider = FakeProvider({"verdict": "uncertain", "severity": "high", "rationale": "x"})
+    summary = supervisor.review(
+        findings,
+        provider=provider,
+        settings=Settings(llm_max_findings_reviewed=10),
+        snapshot=_snapshot(),
+        grains=_grains(),
+    )
+    assert summary.not_reviewed_for_budget == 15
+    assert len(summary.findings) == 25  # every finding is still reported
+    # Two calls per reviewed finding at most (adjudicate, then a fix), never per finding
+    # in the change.
+    assert provider.models and len(provider.prompts) <= 2 * 10
+
+
+def test_the_budget_spends_itself_on_the_worst_findings_first() -> None:
+    """The order is the report's own, so "12 were not reviewed" means the bottom twelve."""
+    worst = _finding(severity=Severity.CRITICAL).model_copy(update={"rule_id": "F1001"})
+    rest = [
+        _finding(severity=Severity.LOW).model_copy(update={"rule_id": f"F200{i}"}) for i in range(5)
+    ]
+    summary = supervisor.review(
+        [*rest, worst],
+        provider=FakeProvider({"verdict": "uncertain", "severity": "low", "rationale": "x"}),
+        settings=Settings(llm_max_findings_reviewed=1),
+        snapshot=_snapshot(),
+        grains=_grains(),
+    )
+    assert summary.not_reviewed_for_budget == 5
+    reviewed = [f for f in summary.findings if f.llm_rationale]
+    assert [f.rule_id for f in reviewed] == ["F1001"]
+
+
+def test_an_ordinary_review_is_not_bounded_at_all() -> None:
+    summary = supervisor.review(
+        [_finding()],
+        provider=FakeProvider({"verdict": "uncertain", "severity": "high", "rationale": "x"}),
+        settings=Settings(),
+        snapshot=_snapshot(),
+        grains=_grains(),
+    )
+    assert summary.not_reviewed_for_budget == 0

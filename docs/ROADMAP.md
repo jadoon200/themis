@@ -25,7 +25,7 @@
 - **Tested-vs-testless measurement.** `themis eval --variant tested` merges declared
   keys into the demo project and reruns the corpus, which is how the cost of deriving
   grain rather than reading it is finally a number rather than an expectation.
-- **Stage 2 — Rules.** 30 rules across eight families: grain and fan-out, filters and
+- **Stage 2 — Rules.** 32 rules across eight families: grain and fan-out, filters and
   NULL semantics, money precision, periods, incremental and materialization, contracts
   and lineage, governance, and Trino engine behaviour. Plus `X0001`, the safety net
   that reports a measured change no rule accounts for. Skipped checks are reported
@@ -114,6 +114,33 @@ table and the commands to repeat it). Four live tests speak the protocol over a 
 pipe, the component check drives the installed command as an IDE assistant would, and CI
 fails if either skips itself.
 
+**Ready for a project that is not this one.** The manifest loader is verified against
+real dbt 1.8, 1.9, 1.10 and 1.12 output rather than against the changelog
+(`scripts/dbt_versions.py`); `{{ source(...) }}`-rooted models — which the demo project
+does not have at all, and every staging model at work will — are compiled and traced in the
+test suite; and the model layer is bounded, so a fifty-model refactor cannot turn a review
+into an hour of adjudication. Each skip is counted in the report.
+
+**Rules that came out of the research rather than out of me.** F3004: an amount in the
+row's own currency summed across currencies — a total with no unit, which execution cannot
+see and which fires on three models in the demo project as it stands. X0004: a measured
+change to a period that was already reported, which is a restatement whatever else it is.
+F8005: whole-number division, which Trino truncates and DuckDB does not — real on the target
+engine and invisible on the demo's, so the corpus calls it latent. [EVAL](EVAL.md) has the
+sources and what each cost.
+
+**A seed's grain is counted, not inferred.** Every other tool reads a key from a declared
+test or constraint; these projects declare none. A seed is data in the repository, so it can
+be counted — refusing to take a measurement as an identifier, which is how the FX seed's
+thirty distinct rates nearly became its key. Demo project: 7 proven grains to 16, 10 unknowns
+to 3, corpus precision 82% to 86% with recall unchanged.
+
+**Column-level impact narrowing** (`--narrow`), opt-in. Builds only the models that read a
+column the change touched, and refuses unless it can prove the set. The corpus reaches
+identical verdicts with it on and off, narrowing 31 of 50 cases — which is evidence about a
+twenty-model project with complete lineage, not about a warehouse. It stays opt-in until a
+real project says otherwise.
+
 ## Next
 
 **M2 — grounding depth.** Built. Column-level lineage, the grain lattice, macro and
@@ -149,6 +176,10 @@ report agree; token accounting was already done. The machine-learning lane is
 enough for the saving to show as time rather than as object counts — that number has to
 come from a real warehouse. After that, in rough order of what it would change:
 
+- **Narrowing, on a project that is not this one.** The evidence for `--narrow` is a
+  twenty-model project whose lineage resolves completely. What it does on a warehouse with
+  partially traceable models is the measurement that decides whether it can ever be a
+  default. Until then the saving is available and the risk is the caller's to take.
 - **Tracing from the column asked about.** Built: the tag and materialization filters, so
   "which X are Y" is one tool call and the count is THEMIS's. What is left is the agent's
   last wrong answer — which columns of a mart come from an FX rate — where the model picks

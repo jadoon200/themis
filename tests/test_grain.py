@@ -7,6 +7,8 @@ human, and whatever they derive *wrongly* becomes a confidently missed fan-out.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from themis.analyze.grain import infer_grains
@@ -407,3 +409,127 @@ def test_a_renamed_group_key_is_keyed_by_the_name_it_is_emitted_as() -> None:
     )
     assert source is GrainSource.STRUCTURAL
     assert columns == ("acct",)
+
+
+# --- a seed's grain is counted from the CSV, not inferred ----------------------------------
+
+
+def test_a_seeds_key_is_read_from_its_own_data() -> None:
+    from themis.analyze.seeds import seed_key
+
+    csv = "account_id,account_name\nA1,Trading\nA2,Treasury\nA3,Ops\n"
+    key = seed_key(csv)
+    assert key is not None
+    assert key.columns == ("account_id",) and key.complete
+
+
+def test_a_measurement_is_never_taken_as_an_identifier() -> None:
+    """The FX seed's thirty rates are all distinct, and `rate` is not a key.
+
+    Taking it would have handed every later stage something that pairs rows which are not
+    the same row, and proved a join safe on a column nobody would ever join on. The real
+    key is the pair, and the pair is what a composite search finds once the measurement is
+    out of the candidates.
+    """
+    from themis.analyze.seeds import seed_key
+
+    csv = (
+        "currency_code,rate_date,rate,rate_source\n"
+        "USD,2026-01-01,0.97715100,ecb\n"
+        "USD,2026-02-01,0.99384161,ecb\n"
+        "EUR,2026-01-01,1.00000000,ecb\n"
+        "EUR,2026-02-01,1.01000000,ecb\n"
+    )
+    key = seed_key(csv)
+    assert key is not None
+    assert key.columns == ("currency_code", "rate_date")
+
+
+def test_a_monetary_name_over_dates_is_not_excluded() -> None:
+    """`rate_date` matches the money vocabulary and holds dates.
+
+    Excluding it on the name alone left the FX seed with no key at all — the failure that
+    made the name check require the values to agree with it.
+    """
+    from themis.analyze.seeds import seed_key
+
+    csv = "rate_date,label\n2026-01-01,a\n2026-02-01,b\n"
+    key = seed_key(csv)
+    assert key is not None and key.columns == ("rate_date",)
+
+
+def test_a_seed_with_no_unique_combination_asserts_nothing() -> None:
+    from themis.analyze.seeds import seed_key
+
+    csv = "a,b\n1,x\n1,x\n2,y\n"
+    assert seed_key(csv) is None
+
+
+def test_a_blank_is_not_an_identifier() -> None:
+    from themis.analyze.seeds import seed_key
+
+    csv = "code,label\n,x\nB,y\n"
+    key = seed_key(csv)
+    assert key is None or key.columns != ("code",)
+
+
+def test_a_truncated_read_says_so_and_is_refused_by_the_caller(tmp_path: Path) -> None:
+    """Unique in the first N rows is a different claim, and a grain is asserted.
+
+    The measurement reports what it read; refusing an incomplete one is the loader's job,
+    and both halves are tested because either alone would let the claim through.
+    """
+    from themis.acquire.manifest import _with_seed_key
+    from themis.analyze import seeds
+    from themis.analyze.seeds import seed_key
+    from themis.snapshot import ModelNode
+
+    csv = "id\n" + "".join(f"{i}\n" for i in range(10))
+    partial = seed_key(csv, max_rows=3)
+    assert partial is not None and partial.complete is False
+
+    (tmp_path / "seeds").mkdir()
+    (tmp_path / "seeds" / "big.csv").write_text(csv)
+    seed = ModelNode(
+        name="big", unique_id="seed.t.big", file_path="seeds/big.csv", resource_type="seed"
+    )
+    original = seeds.MAX_ROWS
+    try:
+        seeds.MAX_ROWS = 3
+        assert _with_seed_key(seed, tmp_path).seed_key == ()
+    finally:
+        seeds.MAX_ROWS = original
+
+
+def test_a_counted_seed_key_outranks_a_naming_guess_downstream() -> None:
+    """The point of counting the seed: what it does to the models built on it."""
+    from themis.models import Backend
+    from themis.snapshot import ModelNode, ProjectSnapshot
+
+    seed = ModelNode(
+        name="raw_fx_rates",
+        unique_id="seed.t.raw_fx_rates",
+        file_path="seeds/raw_fx_rates.csv",
+        resource_type="seed",
+        seed_key=("currency_code", "rate_date"),
+    )
+    staging = ModelNode(
+        name="stg_fx_rates",
+        unique_id="model.t.stg_fx_rates",
+        file_path="models/stg_fx_rates.sql",
+        raw_sql="select currency_code, rate_date, rate from raw_fx_rates",
+        compiled_sql="select currency_code, rate_date, rate from raw_fx_rates",
+        depends_on_models=("seed.t.raw_fx_rates",),
+    )
+    snapshot = ProjectSnapshot(
+        revision="r",
+        backend=Backend.MANIFEST,
+        models={seed.name: seed, staging.name: staging},
+        child_map={"raw_fx_rates": ("stg_fx_rates",)},
+    )
+    grains = infer_grains(snapshot, dialect="duckdb")
+    assert grains["raw_fx_rates"].source is GrainSource.MEASURED
+    # Not the naming guess of (currency_code), which is the difference between a join that
+    # matches one row per month and one that matches every month.
+    assert grains["stg_fx_rates"].columns == ("currency_code", "rate_date")
+    assert grains["stg_fx_rates"].is_proven

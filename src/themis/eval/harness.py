@@ -221,6 +221,10 @@ def run_mutation(
     base_ref: str,
     use_llm: bool = False,
     use_execution: bool = True,
+    # Build only the models a change can reach. Not a way to run the corpus faster: it is
+    # how the narrowing is proved, by running every case with it on and requiring the same
+    # verdicts as with it off.
+    narrow_execution: bool = False,
     variant: str | None = None,
 ) -> MutationOutcome:
     """Apply one mutation in an isolated worktree, review it, and discard the worktree.
@@ -289,6 +293,7 @@ def run_mutation(
                 head="HEAD",
                 settings=settings,
                 run_execution=use_execution,
+                narrow_execution=narrow_execution,
                 run_llm=use_llm,
                 # Without this the intent pass never runs at all, which is how the
                 # only reviewer with no rule behind it went unmeasured.
@@ -672,6 +677,7 @@ def run_corpus(
     allow_dirty: bool = False,
     use_llm: bool = False,
     use_execution: bool = True,
+    narrow_execution: bool = False,
     variant: str | None = None,
 ) -> EvalReport:
     if not allow_dirty:
@@ -687,6 +693,7 @@ def run_corpus(
                 base_ref=base_ref,
                 use_llm=use_llm,
                 use_execution=use_execution,
+                narrow_execution=narrow_execution,
                 variant=variant,
             )
         )
