@@ -26,8 +26,10 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    LargeBinary,
     String,
     Text,
+    UniqueConstraint,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -71,6 +73,13 @@ class ReviewRun(Base):
     source: Mapped[str] = mapped_column(String(32), default=RunSource.CLI)
     pr_number: Mapped[int | None] = mapped_column(Integer, default=None)
     pr_url: Mapped[str | None] = mapped_column(String(512), default=None)
+    # What a person reading an overview recognises a pull request by. The branches are
+    # base_ref and head_ref; these are the two things a revision cannot say.
+    pr_title: Mapped[str | None] = mapped_column(String(512), default=None)
+    pr_author: Mapped[str | None] = mapped_column(String(255), default=None)
+    # The models this review examined, by name. The count alone was enough for a CLI
+    # summary; a page that answers questions about the review needs the names.
+    reviewed_models: Mapped[list[str]] = mapped_column(JsonType, default=list)
 
     # What the run was asked to do, so a result can be interpreted later without
     # guessing which options were in force.
@@ -104,6 +113,9 @@ class ReviewRun(Base):
         back_populates="run", cascade="all, delete-orphan"
     )
     model_calls: Mapped[list[ModelCallRow]] = relationship(
+        back_populates="run", cascade="all, delete-orphan"
+    )
+    snapshots: Mapped[list[RunSnapshot]] = relationship(
         back_populates="run", cascade="all, delete-orphan"
     )
 
@@ -152,10 +164,65 @@ class Finding(Base):
     disposition: Mapped[str | None] = mapped_column(String(32), default=None, index=True)
     disposition_note: Mapped[str | None] = mapped_column(Text, default=None)
     disposition_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    disposition_by: Mapped[str | None] = mapped_column(String(255), default=None)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
+    disposition_events: Mapped[list[DispositionEvent]] = relationship(
+        back_populates="finding",
+        cascade="all, delete-orphan",
+        order_by="DispositionEvent.at",
+    )
+
     __table_args__ = (Index("ix_finding_fingerprint_created", "fingerprint", "created_at"),)
+
+
+class DispositionEvent(Base):
+    """One human decision about one finding: who, what, when, and why.
+
+    The columns on ``Finding`` hold the latest decision, which is what ranking and the
+    report need. They are overwritten, which made them useless as a record: a critical
+    finding accepted in March and dismissed in April read as simply dismissed, by nobody.
+    Once the decisions are on a page managers read, "who accepted this" is the first
+    question anyone asks, and a record that can only answer "someone, at some point" is
+    not one. So every decision is appended here and never updated.
+    """
+
+    __tablename__ = "disposition_event"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    finding_id: Mapped[int] = mapped_column(ForeignKey("finding.id", ondelete="CASCADE"))
+    finding: Mapped[Finding] = relationship(back_populates="disposition_events")
+
+    disposition: Mapped[str] = mapped_column(String(32))
+    note: Mapped[str | None] = mapped_column(Text, default=None)
+    # Whoever the deployment says made the request: a trusted header set by the auth
+    # proxy in front of the service, or the name a demo user typed. Never inferred.
+    actor: Mapped[str] = mapped_column(String(255))
+    at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+
+
+class RunSnapshot(Base):
+    """One revision's compiled project, as the review saw it.
+
+    Stored so a question can be asked about a review after the review has finished. The
+    agent's tools read grain, lineage and SQL from a snapshot, and the worker's copy is
+    gone the moment the run ends — without this, chat over a stored pull request could
+    only ever answer from the handful of facts the report kept. It contains the project's
+    compiled SQL, so it lives in the same database as everything else and nowhere else.
+    """
+
+    __tablename__ = "run_snapshot"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    run_id: Mapped[int] = mapped_column(ForeignKey("review_run.id", ondelete="CASCADE"))
+    run: Mapped[ReviewRun] = relationship(back_populates="snapshots")
+    side: Mapped[str] = mapped_column(String(16))  # "before" | "after"
+    # zlib-compressed JSON of the ProjectSnapshot. A 3,000-model project is a few MB.
+    payload: Mapped[bytes] = mapped_column(LargeBinary)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    __table_args__ = (UniqueConstraint("run_id", "side", name="uq_run_snapshot_side"),)
 
 
 class ModelCallRow(Base):

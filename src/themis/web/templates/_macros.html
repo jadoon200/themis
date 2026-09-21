@@ -1,0 +1,28 @@
+{% macro severity(value) -%}
+  <span class="pill sev-{{ value }}">{{ value }}</span>
+{%- endmacro %}
+
+{% macro verdict(v) -%}
+  <span class="pill verdict-{{ v.key }}" title="{{ v.reason }}">{{ v.label }}</span>
+{%- endmacro %}
+
+{% macro counts(severity_counts) -%}
+  <span class="counts">
+    {% for sev in ["critical", "high", "medium"] %}
+      {% if severity_counts[sev] %}
+        <span class="pill count sev-{{ sev }}" title="{{ severity_counts[sev] }} {{ sev }}">{{ severity_counts[sev] }}</span>
+      {% endif %}
+    {% endfor %}
+    {% if not (severity_counts["critical"] or severity_counts["high"] or severity_counts["medium"]) %}
+      <span class="muted small">—</span>
+    {% endif %}
+  </span>
+{%- endmacro %}
+
+{% macro decision(value) -%}
+  <span class="pill decision-{{ value or 'open' }}">{{ value or "open" }}</span>
+{%- endmacro %}
+
+{% macro pr_label(row) -%}
+  {%- if row.number %}#{{ row.number }}{% else %}{{ row.run_key[:8] }}{% endif -%}
+{%- endmacro %}

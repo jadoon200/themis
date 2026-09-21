@@ -120,3 +120,6 @@ class DispositionRequest(BaseModel):
 
     disposition: str = Field(pattern="^(accepted|dismissed|fixed|deferred)$")
     note: str | None = None
+    # Who the caller is acting for — a CI job relaying a reviewer's decision says whose.
+    # Absent, the record says the API made it, which is true and is not a person.
+    by: str | None = Field(default=None, max_length=255)

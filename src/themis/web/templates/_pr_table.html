@@ -1,0 +1,32 @@
+{% import "_macros.html" as m %}
+{% set table_rows = rows if rows is defined else data.recent %}
+<table>
+  <thead>
+    <tr>
+      <th style="width: 70px">PR</th>
+      <th>Title</th>
+      <th>Author</th>
+      <th>Findings</th>
+      <th>Verdict</th>
+      <th class="num">Reviewed</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for row in table_rows %}
+      <tr>
+        <td class="mono small">{{ m.pr_label(row) }}</td>
+        <td>
+          <a class="pr-title" href="/ui/pr/{{ row.run_key }}">{{ row.title }}</a>
+          {% if row.restates %}<span class="pill tag-restates" title="restates a period already reported">restates</span>{% endif %}
+          <div class="branch mono">{{ row.head }} → {{ row.base }}</div>
+        </td>
+        <td>{{ row.author or "—" }}</td>
+        <td>{{ m.counts(row.severity_counts) }}</td>
+        <td>{{ m.verdict(row.verdict) }}</td>
+        <td class="muted small num">{{ row.reviewed_at | ago }}</td>
+      </tr>
+    {% else %}
+      <tr><td colspan="6" class="muted">No reviews yet.</td></tr>
+    {% endfor %}
+  </tbody>
+</table>

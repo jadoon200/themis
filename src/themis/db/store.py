@@ -9,27 +9,31 @@ run for no benefit.
 from __future__ import annotations
 
 import secrets
+import zlib
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from themis.db.models import (
-    Finding as FindingRow,
-)
-from themis.db.models import (
+    DispositionEvent,
     GrainRecord,
     ModelCallRow,
     ModelDelta,
     ReviewRun,
+    RunSnapshot,
     RunSource,
     RunStatus,
     fingerprint_finding,
     utcnow,
 )
+from themis.db.models import (
+    Finding as FindingRow,
+)
 from themis.logging import get_logger
 from themis.models import ExecutionDelta, Finding, FindingHistory, Grain, PriorJudgement
 from themis.pipeline import ReviewResult
+from themis.snapshot import ProjectSnapshot
 
 log = get_logger(__name__)
 
@@ -208,12 +212,20 @@ def _keyed_payload(delta: ExecutionDelta) -> dict[str, object] | None:
     keyed = delta.keyed
     if keyed is None:
         return None
+    # Sample keys are deliberately not kept: they are row identifiers, and a key value can
+    # name a customer. Everything else a later question could turn on is.
     return {
         "key": list(keyed.key),
         "rows_added": keyed.rows_added,
         "rows_removed": keyed.rows_removed,
         "rows_changed": keyed.rows_changed,
         "columns_changed": dict(keyed.columns_changed),
+        "ignored_columns": list(keyed.ignored_columns),
+        "volatile_columns": list(keyed.volatile_columns),
+        "period_column": keyed.period_column,
+        "latest_period": keyed.latest_period,
+        "prior_period_rows": keyed.prior_period_rows,
+        "earliest_changed_period": keyed.earliest_changed_period,
     }
 
 
@@ -223,6 +235,7 @@ def save_result(session: Session, run: ReviewRun, result: ReviewResult) -> Revie
     run.finished_at = utcnow()
     run.executed = result.executed
     run.models_reviewed = len(result.models_reviewed)
+    run.reviewed_models = list(result.models_reviewed)
     run.degraded_reason = result.degraded_reason
 
     for finding in result.findings:
@@ -271,6 +284,7 @@ def save_result(session: Session, run: ReviewRun, result: ReviewResult) -> Revie
 
     _save_grains(session, run, result.grains)
     _save_model_calls(session, run, result)
+    _save_snapshots(session, run, result)
     session.flush()
     log.info(
         "run.saved",
@@ -279,6 +293,63 @@ def save_result(session: Session, run: ReviewRun, result: ReviewResult) -> Revie
         executed=result.executed,
     )
     return run
+
+
+def _save_snapshots(session: Session, run: ReviewRun, result: ReviewResult) -> None:
+    """Keep both revisions as the review saw them, so it can be questioned afterwards.
+
+    Without them, a question asked of a stored pull request could only be answered from
+    the few facts the report kept; the agent's tools — grain, lineage, the SQL itself —
+    read snapshots, and the worker's copies are gone once the run ends.
+    """
+    acquired = result.acquired
+    if acquired is None:
+        return
+    for side, snapshot in (("before", acquired.before), ("after", acquired.after)):
+        session.add(
+            RunSnapshot(
+                run_id=run.id,
+                side=side,
+                payload=zlib.compress(snapshot.model_dump_json().encode(), level=6),
+            )
+        )
+
+
+def load_snapshots(
+    session: Session, run: ReviewRun
+) -> tuple[ProjectSnapshot | None, ProjectSnapshot | None]:
+    """The before and after snapshots stored with a run, where it has them."""
+    found: dict[str, ProjectSnapshot] = {}
+    for row in session.scalars(select(RunSnapshot).where(RunSnapshot.run_id == run.id)):
+        found[row.side] = ProjectSnapshot.model_validate_json(zlib.decompress(row.payload))
+    return found.get("before"), found.get("after")
+
+
+def record_disposition(
+    session: Session,
+    finding: FindingRow,
+    *,
+    disposition: str,
+    note: str | None,
+    actor: str,
+) -> DispositionEvent:
+    """Append a decision to the record, and make it the finding's current one.
+
+    Appended, never updated. The columns on the finding are the latest decision, which is
+    what ranking reads; the events are the history, which is what an auditor reads.
+    """
+    now = utcnow()
+    event = DispositionEvent(
+        finding_id=finding.id, disposition=disposition, note=note, actor=actor, at=now
+    )
+    session.add(event)
+    finding.disposition = disposition
+    finding.disposition_note = note
+    finding.disposition_by = actor
+    finding.disposition_at = now
+    session.flush()
+    log.info("finding.dispositioned", finding=finding.id, disposition=disposition, actor=actor)
+    return event
 
 
 def _save_model_calls(session: Session, run: ReviewRun, result: ReviewResult) -> None:

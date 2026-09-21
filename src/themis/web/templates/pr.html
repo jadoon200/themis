@@ -1,0 +1,146 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m %}
+{% set s = pr.summary %}
+{% block title %}{{ m.pr_label(s) }} {{ s.title }}{% endblock %}
+{% block content %}
+<div class="crumbs"><a href="/ui/prs">Pull requests</a> / {{ m.pr_label(s) }}</div>
+
+<div class="card pr-header">
+  <div style="min-width: 0">
+    <h1>{{ s.title }}</h1>
+    <div class="pr-meta">
+      {% if s.author %}<span>by <strong>{{ s.author }}</strong></span>{% endif %}
+      <span class="mono">{{ s.head }} → {{ s.base }}</span>
+      <span>reviewed {{ s.reviewed_at | ago }}</span>
+      <span>{{ s.models_reviewed }} model{{ 's' if s.models_reviewed != 1 }} changed</span>
+      {% if s.executed %}<span class="pill tag-measured">both revisions built and compared</span>{% endif %}
+      {% if pr.run.pr_url %}<a href="{{ pr.run.pr_url }}" rel="noopener">open in Bitbucket ↗</a>{% endif %}
+    </div>
+    {% if pr.run.pr_description %}
+      <div class="pr-desc"><strong>Author's description:</strong> {{ pr.run.pr_description }}</div>
+    {% endif %}
+  </div>
+  <div class="verdict-box">
+    {{ m.verdict(s.verdict) }}
+    <div class="verdict-reason">{{ s.verdict.reason }}</div>
+    <div>{{ m.counts(s.severity_counts) }}</div>
+  </div>
+</div>
+
+<div class="pr-layout">
+  <div>
+    {% if not pr.groups %}
+      <div class="card empty-state">
+        <h2>No findings</h2>
+        <p>Every check that applied ran and raised nothing.</p>
+      </div>
+    {% endif %}
+
+    {% for sev, members in pr.groups %}
+      <div class="section-title">{{ m.severity(sev) }} <span>{{ members | length }} finding{{ 's' if members | length != 1 }}</span></div>
+      {% for f in members %}
+        {% set row = f.row %}
+        <article class="card card-pad finding {{ sev }}" id="finding-{{ row.id }}" data-finding="{{ row.id }}">
+          <div class="finding-top">
+            <span class="rule">{{ row.rule_id }}</span>
+            {% if f.measured %}<span class="pill tag-measured" title="demonstrated by building both revisions">measured</span>{% endif %}
+            {% if row.rule_id == "X0004" %}<span class="pill tag-restates">restates a reported period</span>{% endif %}
+            <span class="muted small">{{ row.confidence }}</span>
+          </div>
+          <h3>{{ row.title }}</h3>
+          <div class="where">{{ row.model_name }}{% if row.file_path %} · {{ row.file_path }}{% if row.line %}:{{ row.line }}{% endif %}{% endif %}</div>
+          {% if row.evidence_note %}<div class="evidence">{{ row.evidence_note }}</div>{% endif %}
+          <div class="consequence">{{ row.consequence }}</div>
+          {% if row.suggestion %}<div class="suggestion"><strong>Suggested:</strong> {{ row.suggestion }}</div>{% endif %}
+          {% if row.blast_radius %}
+            <div class="reach">Reaches {{ row.blast_radius | length }} downstream model{{ 's' if row.blast_radius | length != 1 }}: <span class="mono">{{ row.blast_radius[:6] | join(", ") }}{% if row.blast_radius | length > 6 %}, …{% endif %}</span></div>
+          {% endif %}
+
+          <div class="decision-bar">
+            <span class="decision-status" data-status>
+              {% if row.disposition %}
+                {{ m.decision(row.disposition) }} by <strong>{{ row.disposition_by or "unknown" }}</strong> {{ row.disposition_at | ago }}{% if row.disposition_note %} — “{{ row.disposition_note }}”{% endif %}
+              {% else %}
+                {{ m.decision(None) }} no decision yet
+              {% endif %}
+            </span>
+            <button class="btn" type="button" data-decide="accepted" title="A real problem, knowingly taken on">Accept risk</button>
+            <button class="btn" type="button" data-decide="dismissed" title="Not a problem">Dismiss</button>
+            <button class="btn" type="button" data-decide="fixed" title="Fixed in a later commit">Fixed</button>
+            <button class="btn" type="button" data-decide="deferred" title="Decide later">Defer</button>
+            <form class="decision-form" data-decision-form>
+              <input type="text" maxlength="2000" placeholder="Why? (recorded with your decision)" data-note>
+              <button class="btn primary" type="submit" data-confirm>Record</button>
+              <button class="btn" type="button" data-cancel>Cancel</button>
+            </form>
+          </div>
+          <details class="history" {% if not f.events %}hidden{% endif %} data-history>
+            <summary>{{ f.events | length }} decision{{ 's' if f.events | length != 1 }} on record</summary>
+            <ul data-history-list>
+              {% for e in f.events | reverse %}
+                <li><strong>{{ e.actor }}</strong> — {{ e.disposition }}, {{ e.at | ago }}{% if e.note %}: “{{ e.note }}”{% endif %}</li>
+              {% endfor %}
+            </ul>
+          </details>
+        </article>
+      {% endfor %}
+    {% endfor %}
+
+    {% if pr.deltas %}
+      <div class="section-title">What building both revisions measured</div>
+      <div class="card">
+        <table>
+          <thead><tr><th>Model</th><th class="num">Rows</th><th>Totals that moved</th><th>Rows paired on key</th></tr></thead>
+          <tbody>
+            {% for d in pr.deltas %}
+              <tr>
+                <td class="mono small">{{ d.model }}{% if d.material %} <span class="pill sev-high">moved</span>{% endif %}{% if d.build_error %} <span class="pill sev-critical">did not build</span>{% endif %}</td>
+                <td class="num small">
+                  {% if d.rows_before is not none and d.rows_after is not none %}
+                    {{ "{:,}".format(d.rows_before) }} → {{ "{:,}".format(d.rows_after) }}
+                  {% else %}—{% endif %}
+                </td>
+                <td class="small">
+                  {% for col, pair in d.moved.items() %}
+                    <div><span class="mono">{{ col }}</span> {{ "{:,.2f}".format(pair[0] or 0) }} → {{ "{:,.2f}".format(pair[1] or 0) }}</div>
+                  {% else %}<span class="muted">none</span>{% endfor %}
+                </td>
+                <td class="small">
+                  {% if d.keyed %}
+                    {{ d.keyed.rows_changed }} changed on <span class="mono">{{ d.keyed.key | join(", ") }}</span>
+                    {% if d.keyed.prior_period_rows %}<div class="pill tag-restates" style="margin-top: 4px">{{ d.keyed.prior_period_rows }} in periods before {{ d.keyed.latest_period }}</div>{% endif %}
+                  {% else %}<span class="muted">not paired</span>{% endif %}
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% endif %}
+  </div>
+
+  <aside class="card chat" data-chat="{{ s.run_key }}">
+    <div class="chat-head">
+      <h2>Ask about this pull request</h2>
+      <p>Answered from THEMIS's own findings, lineage and SQL. Every claim quotes a tool result — or it says it cannot answer.</p>
+    </div>
+    <div class="chat-log" data-chat-log>
+      {% if pr.chat_available %}
+        <div class="chat-empty">
+          Try one of these:
+          <div class="chips">
+            {% for q in pr.suggestions %}<button class="chip" type="button" data-suggest>{{ q }}</button>{% endfor %}
+          </div>
+        </div>
+      {% else %}
+        <div class="msg bot refusal">This review was stored without its project snapshots, so there is nothing to investigate. Reviews stored from now on keep them.</div>
+      {% endif %}
+    </div>
+    <form class="chat-form" data-chat-form>
+      <textarea data-chat-input placeholder="e.g. Which models downstream of this change are tagged regulatory?" {% if not pr.chat_available %}disabled{% endif %}></textarea>
+      <button class="btn primary" type="submit" {% if not pr.chat_available %}disabled{% endif %}>Ask</button>
+    </form>
+    <div class="chat-foot">Runs on the local model. Nothing leaves this network.</div>
+  </aside>
+</div>
+{% endblock %}

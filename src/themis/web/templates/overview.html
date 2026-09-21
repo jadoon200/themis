@@ -1,0 +1,107 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m %}
+{% block title %}Overview{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>Review overview</h1>
+    <div class="sub">
+      {{ data.pull_requests }} pull request{{ 's' if data.pull_requests != 1 }} reviewed ·
+      merge gate at <strong>{{ data.threshold }}</strong> and above ·
+      {{ data.decisions }} human decision{{ 's' if data.decisions != 1 }} recorded
+    </div>
+  </div>
+</div>
+
+{% if not data.pull_requests %}
+  <div class="card empty-state">
+    <h2>No reviews yet</h2>
+    <p>Run <code>python scripts/seed_demo.py</code> for demo reviews, or queue one through the API.</p>
+  </div>
+{% else %}
+
+<div class="grid kpis">
+  <div class="card kpi">
+    <div class="kpi-label">Pull requests reviewed</div>
+    <div class="kpi-value">{{ data.pull_requests }}</div>
+    <div class="kpi-note">finished reviews, all projects</div>
+  </div>
+  <div class="card kpi crit">
+    <div class="kpi-label">Blocking now</div>
+    <div class="kpi-value">{{ data.blocking }}</div>
+    <div class="kpi-note">open findings at or above {{ data.threshold }}</div>
+  </div>
+  <div class="card kpi high">
+    <div class="kpi-label">Awaiting a decision</div>
+    <div class="kpi-value">{{ data.awaiting_decision }}</div>
+    <div class="kpi-note">findings nobody has settled yet</div>
+  </div>
+  <div class="card kpi">
+    <div class="kpi-label">Restate a reported period</div>
+    <div class="kpi-value">{{ data.restating }}</div>
+    <div class="kpi-note">measured change to a closed period (X0004)</div>
+  </div>
+</div>
+
+<div class="grid two">
+  <div class="card">
+    <div class="card-head"><h2>Findings by severity</h2><span class="hint">all reviews</span></div>
+    {% set total = data.severity_counts.values() | sum %}
+    {% set peak = [data.severity_counts.values() | max, 1] | max %}
+    <div class="bars">
+      {% for sev in severities %}
+        {% set n = data.severity_counts[sev] %}
+        <div class="bar-row">
+          <span class="bar-label">{{ sev }}</span>
+          <span class="bar-track"><span class="bar-fill {{ sev }}" style="width: {{ (n / peak * 100) | round(1) }}%"></span></span>
+          <span class="num small">{{ n }}</span>
+        </div>
+      {% endfor %}
+      <div class="muted small">{{ total }} finding{{ 's' if total != 1 }} in total</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-head"><h2>Most frequent rules</h2><span class="hint">dismissed share shows noise</span></div>
+    <table>
+      <thead><tr><th>Rule</th><th>Family</th><th class="num">Raised</th><th class="num">Dismissed</th></tr></thead>
+      <tbody>
+        {% for rule in data.top_rules %}
+          <tr>
+            <td class="mono">{{ rule.rule_id }}</td>
+            <td class="muted">{{ rule.family }}</td>
+            <td class="num">{{ rule.count }}</td>
+            <td class="num">{% if rule.dismissed %}{{ (rule.dismissal_share * 100) | round | int }}%{% else %}<span class="muted">—</span>{% endif %}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="card" style="margin-bottom: 16px">
+  <div class="card-head"><h2>Recent pull requests</h2><a class="hint" href="/ui/prs">all pull requests →</a></div>
+  {% include "_pr_table.html" %}
+</div>
+
+<div class="card">
+  <div class="card-head"><h2>Recent decisions</h2><a class="hint" href="/ui/decisions">full record →</a></div>
+  {% if data.recent_decisions %}
+    <table>
+      <tbody>
+        {% for d in data.recent_decisions %}
+          <tr>
+            <td style="width: 120px">{{ m.decision(d.disposition) }}</td>
+            <td><strong>{{ d.actor }}</strong> <span class="muted">on</span> <span class="mono">{{ d.rule_id }}</span> <span class="muted">·</span> {{ d.title }}</td>
+            <td class="small"><a href="/ui/pr/{{ d.run_key }}">{% if d.pr_number %}#{{ d.pr_number }}{% else %}{{ d.run_key[:8] }}{% endif %}</a></td>
+            <td class="muted small num">{{ d.at | ago }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <div class="card-pad muted">No decisions recorded yet.</div>
+  {% endif %}
+</div>
+{% endif %}
+{% endblock %}
