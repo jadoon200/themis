@@ -89,7 +89,7 @@
       </div>
       {% set dc = data.disposition_counts %}
       <div class="settle">
-        <div class="settle-head"><span>How findings were settled</span><span class="muted">{{ data.findings_total - dc.open }} of {{ data.findings_total }}</span></div>
+        <div class="settle-head"><span>How findings were settled</span><span class="muted" title="deferred counts as open">{{ data.settled_total }} of {{ data.findings_total }} settled</span></div>
         {{ stacked([("fixed", dc.fixed), ("accepted", dc.accepted), ("dismissed", dc.dismissed), ("deferred", dc.deferred), ("open", dc.open)]) }}
         <div class="legend settle-legend">
           {% for key in ["fixed", "accepted", "dismissed", "deferred", "open"] %}

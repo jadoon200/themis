@@ -465,6 +465,16 @@ def test_the_settled_breakdown_counts_each_findings_latest_decision(db: None) ->
         "deferred": 0,
         "open": 1,
     }
+    # Found on the page: the header said 10 of 17 settled beside a card saying 8 of 17
+    # decided, because it counted deferred as settled. One definition of open, everywhere.
+    with session_scope() as session:
+        rows = session.query(FindingRow).order_by(FindingRow.id).all()
+        record_disposition(session, rows[2], disposition="deferred", note=None, actor="a")
+    with session_scope() as session:
+        data = views.overview(session, threshold="critical")
+        closed = sum(1 for f in session.query(FindingRow) if not views.is_open(f))
+    assert data.settled_total == closed == 2
+    assert data.gated_total == 1 and data.gated_decided == 0  # the deferred critical
 
 
 def test_the_navigation_counts_blocking_the_way_the_overview_does(db: None) -> None:

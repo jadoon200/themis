@@ -25,6 +25,7 @@ from themis.db.models import Finding as FindingRow
 
 SEVERITY_ORDER = ("critical", "high", "medium", "low", "info")
 _OPEN = (None, "deferred")
+_CLOSED = ("fixed", "accepted", "dismissed")
 # A PR that restates a period already reported: X0004. Named once, used everywhere.
 RESTATEMENT_RULE = "X0004"
 # The trend chart never draws more than this many days, whatever the period.
@@ -266,6 +267,12 @@ class Overview:
     @property
     def decided_share(self) -> float:
         return self.gated_decided / self.gated_total if self.gated_total else 1.0
+
+    @property
+    def settled_total(self) -> int:
+        """Findings a human has closed. Deferred is not one of them: deciding later is not
+        deciding, here as in the verdict and the "awaiting a decision" count."""
+        return sum(self.disposition_counts.get(d, 0) for d in DISPOSITIONS if d in _CLOSED)
 
 
 def _window(runs: list[ReviewRun], start: datetime | None, end: datetime | None) -> list[ReviewRun]:
