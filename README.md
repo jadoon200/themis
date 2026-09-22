@@ -134,6 +134,22 @@ reports such text as a finding (F7004), keeps the model that carries it away fro
 that could refute a finding or lower a severity, and fences the agent's tool results with a
 token chosen per session so nothing in a repository can forge one.
 
+### The pages
+
+```bash
+themis serve                      # http://127.0.0.1:8040/ui
+python scripts/seed_demo.py       # optional: eight real reviews under demo PR titles
+```
+
+One link for everyone outside the CI log: an overview across pull requests (what is
+blocking, for how long, which rules fire and how often people dismiss them), each pull
+request's findings with what building both revisions measured, a decision on every finding
+recorded with its author and never edited, and an assistant that answers questions about
+the change — the same agent, streaming each tool it calls, every claim quoted. Server-rendered,
+no JavaScript dependencies, nothing fetched from another origin, and a content-security
+policy that forbids inline script and style. Dark and light themes; the organisation's
+name and logo come from settings. Setting it up behind sign-in: docs/WORK_SETUP.md §9.
+
 Findings land on the diff, not only in the log — and in a form a gate or a dashboard
 can read, including the measured deltas, the derived grain, and the checks that could
 not run:

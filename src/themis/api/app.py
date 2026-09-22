@@ -11,8 +11,10 @@ from __future__ import annotations
 import secrets
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
+from typing import Any
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
+from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
@@ -40,6 +42,7 @@ from themis.logging import get_logger
 from themis.projects import ProjectNotAllowedError, validate_project_ref
 from themis.web.routes import HERE as WEB_ROOT
 from themis.web.routes import router as web_router
+from themis.web.routes import security_headers as web_security_headers
 
 log = get_logger(__name__)
 
@@ -69,6 +72,22 @@ app = FastAPI(
 # files are the pages' own stylesheet and script — nothing fetched from anywhere else.
 app.include_router(web_router)
 app.mount("/ui/static", StaticFiles(directory=str(WEB_ROOT / "static")), name="ui-static")
+
+
+@app.get("/", include_in_schema=False)
+def _root() -> RedirectResponse:
+    """The address people will type is the bare host; send them to the pages."""
+    return RedirectResponse("/ui", status_code=307)
+
+
+@app.middleware("http")
+async def _ui_security_headers(request: Request, call_next: Any) -> Any:
+    """The pages' content-security policy and friends. The JSON API is left as it was."""
+    response = await call_next(request)
+    if request.url.path.startswith("/ui"):
+        for name, value in web_security_headers(load_settings()).items():
+            response.headers.setdefault(name, value)
+    return response
 
 
 def get_session() -> Iterator[Session]:

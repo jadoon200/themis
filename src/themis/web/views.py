@@ -15,9 +15,9 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, date, datetime, timedelta
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from themis.db.models import DispositionEvent, ReviewRun, RunSnapshot, RunStatus
@@ -27,6 +27,10 @@ SEVERITY_ORDER = ("critical", "high", "medium", "low", "info")
 _OPEN = (None, "deferred")
 # A PR that restates a period already reported: X0004. Named once, used everywhere.
 RESTATEMENT_RULE = "X0004"
+# The trend chart never draws more than this many days, whatever the period.
+TREND_DAYS = 30
+PERIODS = (7, 30, 0)  # 0 is all time
+DISPOSITIONS = ("fixed", "accepted", "dismissed", "deferred", "open")
 
 
 def _rank(severity: str) -> int:
@@ -34,6 +38,11 @@ def _rank(severity: str) -> int:
         return SEVERITY_ORDER.index(severity)
     except ValueError:
         return len(SEVERITY_ORDER)
+
+
+def aware(value: datetime) -> datetime:
+    """SQLite hands back naive timestamps and Postgres aware ones; compare only the latter."""
+    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
 
 
 def is_open(finding: FindingRow) -> bool:
@@ -97,6 +106,14 @@ class PullRequestRow:
     executed: bool
     models_reviewed: int
 
+    @property
+    def worst(self) -> str | None:
+        return next((s for s in SEVERITY_ORDER if self.severity_counts.get(s)), None)
+
+    @property
+    def decided(self) -> int:
+        return self.finding_count - self.open_count
+
 
 def _pull_request_row(run: ReviewRun, *, threshold: str) -> PullRequestRow:
     findings = list(run.findings)
@@ -108,7 +125,7 @@ def _pull_request_row(run: ReviewRun, *, threshold: str) -> PullRequestRow:
         author=run.pr_author,
         base=run.base_ref,
         head=run.head_ref,
-        reviewed_at=run.finished_at or run.created_at,
+        reviewed_at=aware(run.finished_at or run.created_at),
         verdict=verdict_for(findings, threshold=threshold),
         severity_counts={s: counts.get(s, 0) for s in SEVERITY_ORDER},
         finding_count=len(findings),
@@ -142,6 +159,8 @@ class DecisionRow:
     model_name: str
     run_key: str
     pr_number: int | None
+    pr_title: str | None = None
+    finding_id: int | None = None
 
 
 def recent_decisions(session: Session, *, limit: int = 50) -> list[DecisionRow]:
@@ -155,7 +174,7 @@ def recent_decisions(session: Session, *, limit: int = 50) -> list[DecisionRow]:
     ).all()
     return [
         DecisionRow(
-            at=event.at,
+            at=aware(event.at),
             actor=event.actor,
             disposition=event.disposition,
             note=event.note,
@@ -165,6 +184,8 @@ def recent_decisions(session: Session, *, limit: int = 50) -> list[DecisionRow]:
             model_name=finding.model_name,
             run_key=run.run_key,
             pr_number=run.pr_number,
+            pr_title=run.pr_title,
+            finding_id=finding.id,
         )
         for event, finding, run in rows
     ]
@@ -182,6 +203,37 @@ class RuleRow:
         return self.dismissed / self.count if self.count else 0.0
 
 
+@dataclass(frozen=True)
+class DayBucket:
+    day: date
+    reviews: int
+    severities: dict[str, int]
+
+    @property
+    def total(self) -> int:
+        return sum(self.severities.values())
+
+
+@dataclass(frozen=True)
+class AttentionRow:
+    """A blocking pull request, and how long it has been waiting for someone."""
+
+    row: PullRequestRow
+    waiting_hours: float
+
+
+@dataclass(frozen=True)
+class ActivityItem:
+    at: datetime
+    kind: str  # "review" | "decision"
+    who: str | None
+    headline: str
+    detail: str
+    run_key: str
+    pr_number: int | None
+    tone: str  # a severity for a review, a disposition for a decision
+
+
 @dataclass
 class Overview:
     """The manager's page: what was reviewed, what is holding things up, what recurs."""
@@ -196,20 +248,122 @@ class Overview:
     recent: list[PullRequestRow] = field(default_factory=list)
     recent_decisions: list[DecisionRow] = field(default_factory=list)
     threshold: str = "high"
+    days: int = 0
+    # The same count over the period before this one, so a number has a direction.
+    # None over all time, where there is no "before".
+    pull_requests_before: int | None = None
+    findings_total: int = 0
+    findings_before: int | None = None
+    # Of the findings at or above the gate, how many a human has settled.
+    gated_total: int = 0
+    gated_decided: int = 0
+    daily: list[DayBucket] = field(default_factory=list)
+    # Every finding in the period by its latest decision; "open" for none.
+    disposition_counts: dict[str, int] = field(default_factory=dict)
+    needs_attention: list[AttentionRow] = field(default_factory=list)
+    activity: list[ActivityItem] = field(default_factory=list)
+
+    @property
+    def decided_share(self) -> float:
+        return self.gated_decided / self.gated_total if self.gated_total else 1.0
 
 
-def overview(session: Session, *, threshold: str) -> Overview:
+def _window(runs: list[ReviewRun], start: datetime | None, end: datetime | None) -> list[ReviewRun]:
+    out = []
+    for run in runs:
+        at = aware(run.created_at)
+        if start is not None and at < start:
+            continue
+        if end is not None and at >= end:
+            continue
+        out.append(run)
+    return out
+
+
+def _daily(runs: list[ReviewRun], *, now: datetime, days: int) -> list[DayBucket]:
+    """Reviews and their findings per day, by severity, oldest day first."""
+    span = min(days or TREND_DAYS, TREND_DAYS)
+    first = (now - timedelta(days=span - 1)).date()
+    buckets = {
+        first + timedelta(days=i): {"reviews": 0, **{s: 0 for s in SEVERITY_ORDER}}
+        for i in range(span)
+    }
+    for run in runs:
+        day = aware(run.created_at).date()
+        if day not in buckets:
+            continue
+        buckets[day]["reviews"] += 1
+        for finding in run.findings:
+            if finding.severity in buckets[day]:
+                buckets[day][finding.severity] += 1
+    return [
+        DayBucket(
+            day=day,
+            reviews=counts["reviews"],
+            severities={s: counts[s] for s in SEVERITY_ORDER},
+        )
+        for day, counts in sorted(buckets.items())
+    ]
+
+
+def _activity(
+    runs: list[ReviewRun], decisions: list[DecisionRow], *, threshold: str
+) -> list[ActivityItem]:
+    items: list[ActivityItem] = []
+    for run in runs[:12]:
+        row = _pull_request_row(run, threshold=threshold)
+        items.append(
+            ActivityItem(
+                at=row.reviewed_at,
+                kind="review",
+                who=row.author,
+                headline=row.title,
+                detail=(
+                    f"{row.finding_count} finding{'s' if row.finding_count != 1 else ''} · "
+                    f"{row.verdict.label.lower()}"
+                ),
+                run_key=row.run_key,
+                pr_number=row.number,
+                tone=row.worst or "clear",
+            )
+        )
+    for decision in decisions:
+        items.append(
+            ActivityItem(
+                at=decision.at,
+                kind="decision",
+                who=decision.actor,
+                headline=f"{decision.disposition} {decision.rule_id}",
+                detail=decision.note or decision.title.replace("`", ""),
+                run_key=decision.run_key,
+                pr_number=decision.pr_number,
+                tone=decision.disposition,
+            )
+        )
+    return sorted(items, key=lambda item: item.at, reverse=True)[:12]
+
+
+def overview(
+    session: Session, *, threshold: str, days: int = 0, now: datetime | None = None
+) -> Overview:
     """Every figure on the overview page, each defined by the query that produces it.
 
-    - pull requests: finished reviews.
-    - blocking: reviews whose verdict is blocking now — decisions taken since count.
+    - pull requests: finished reviews in the period.
+    - blocking: reviews in the period whose verdict is blocking *now* — decisions count.
     - restating: reviews carrying an X0004, a measured change to a period already reported.
     - awaiting a decision: open findings at or above the gate's threshold.
+    - settled: of the findings at or above the gate, the share a human has decided.
     """
-    runs = _finished_runs(session)
+    now = now or datetime.now(UTC)
+    all_runs = _finished_runs(session)
+    since = now - timedelta(days=days) if days else None
+    runs = _window(all_runs, since, None)
+    before = _window(all_runs, now - timedelta(days=2 * days), since) if days and since else None
+
     rows = [_pull_request_row(run, threshold=threshold) for run in runs]
     findings = [f for run in runs for f in run.findings]
     limit = _rank(threshold)
+    gated = [f for f in findings if _rank(f.severity) <= limit]
 
     by_rule: dict[str, list[FindingRow]] = {}
     for finding in findings:
@@ -227,19 +381,73 @@ def overview(session: Session, *, threshold: str) -> Overview:
         key=lambda r: (-r.count, r.rule_id),
     )[:8]
 
+    blocking_rows = [r for r in rows if r.verdict.key == "blocking"]
+    attention = sorted(
+        (
+            AttentionRow(row=r, waiting_hours=(now - r.reviewed_at).total_seconds() / 3600)
+            for r in blocking_rows
+        ),
+        key=lambda a: -a.waiting_hours,
+    )
+
     counts = Counter(f.severity for f in findings)
+    settled = Counter(f.disposition or "open" for f in findings)
     decision_total = session.scalar(select(func.count(DispositionEvent.id))) or 0
+    decisions = recent_decisions(session, limit=12)
     return Overview(
         pull_requests=len(rows),
-        blocking=sum(1 for r in rows if r.verdict.key == "blocking"),
+        blocking=len(blocking_rows),
         restating=sum(1 for r in rows if r.restates),
-        awaiting_decision=sum(1 for f in findings if is_open(f) and _rank(f.severity) <= limit),
+        awaiting_decision=sum(1 for f in gated if is_open(f)),
         decisions=int(decision_total),
         severity_counts={s: counts.get(s, 0) for s in SEVERITY_ORDER},
         top_rules=top_rules,
         recent=rows[:15],
-        recent_decisions=recent_decisions(session, limit=8),
+        recent_decisions=decisions[:8],
         threshold=threshold,
+        days=days,
+        pull_requests_before=len(before) if before is not None else None,
+        findings_total=len(findings),
+        findings_before=(sum(len(run.findings) for run in before) if before is not None else None),
+        gated_total=len(gated),
+        gated_decided=sum(1 for f in gated if not is_open(f)),
+        daily=_daily(all_runs, now=now, days=days),
+        disposition_counts={d: settled.get(d, 0) for d in DISPOSITIONS},
+        needs_attention=attention[:6],
+        activity=_activity(runs, decisions, threshold=threshold),
+    )
+
+
+@dataclass(frozen=True)
+class Sidebar:
+    """What every page's navigation shows: the latest reviews and what is blocked."""
+
+    recent: list[PullRequestRow]
+    blocking: int
+
+
+def sidebar(session: Session, *, threshold: str, limit: int = 6) -> Sidebar:
+    """Counted in SQL, not by loading every review: this runs on every page."""
+    runs = session.scalars(
+        select(ReviewRun)
+        .where(ReviewRun.status == RunStatus.SUCCEEDED)
+        .options(selectinload(ReviewRun.findings))
+        .order_by(ReviewRun.created_at.desc())
+        .limit(limit)
+    )
+    gated = SEVERITY_ORDER[: _rank(threshold) + 1]
+    blocking = session.scalar(
+        select(func.count(func.distinct(FindingRow.run_id)))
+        .join(ReviewRun, FindingRow.run_id == ReviewRun.id)
+        .where(
+            ReviewRun.status == RunStatus.SUCCEEDED,
+            FindingRow.severity.in_(gated),
+            or_(FindingRow.disposition.is_(None), FindingRow.disposition == "deferred"),
+        )
+    )
+    return Sidebar(
+        recent=[_pull_request_row(run, threshold=threshold) for run in runs],
+        blocking=int(blocking or 0),
     )
 
 
@@ -256,6 +464,10 @@ class FindingView:
     def measured(self) -> bool:
         return self.row.confidence == "measured"
 
+    @property
+    def open(self) -> bool:
+        return is_open(self.row)
+
 
 @dataclass
 class PullRequestPage:
@@ -265,6 +477,13 @@ class PullRequestPage:
     deltas: list[dict[str, object]]
     chat_available: bool
     suggestions: list[str]
+    events: list[DecisionRow] = field(default_factory=list)
+    # The finding a reviewer should read first: the worst one still open.
+    focus_id: int | None = None
+
+    @property
+    def finding_count(self) -> int:
+        return sum(len(members) for _, members in self.groups)
 
 
 def _suggestions(run: ReviewRun, findings: list[FindingRow]) -> list[str]:
@@ -332,6 +551,27 @@ def pull_request_page(session: Session, run_key: str, *, threshold: str) -> Pull
             }
         )
 
+    events = [
+        DecisionRow(
+            at=aware(event.at),
+            actor=event.actor,
+            disposition=event.disposition,
+            note=event.note,
+            rule_id=finding.rule_id,
+            title=finding.title,
+            severity=finding.severity,
+            model_name=finding.model_name,
+            run_key=run.run_key,
+            pr_number=run.pr_number,
+            pr_title=run.pr_title,
+            finding_id=finding.id,
+        )
+        for finding in findings
+        for event in finding.disposition_events
+    ]
+    events.sort(key=lambda e: e.at, reverse=True)
+
+    focus = next((f.id for f in findings if is_open(f)), findings[0].id if findings else None)
     has_snapshot = (
         session.scalar(select(func.count(RunSnapshot.id)).where(RunSnapshot.run_id == run.id)) or 0
     ) > 0
@@ -342,4 +582,6 @@ def pull_request_page(session: Session, run_key: str, *, threshold: str) -> Pull
         deltas=deltas,
         chat_available=has_snapshot,
         suggestions=_suggestions(run, findings),
+        events=events,
+        focus_id=focus,
     )

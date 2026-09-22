@@ -1,107 +1,192 @@
 {% extends "base.html" %}
 {% import "_macros.html" as m %}
 {% block title %}Overview{% endblock %}
+{% block crumbs %}<span class="here">Overview</span>{% endblock %}
+{% set period = ("last %d days" % data.days) if data.days else "all time" %}
+{% set sev_total = data.severity_counts.values() | sum %}
 {% block content %}
 <div class="page-head">
   <div>
-    <h1>Review overview</h1>
-    <div class="sub">
-      {{ data.pull_requests }} pull request{{ 's' if data.pull_requests != 1 }} reviewed ·
-      merge gate at <strong>{{ data.threshold }}</strong> and above ·
-      {{ data.decisions }} human decision{{ 's' if data.decisions != 1 }} recorded
-    </div>
+    <div class="eyebrow">{{ m.icon("activity", "xs") }} Review health</div>
+    <h1>Overview</h1>
+    <div class="sub">What was reviewed {{ period }}, what is holding merges, and what keeps recurring. The gate blocks at <strong>{{ threshold }}</strong> and above.</div>
   </div>
-</div>
-
-{% if not data.pull_requests %}
-  <div class="card empty-state">
-    <h2>No reviews yet</h2>
-    <p>Run <code>python scripts/seed_demo.py</code> for demo reviews, or queue one through the API.</p>
-  </div>
-{% else %}
-
-<div class="grid kpis">
-  <div class="card kpi">
-    <div class="kpi-label">Pull requests reviewed</div>
-    <div class="kpi-value">{{ data.pull_requests }}</div>
-    <div class="kpi-note">finished reviews, all projects</div>
-  </div>
-  <div class="card kpi crit">
-    <div class="kpi-label">Blocking now</div>
-    <div class="kpi-value">{{ data.blocking }}</div>
-    <div class="kpi-note">open findings at or above {{ data.threshold }}</div>
-  </div>
-  <div class="card kpi high">
-    <div class="kpi-label">Awaiting a decision</div>
-    <div class="kpi-value">{{ data.awaiting_decision }}</div>
-    <div class="kpi-note">findings nobody has settled yet</div>
-  </div>
-  <div class="card kpi">
-    <div class="kpi-label">Restate a reported period</div>
-    <div class="kpi-value">{{ data.restating }}</div>
-    <div class="kpi-note">measured change to a closed period (X0004)</div>
-  </div>
-</div>
-
-<div class="grid two">
-  <div class="card">
-    <div class="card-head"><h2>Findings by severity</h2><span class="hint">all reviews</span></div>
-    {% set total = data.severity_counts.values() | sum %}
-    {% set peak = [data.severity_counts.values() | max, 1] | max %}
-    <div class="bars">
-      {% for sev in severities %}
-        {% set n = data.severity_counts[sev] %}
-        <div class="bar-row">
-          <span class="bar-label">{{ sev }}</span>
-          <span class="bar-track">{% if n %}<span class="bar-fill {{ sev }}" style="width: {{ (n / peak * 100) | round(1) }}%"></span>{% endif %}</span>
-          <span class="num small">{{ n }}</span>
-        </div>
+  <div class="actions">
+    <div class="segmented" role="group" aria-label="Period">
+      {% for p in periods %}
+        <a href="/ui?days={{ p }}" class="{{ 'on' if p == data.days }}" {% if p == data.days %}aria-current="true"{% endif %}>{{ ("%d days" % p) if p else "All time" }}</a>
       {% endfor %}
-      <div class="muted small">{{ total }} finding{{ 's' if total != 1 }} in total</div>
+    </div>
+  </div>
+</div>
+
+<section class="grid cols-4 mb" aria-label="Key figures">
+  <div class="card kpi">
+    <div class="kpi-top"><span class="kpi-icon">{{ m.icon("pr", "sm") }}</span><span class="kpi-label">Pull requests reviewed</span></div>
+    <div class="kpi-row">
+      <span class="kpi-value num">{{ data.pull_requests }}</span>
+      {{ m.delta(change(data.pull_requests, data.pull_requests_before), "period") }}
+      {{ sparkline(data.daily | map(attribute="reviews") | list) }}
+    </div>
+    <div class="kpi-note">{{ data.findings_total }} finding{{ 's' if data.findings_total != 1 }} raised {{ period }}</div>
+  </div>
+
+  <div class="card kpi crit">
+    <div class="kpi-top"><span class="kpi-icon">{{ m.icon("octagon", "sm") }}</span><span class="kpi-label">Blocking now</span></div>
+    <div class="kpi-row"><span class="kpi-value num">{{ data.blocking }}</span></div>
+    {{ meter(data.blocking / data.pull_requests if data.pull_requests else 0, tone="critical") }}
+    <div class="kpi-note">
+      {% if data.restating %}<strong>{{ data.restating }}</strong> restate{{ 's' if data.restating == 1 }} a period already reported{% else %}No pull request restates a reported period{% endif %}
     </div>
   </div>
 
-  <div class="card">
-    <div class="card-head"><h2>Most frequent rules</h2><span class="hint">dismissed share shows noise</span></div>
-    <table>
-      <thead><tr><th>Rule</th><th>Family</th><th class="num">Raised</th><th class="num">Dismissed</th></tr></thead>
-      <tbody>
-        {% for rule in data.top_rules %}
-          <tr>
-            <td class="mono">{{ rule.rule_id }}</td>
-            <td class="muted">{{ rule.family }}</td>
-            <td class="num">{{ rule.count }}</td>
-            <td class="num">{% if rule.dismissed %}{{ (rule.dismissal_share * 100) | round | int }}%{% else %}<span class="muted">—</span>{% endif %}</td>
-          </tr>
-        {% endfor %}
-      </tbody>
-    </table>
+  <div class="card kpi high">
+    <div class="kpi-top"><span class="kpi-icon">{{ m.icon("inbox", "sm") }}</span><span class="kpi-label">Awaiting a decision</span></div>
+    <div class="kpi-row">
+      <span class="kpi-value num">{{ data.awaiting_decision }}</span>
+      {{ sparkline(data.daily | map(attribute="total") | list) }}
+    </div>
+    <div class="kpi-note">Open findings at or above {{ threshold }}</div>
   </div>
-</div>
 
-<div class="card" style="margin-bottom: 16px">
-  <div class="card-head"><h2>Recent pull requests</h2><a class="hint" href="/ui/prs">all pull requests →</a></div>
-  {% include "_pr_table.html" %}
-</div>
+  <div class="card kpi ok">
+    <div class="kpi-top"><span class="kpi-icon">{{ m.icon("check-circle", "sm") }}</span><span class="kpi-label">Gated findings settled</span></div>
+    <div class="kpi-row"><span class="kpi-value num">{{ (data.decided_share * 100) | round | int }}%</span></div>
+    {{ meter(data.decided_share, tone="ok") }}
+    <div class="kpi-note">{{ data.gated_decided }} of {{ data.gated_total }} decided · {{ data.decisions }} decision{{ 's' if data.decisions != 1 }} on record</div>
+  </div>
+</section>
 
-<div class="card">
-  <div class="card-head"><h2>Recent decisions</h2><a class="hint" href="/ui/decisions">full record →</a></div>
-  {% if data.recent_decisions %}
-    <table>
-      <tbody>
-        {% for d in data.recent_decisions %}
-          <tr>
-            <td style="width: 120px">{{ m.decision(d.disposition) }}</td>
-            <td><strong>{{ d.actor }}</strong> <span class="muted">on</span> <span class="mono">{{ d.rule_id }}</span> <span class="muted">·</span> {{ d.title | code_spans }}</td>
-            <td class="small"><a href="/ui/pr/{{ d.run_key }}">{% if d.pr_number %}#{{ d.pr_number }}{% else %}{{ d.run_key[:8] }}{% endif %}</a></td>
-            <td class="muted small num">{{ d.at | ago }}</td>
-          </tr>
+<section class="grid cols-3-1 mb">
+  <div class="card">
+    <div class="card-head">
+      <h2>{{ m.icon("trending", "sm") }} Findings per day</h2>
+      <span class="hint">last {{ data.daily | length }} days, by severity</span>
+      <div class="end legend">
+        {% for sev in ["critical", "high", "medium", "low"] %}<span><i class="sw sw-{{ sev }}"></i>{{ sev }}</span>{% endfor %}
+      </div>
+    </div>
+    <div class="card-body chart-scroll">{{ trend(data.daily) }}</div>
+  </div>
+
+  <div class="card">
+    <div class="card-head"><h2>{{ m.icon("layers", "sm") }} Severity mix</h2><span class="hint">{{ period }}</span></div>
+    <div class="card-body">
+      <div class="mix">
+        {{ donut(data.severity_counts) }}
+        <div class="mix-list">
+          {% for sev in ["critical", "high", "medium", "low", "info"] %}
+            {% set n = data.severity_counts.get(sev, 0) %}
+            {% if n or sev != "info" %}
+            <div class="mix-row">
+              <i class="sw sw-{{ sev }}"></i><span>{{ sev }}</span>
+              <strong class="num">{{ n }}</strong>
+              <span class="pct num">{{ ((n / sev_total * 100) | round | int) if sev_total else 0 }}%</span>
+            </div>
+            {% endif %}
+          {% endfor %}
+        </div>
+      </div>
+      {% set dc = data.disposition_counts %}
+      <div class="settle">
+        <div class="settle-head"><span>How findings were settled</span><span class="muted">{{ data.findings_total - dc.open }} of {{ data.findings_total }}</span></div>
+        {{ stacked([("fixed", dc.fixed), ("accepted", dc.accepted), ("dismissed", dc.dismissed), ("deferred", dc.deferred), ("open", dc.open)]) }}
+        <div class="legend settle-legend">
+          {% for key in ["fixed", "accepted", "dismissed", "deferred", "open"] %}
+            <span><i class="sw part-sw-{{ key }}"></i>{{ key }} <strong class="num">{{ dc[key] }}</strong></span>
+          {% endfor %}
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="grid cols-2 mb">
+  <div class="card">
+    <div class="card-head">
+      <h2>{{ m.icon("alert", "sm") }} Needs attention</h2>
+      <span class="hint">blocking, longest waiting first</span>
+    </div>
+    {% if data.needs_attention %}
+      <div class="list">
+        {% for a in data.needs_attention %}
+          <a class="list-item" href="/ui/pr/{{ a.row.run_key }}">
+            <span class="dot blocking"></span>
+            <div class="list-main">
+              <div class="list-title">{{ m.pr_label(a.row) }} · {{ a.row.title | code_spans }}</div>
+              <div class="list-sub">
+                {% if a.row.author %}<span>{{ a.row.author }}</span>·{% endif %}
+                <span>{{ a.row.open_count }} open</span>
+                <span class="waiting" title="since the review finished">waiting {{ a.waiting_hours | hours }}</span>
+              </div>
+            </div>
+            {{ m.counts(a.row.severity_counts) }}
+          </a>
         {% endfor %}
-      </tbody>
-    </table>
-  {% else %}
-    <div class="card-pad muted">No decisions recorded yet.</div>
-  {% endif %}
-</div>
-{% endif %}
+      </div>
+    {% else %}
+      {{ m.empty("check-circle", "Nothing is blocking", "Every finding at or above " ~ threshold ~ " has a decision.") }}
+    {% endif %}
+  </div>
+
+  <div class="card">
+    <div class="card-head">
+      <h2>{{ m.icon("flag", "sm") }} Rules that fire most</h2>
+      <span class="hint">and how often people dismiss them</span>
+    </div>
+    {% if data.top_rules %}
+      {% set peak = data.top_rules[0].count %}
+      <div>
+        {% for r in data.top_rules %}
+          <div class="rule-row">
+            <span class="rule-id">{{ r.rule_id }}</span>
+            <div>
+              <div class="rule-meta"><span>{{ r.family }} · {{ r.count }} finding{{ 's' if r.count != 1 }}</span><span>{{ (r.dismissal_share * 100) | round | int }}% dismissed</span></div>
+              {{ meter(r.count / peak, tone=("muted" if r.dismissal_share >= 0.5 else "accent")) }}
+            </div>
+            <span class="num right small">{{ r.count }}</span>
+          </div>
+        {% endfor %}
+      </div>
+    {% else %}
+      {{ m.empty("flag", "No findings yet", "Rules appear here once a review raises something.") }}
+    {% endif %}
+  </div>
+</section>
+
+<section class="grid cols-3-1">
+  <div class="card">
+    <div class="card-head">
+      <h2>{{ m.icon("pr", "sm") }} Recent pull requests</h2>
+      <div class="end"><a class="btn sm" href="/ui/prs">View all {{ m.icon("chevron-right", "xs") }}</a></div>
+    </div>
+    {% with rows=data.recent, compact=true %}{% include "_pr_table.html" %}{% endwith %}
+  </div>
+
+  <div class="card">
+    <div class="card-head"><h2>{{ m.icon("activity", "sm") }} Activity</h2></div>
+    {% if data.activity %}
+      <div class="feed">
+        {% for item in data.activity %}
+          <a class="feed-item" href="/ui/pr/{{ item.run_key }}">
+            <span class="feed-icon t-{{ item.tone }}">
+              {% if item.kind == "review" %}{{ m.icon("git-merge", "sm") }}{% else %}{{ m.icon("shield", "sm") }}{% endif %}
+            </span>
+            <div class="feed-text">
+              {% if item.kind == "review" %}
+                <div>Reviewed <strong>{% if item.pr_number %}#{{ item.pr_number }}{% else %}{{ item.run_key[:8] }}{% endif %}</strong>{% if item.who %} by {{ item.who }}{% endif %}</div>
+              {% else %}
+                <div><strong>{{ item.who }}</strong> {{ item.headline }}</div>
+              {% endif %}
+              <div class="feed-detail">{{ item.detail if item.kind == "decision" else (item.headline | replace("`", "")) ~ " · " ~ item.detail }}</div>
+            </div>
+            <span class="feed-when">{{ item.at | ago }}</span>
+          </a>
+        {% endfor %}
+      </div>
+    {% else %}
+      {{ m.empty("activity", "Quiet so far", "Reviews and decisions will appear here.") }}
+    {% endif %}
+  </div>
+</section>
 {% endblock %}

@@ -1,44 +1,145 @@
+{% import "_macros.html" as m -%}
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
   <title>{% block title %}{{ brand_name }}{% endblock %} · {{ brand_name }}</title>
+  <script src="{{ url_for('ui-static', path='theme.js') }}?v={{ asset_version }}"></script>
+  <link rel="icon" type="image/svg+xml" href="{{ url_for('ui-static', path='favicon.svg') }}?v={{ asset_version }}">
   <link rel="stylesheet" href="{{ url_for('ui-static', path='themis.css') }}?v={{ asset_version }}">
 </head>
-<body>
-  <header class="topbar">
-    <div class="topbar-inner">
-      <a class="brand" href="/ui">
-        {% if logo_url %}
-          <img src="{{ logo_url }}" alt="{{ brand_name }}">
-        {% else %}
-          <span class="brand-mark">{{ brand_name[:1] }}</span>
-        {% endif %}
-        <span>
-          <div class="brand-name">{{ brand_name }}</div>
-          <div class="brand-sub">{{ brand_subtitle }}</div>
-        </span>
+<body data-identity="{{ 'trusted' if trusted_identity else 'demo' }}" data-user="{{ user or '' }}" data-threshold="{{ threshold }}">
+{% include "_icons.html" %}
+<div class="app" data-app>
+  <aside class="sidebar" id="sidebar" aria-label="Navigation">
+    <a class="brand" href="/ui">
+      {% if logo_url %}
+        <img src="{{ logo_url }}" alt="{{ brand_name }}">
+      {% else %}
+        <span class="brand-mark" aria-hidden="true">{{ brand_name[:1] }}</span>
+      {% endif %}
+      <span>
+        <span class="brand-name">{{ brand_name }}</span><br>
+        <span class="brand-sub">{{ brand_subtitle }}</span>
+      </span>
+    </a>
+
+    <div class="nav-label">Workspace</div>
+    <nav class="nav">
+      <a href="/ui" class="{{ 'active' if page == 'overview' }}" {% if page == 'overview' %}aria-current="page"{% endif %}>
+        {{ m.icon("grid") }} Overview
       </a>
-      <nav class="nav">
-        <a href="/ui" class="{{ 'active' if page == 'overview' }}">Overview</a>
-        <a href="/ui/prs" class="{{ 'active' if page == 'prs' }}">Pull requests</a>
-        <a href="/ui/decisions" class="{{ 'active' if page == 'decisions' }}">Decisions</a>
-      </nav>
-      <div class="who">
-        {% if trusted_identity %}
-          <span class="who-note">Signed in as</span>
-          <span class="who-chip" style="cursor: default">{{ user or "unknown" }}</span>
-        {% else %}
-          <span class="who-note">Demo · decisions recorded as</span>
-          <button class="who-chip" type="button" data-set-name>{{ user or "set your name" }}</button>
-        {% endif %}
+      <a href="/ui/prs" class="{{ 'active' if page == 'prs' }}" {% if page == 'prs' %}aria-current="page"{% endif %}>
+        {{ m.icon("pr") }} Pull requests
+        {% if nav.blocking %}<span class="badge" title="{{ nav.blocking }} blocking">{{ nav.blocking }}</span>{% endif %}
+      </a>
+      <a href="/ui/decisions" class="{{ 'active' if page == 'decisions' }}" {% if page == 'decisions' %}aria-current="page"{% endif %}>
+        {{ m.icon("shield") }} Decision record
+      </a>
+    </nav>
+
+    {% if nav.recent %}
+      <div class="nav-label">Recent reviews</div>
+      <div class="recent">
+        {% for r in nav.recent %}
+          <a href="/ui/pr/{{ r.run_key }}" title="{{ r.title }} — {{ r.verdict.label }}">
+            <span class="dot {{ r.verdict.key }}"></span>
+            <span class="pr-no">{{ m.pr_label(r) }}</span>
+            <span class="pr-t">{{ r.title | replace("`", "") }}</span>
+          </a>
+        {% endfor %}
+      </div>
+    {% endif %}
+
+    <div class="sidebar-foot">
+      {% if not trusted_identity %}
+        <div class="env">{{ m.icon("flag", "xs") }}<span>Demo mode. Names are typed, not signed in.</span></div>
+      {% endif %}
+      <div class="me">
+        <span class="avatar" data-me-avatar>{{ (user or "?") | initials }}</span>
+        <div>
+          <div class="me-name" data-me-name>{{ user or ("Unknown" if trusted_identity else "Guest") }}</div>
+          <div class="me-role">{{ "Signed in" if trusted_identity else "Demo identity" }}</div>
+        </div>
+        {% if not trusted_identity %}<button type="button" data-set-name>Change</button>{% endif %}
+      </div>
+      <div class="theme-toggle" role="group" aria-label="Theme">
+        <button type="button" data-theme-set="dark" aria-pressed="true">{{ m.icon("moon", "sm") }} Dark</button>
+        <button type="button" data-theme-set="light" aria-pressed="false">{{ m.icon("sun", "sm") }} Light</button>
       </div>
     </div>
-  </header>
-  <main>
-    {% block content %}{% endblock %}
-  </main>
-  <script src="{{ url_for('ui-static', path='themis.js') }}?v={{ asset_version }}"></script>
+  </aside>
+  <div class="scrim" data-close-nav></div>
+
+  <div class="main">
+    <header class="topbar">
+      <button class="btn ghost icon-only menu-btn" type="button" data-open-nav aria-label="Open navigation" aria-controls="sidebar">{{ m.icon("menu") }}</button>
+      <nav class="crumbs" aria-label="Breadcrumb">{% block crumbs %}{% endblock %}</nav>
+      <span class="spacer"></span>
+      <button class="search-btn" type="button" data-open-palette aria-label="Search pull requests">
+        {{ m.icon("search", "sm") }}<span class="grow">Search pull requests…</span><kbd>⌘K</kbd>
+      </button>
+      <span class="status-pill" data-model-status data-state="unknown" title="Checking the local model">
+        <span class="led"></span><span class="label" data-model-label>Model</span>
+      </span>
+    </header>
+    <main class="content" id="content">
+      {% block content %}{% endblock %}
+    </main>
+  </div>
+</div>
+
+<div class="overlay" data-palette role="dialog" aria-modal="true" aria-label="Search">
+  <div class="dialog">
+    <div class="palette-input">
+      {{ m.icon("search") }}
+      <input type="text" data-palette-input placeholder="Search pull requests, or jump to a page…" autocomplete="off" spellcheck="false" aria-label="Search">
+      <kbd>Esc</kbd>
+    </div>
+    <div class="palette-results" data-palette-results role="listbox"></div>
+    <div class="palette-foot"><span><kbd>↑</kbd> <kbd>↓</kbd> move</span><span><kbd>↵</kbd> open</span><span><kbd>Esc</kbd> close</span><span class="grow-right"><kbd>?</kbd> all shortcuts</span></div>
+  </div>
+</div>
+
+{% if not trusted_identity %}
+<div class="overlay" data-name-dialog role="dialog" aria-modal="true" aria-labelledby="name-title">
+  <form class="dialog narrow" data-name-form>
+    <div class="dialog-body">
+      <h3 id="name-title">Who is deciding?</h3>
+      <p>Every decision is recorded with a name. In this demo you type it; behind the organisation's sign-in it comes from there instead.</p>
+      <input class="input" type="text" data-name-input maxlength="80" placeholder="Your name" autocomplete="name" required>
+      <div class="dialog-actions">
+        <button class="btn ghost" type="button" data-close-dialog>Cancel</button>
+        <button class="btn primary" type="submit">Save name</button>
+      </div>
+    </div>
+  </form>
+</div>
+{% endif %}
+
+<div class="overlay" data-shortcuts role="dialog" aria-modal="true" aria-labelledby="keys-title">
+  <div class="dialog narrow">
+    <div class="dialog-body">
+      <h3 id="keys-title">Keyboard shortcuts</h3>
+      <dl class="keys">
+        <dt><kbd>⌘</kbd> <kbd>K</kbd> or <kbd>/</kbd></dt><dd>Search pull requests</dd>
+        <dt><kbd>g</kbd> then <kbd>o</kbd></dt><dd>Overview</dd>
+        <dt><kbd>g</kbd> then <kbd>p</kbd></dt><dd>Pull requests</dd>
+        <dt><kbd>g</kbd> then <kbd>d</kbd></dt><dd>Decision record</dd>
+        <dt><kbd>j</kbd> / <kbd>k</kbd></dt><dd>Next / previous finding</dd>
+        <dt><kbd>o</kbd></dt><dd>Open or close the current finding</dd>
+        <dt><kbd>c</kbd></dt><dd>Ask the assistant</dd>
+        <dt><kbd>t</kbd></dt><dd>Switch light / dark</dd>
+        <dt><kbd>?</kbd></dt><dd>This list</dd>
+      </dl>
+      <div class="dialog-actions"><button class="btn" type="button" data-close-dialog>Close</button></div>
+    </div>
+  </div>
+</div>
+
+<div class="toasts" data-toasts aria-live="polite"></div>
+<script src="{{ url_for('ui-static', path='themis.js') }}?v={{ asset_version }}"></script>
 </body>
 </html>

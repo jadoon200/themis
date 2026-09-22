@@ -14,8 +14,10 @@ What is protected here, in order of how badly it would go if it broke:
 from __future__ import annotations
 
 import json
+import re
 import zlib
 from collections.abc import Iterator
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -58,9 +60,12 @@ def _run(
     findings: tuple[tuple[str, str], ...] = (("F1001", "high"),),
     snapshot: bool = False,
     evidence: str = "the join key does not cover the grain",
+    created_at: datetime | None = None,
 ) -> str:
     with session_scope() as session:
+        stamps = {"created_at": created_at, "finished_at": created_at} if created_at else {}
         run = ReviewRun(
+            **stamps,
             run_key=key,
             project="demo_project",
             base_ref="main",
@@ -289,6 +294,7 @@ def test_asset_urls_change_when_the_assets_do(client: TestClient) -> None:
     _run()
     body = client.get("/ui").text
     assert f"themis.css?v={ASSET_VERSION}" in body and f"themis.js?v={ASSET_VERSION}" in body
+    assert f"theme.js?v={ASSET_VERSION}" in body
 
 
 def test_the_brand_is_configuration_and_generic_by_default(
@@ -377,3 +383,180 @@ def test_a_stored_review_rebuilds_the_workspace_the_tools_read(db: None) -> None
     delta = workspace.execution.deltas["stg_0"]
     assert (delta.rows_before, delta.rows_after) == (10, 20)
     assert delta.sum_deltas["amount"] == (100.0, 200.0)
+
+
+# --- the page contract: policy-clean, periods, charts, the small endpoints ------------------
+
+_INLINE_STYLE = re.compile(r"\sstyle\s*=", re.IGNORECASE)
+_INLINE_SCRIPT = re.compile(r"<script(?![^>]*\bsrc=)[^>]*>", re.IGNORECASE)
+
+
+def test_no_page_needs_an_inline_script_or_style(client: TestClient) -> None:
+    """The policy forbids both, and a browser enforcing it fails silently: the chart that
+    lost its colour, the bar with no width. So every page is checked, not trusted."""
+    key = _run(snapshot=True, findings=(("F1001", "high"), ("X0004", "critical")))
+    client.cookies.set("themis_user", "priya")
+    client.post(
+        f"/ui/findings/{_finding_ids()[0]}/decision",
+        json={"disposition": "deferred", "note": "asking"},
+        headers=UI,
+    )
+    for path in ("/ui", "/ui?days=7", "/ui?days=0", "/ui/prs", f"/ui/pr/{key}", "/ui/decisions"):
+        response = client.get(path)
+        assert response.status_code == 200, path
+        assert not _INLINE_STYLE.search(response.text), path
+        assert not _INLINE_SCRIPT.search(response.text), path
+        policy = response.headers["content-security-policy"]
+        assert "script-src 'self'" in policy and "style-src 'self'" in policy
+        assert "frame-ancestors 'none'" in policy
+        assert response.headers["x-frame-options"] == "DENY"
+    # The JSON API is not a page and keeps its own headers.
+    assert "content-security-policy" not in client.get("/health").headers
+
+
+def test_the_bare_address_leads_to_the_pages(client: TestClient) -> None:
+    response = client.get("/", follow_redirects=False)
+    assert response.status_code == 307 and response.headers["location"] == "/ui"
+
+
+def test_the_theme_is_chosen_before_the_first_paint(client: TestClient) -> None:
+    """A saved light theme is applied by a script that runs before the stylesheet paints."""
+    head = client.get("/ui").text.split("</head>")[0]
+    assert 'data-theme="dark"' in head
+    assert head.index("theme.js") < head.index("themis.css")
+
+
+def test_a_period_counts_its_own_reviews_and_the_one_before(db: None) -> None:
+    now = datetime(2026, 9, 22, 12, tzinfo=UTC)
+    _run(key="NEW", created_at=now - timedelta(days=2))
+    _run(key="PRIOR", created_at=now - timedelta(days=10))
+    _run(key="OLD", created_at=now - timedelta(days=40))
+    with session_scope() as session:
+        week = views.overview(session, threshold="high", days=7, now=now)
+        month = views.overview(session, threshold="high", days=30, now=now)
+        ever = views.overview(session, threshold="high", days=0, now=now)
+    assert (week.pull_requests, week.pull_requests_before) == (1, 1)
+    assert (month.pull_requests, month.pull_requests_before) == (2, 1)
+    assert ever.pull_requests == 3 and ever.pull_requests_before is None
+    assert len(month.daily) == 30 and sum(d.reviews for d in month.daily) == 2
+    # All time still draws a readable chart, not one bar per day since the first review.
+    assert len(ever.daily) == views.TREND_DAYS
+
+
+def test_an_unknown_period_falls_back_rather_than_failing(client: TestClient) -> None:
+    _run()
+    body = client.get("/ui?days=999").text
+    assert 'aria-current="true">30 days<' in body
+
+
+def test_the_settled_breakdown_counts_each_findings_latest_decision(db: None) -> None:
+    _run(findings=(("F1001", "high"), ("F6004", "medium"), ("X0004", "critical")))
+    with session_scope() as session:
+        rows = session.query(FindingRow).order_by(FindingRow.id).all()
+        record_disposition(session, rows[0], disposition="deferred", note=None, actor="a")
+        record_disposition(session, rows[0], disposition="fixed", note=None, actor="a")
+        record_disposition(session, rows[1], disposition="dismissed", note=None, actor="a")
+    with session_scope() as session:
+        data = views.overview(session, threshold="high")
+    assert data.disposition_counts == {
+        "fixed": 1,
+        "accepted": 0,
+        "dismissed": 1,
+        "deferred": 0,
+        "open": 1,
+    }
+
+
+def test_the_navigation_counts_blocking_the_way_the_overview_does(db: None) -> None:
+    """Two queries for one number — one in SQL for every page, one in Python for the
+    overview. They must agree, including on deferred meaning still open."""
+    _run(key="A", findings=(("F1001", "high"),))
+    _run(key="B", findings=(("F6004", "medium"),))
+    _run(key="C", findings=(("X0004", "critical"),))
+    _run(key="D", findings=(("F1004", "high"),))
+    with session_scope() as session:
+        rows = {f.rule_id: f for f in session.query(FindingRow)}
+        record_disposition(session, rows["X0004"], disposition="deferred", note=None, actor="a")
+        record_disposition(session, rows["F1004"], disposition="fixed", note=None, actor="a")
+    with session_scope() as session:
+        nav = views.sidebar(session, threshold="high")
+        data = views.overview(session, threshold="high")
+    assert nav.blocking == data.blocking == 2
+    assert len(nav.recent) == 4
+
+
+def test_charts_are_drawn_with_classes_and_say_what_they_show() -> None:
+    from themis.web import charts
+
+    days = [
+        views.DayBucket(
+            day=date(2026, 9, 1) + timedelta(days=i),
+            reviews=1,
+            severities={"critical": 1, "high": 2, "medium": 0, "low": 0, "info": 0},
+        )
+        for i in range(30)
+    ]
+    trend = str(charts.trend(days))
+    assert "sev-fill-critical" in trend and "sev-fill-high" in trend
+    assert 'aria-label="90 findings over 30 days"' in trend
+    # Dates under the bars: enough to read, never so many that they collide.
+    assert 4 <= trend.count('text-anchor="middle"') <= 8
+    assert str(charts.trend([])) == ""
+    donut = str(charts.donut({"critical": 1, "high": 3}))
+    assert 'aria-label="1 critical, 3 high"' in donut and ">4</text>" in donut
+    assert 'class="meter-fill tone-accent" width="100"' in str(charts.meter(4.0))
+    assert 'class="meter-fill tone-accent" width="0"' in str(charts.meter(-1.0))
+    assert str(charts.stacked([("fixed", 1), ("open", 3), ("dismissed", 0)])).count("<rect") == 2
+    for svg in (trend, donut, str(charts.sparkline([0, 2, 1])), str(charts.meter(0.5))):
+        assert "style=" not in svg
+
+
+def test_the_palette_searches_every_review(client: TestClient) -> None:
+    key = _run()
+    rows = client.get("/ui/api/prs").json()
+    assert rows == [
+        {
+            "key": key,
+            "number": 1418,
+            "title": "Simplify the FX rate lookup",
+            "author": "priya",
+            "verdict": "blocking",
+            "label": "Blocking",
+        }
+    ]
+
+
+def test_the_model_status_says_so_when_the_host_does_not_answer(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """At the office the model is on another machine; the pages must say when it is down."""
+    from themis.web import routes
+
+    monkeypatch.setenv("THEMIS_LLM_BASE_URL", "http://127.0.0.1:9")
+    monkeypatch.setitem(routes._STATUS_CACHE, "value", None)
+    status = client.get("/ui/api/status").json()
+    assert status["reachable"] is False and status["pulled"] is False
+    assert status["model"] == load_settings().llm_supervisor_model
+
+
+def test_serve_refuses_to_expose_a_trusted_header_directly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With identity taken from a header, a port reachable around the proxy lets anyone
+    name anyone. `themis serve` will not bind beyond loopback in that setup unless told
+    the network guarantees it."""
+    from typer.testing import CliRunner
+
+    from themis.cli import app
+
+    started: list[dict[str, Any]] = []
+    monkeypatch.setattr("uvicorn.run", lambda *a, **k: started.append(k))
+    monkeypatch.setenv("THEMIS_UI_TRUSTED_USER_HEADER", "X-Forwarded-User")
+    runner = CliRunner()
+
+    refused = runner.invoke(app, ["serve", "--host", "0.0.0.0"])
+    assert refused.exit_code == 2 and "Refusing" in refused.output and not started
+
+    assert runner.invoke(app, ["serve"]).exit_code == 0  # loopback behind the proxy
+    assert runner.invoke(app, ["serve", "--host", "0.0.0.0", "--trust-network"]).exit_code == 0
+    assert [s["host"] for s in started] == ["127.0.0.1", "0.0.0.0"]

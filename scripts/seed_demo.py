@@ -9,7 +9,7 @@ host anyone can reach.
 
     python scripts/seed_demo.py                       # into data/demo.db
     python scripts/seed_demo.py --database sqlite:///data/other.db
-    THEMIS_DATABASE_URL=sqlite:///data/demo.db make api   # then open /ui
+    THEMIS_DATABASE_URL=sqlite:///data/demo.db themis serve   # then open /ui
 
 Takes a couple of minutes: each change is built twice. Needs the demo project built
 (`make demo-build`) and a clean working tree — the reviews are of committed revisions.

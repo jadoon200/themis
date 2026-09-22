@@ -35,6 +35,7 @@ from fastapi.templating import Jinja2Templates
 from markupsafe import Markup, escape
 from pydantic import BaseModel, Field
 from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 from themis.config import Settings, load_settings
 from themis.db.base import session_scope
@@ -42,7 +43,7 @@ from themis.db.models import Finding as FindingRow
 from themis.db.models import ReviewRun
 from themis.db.store import record_disposition
 from themis.logging import get_logger
-from themis.web import views
+from themis.web import charts, views
 
 log = get_logger(__name__)
 
@@ -81,6 +82,40 @@ def _code_spans(value: str | None) -> Markup:
 
 
 templates.env.filters["code_spans"] = _code_spans
+templates.env.globals.update(
+    trend=charts.trend,
+    donut=charts.donut,
+    sparkline=charts.sparkline,
+    meter=charts.meter,
+    stacked=charts.stacked,
+)
+
+
+def _hours(value: float) -> str:
+    """ "3h", "2d" — for how long something has waited, where precision is noise."""
+    if value < 1:
+        return "<1h"
+    if value < 48:
+        return f"{int(value)}h"
+    return f"{int(value // 24)}d"
+
+
+def _initials(name: str | None) -> str:
+    parts = [p for p in (name or "?").replace(".", " ").replace("_", " ").split() if p]
+    return "".join(p[0] for p in parts[:2]).upper() or "?"
+
+
+def _change(now: int, before: int | None) -> dict[str, Any] | None:
+    """A period-on-period change, or None when there is no earlier period to compare."""
+    if before is None:
+        return None
+    diff = now - before
+    return {"diff": diff, "direction": "up" if diff > 0 else "down" if diff < 0 else "flat"}
+
+
+templates.env.filters["hours"] = _hours
+templates.env.filters["initials"] = _initials
+templates.env.globals["change"] = _change
 
 
 def _asset_version() -> str:
@@ -92,7 +127,7 @@ def _asset_version() -> str:
     the content changes is the only cache rule that is right both ways.
     """
     digest = hashlib.sha256()
-    for name in ("themis.css", "themis.js"):
+    for name in ("themis.css", "themis.js", "theme.js"):
         digest.update((HERE / "static" / name).read_bytes())
     return digest.hexdigest()[:10]
 
@@ -131,15 +166,19 @@ def _require_ui_header(x_themis_ui: str | None = Header(default=None)) -> None:
         raise HTTPException(status_code=403, detail="missing X-Themis-UI header")
 
 
-def _context(request: Request, settings: Settings, **extra: Any) -> dict[str, Any]:
+def _context(
+    request: Request, settings: Settings, session: Session, **extra: Any
+) -> dict[str, Any]:
+    threshold = _threshold(settings)
     return {
         "request": request,
+        "nav": views.sidebar(session, threshold=threshold),
         "brand_name": settings.ui_brand_name,
         "brand_subtitle": settings.ui_brand_subtitle,
         "logo_url": settings.ui_logo_url,
         "user": current_user(request, settings),
         "trusted_identity": settings.ui_trusted_user_header is not None,
-        "threshold": _threshold(settings),
+        "threshold": threshold,
         "severities": views.SEVERITY_ORDER,
         "asset_version": ASSET_VERSION,
         **extra,
@@ -148,11 +187,16 @@ def _context(request: Request, settings: Settings, **extra: Any) -> dict[str, An
 
 @router.get("", response_class=HTMLResponse)
 @router.get("/", response_class=HTMLResponse)
-def overview_page(request: Request, settings: Settings = Depends(_settings)) -> Response:
+def overview_page(
+    request: Request, days: int = 30, settings: Settings = Depends(_settings)
+) -> Response:
+    days = days if days in views.PERIODS else 30
     with session_scope() as session:
-        data = views.overview(session, threshold=_threshold(settings))
+        data = views.overview(session, threshold=_threshold(settings), days=days)
         return templates.TemplateResponse(
-            request, "overview.html", _context(request, settings, page="overview", data=data)
+            request,
+            "overview.html",
+            _context(request, settings, session, page="overview", data=data, periods=views.PERIODS),
         )
 
 
@@ -161,7 +205,7 @@ def pull_requests_page(request: Request, settings: Settings = Depends(_settings)
     with session_scope() as session:
         rows = views.pull_requests(session, threshold=_threshold(settings))
         return templates.TemplateResponse(
-            request, "prs.html", _context(request, settings, page="prs", rows=rows)
+            request, "prs.html", _context(request, settings, session, page="prs", rows=rows)
         )
 
 
@@ -174,7 +218,7 @@ def pull_request_page(
         if page is None:
             raise HTTPException(status_code=404, detail=f"no review {run_key}")
         return templates.TemplateResponse(
-            request, "pr.html", _context(request, settings, page="prs", pr=page)
+            request, "pr.html", _context(request, settings, session, page="prs", pr=page)
         )
 
 
@@ -183,7 +227,9 @@ def decisions_page(request: Request, settings: Settings = Depends(_settings)) ->
     with session_scope() as session:
         rows = views.recent_decisions(session, limit=200)
         return templates.TemplateResponse(
-            request, "decisions.html", _context(request, settings, page="decisions", rows=rows)
+            request,
+            "decisions.html",
+            _context(request, settings, session, page="decisions", rows=rows),
         )
 
 
@@ -353,3 +399,90 @@ def chat(run_key: str, body: ChatRequest, settings: Settings = Depends(_settings
         media_type="text/event-stream",
         headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
     )
+
+
+# --- small JSON endpoints the pages' script reads -----------------------------------------
+
+_STATUS_CACHE: dict[str, Any] = {"at": 0.0, "value": None}
+
+
+@router.get("/api/status")
+def model_status(settings: Settings = Depends(_settings)) -> dict[str, Any]:
+    """Whether the local model the chat needs is reachable, and whether it is pulled.
+
+    Shown in the corner of every page. At the office the model runs on a separate GPU host,
+    and "the chat is broken" is far more often "that host is down" — which a person should
+    be able to see before asking a question, not after twenty seconds of waiting. Cached for
+    thirty seconds so a page of tabs does not poll a GPU server.
+    """
+    import time
+
+    import httpx
+
+    now = time.monotonic()
+    cached = _STATUS_CACHE["value"]
+    if cached is not None and now - float(_STATUS_CACHE["at"]) < 30:
+        return dict(cached)
+    model = settings.llm_supervisor_model
+    status: dict[str, Any] = {"model": model, "reachable": False, "pulled": False}
+    try:
+        response = httpx.get(f"{settings.llm_base_url.rstrip('/')}/api/tags", timeout=1.5)
+        if response.status_code == 200:
+            status["reachable"] = True
+            names = {m.get("name", "") for m in response.json().get("models", [])}
+            status["pulled"] = model in names or any(n.split(":")[0] == model for n in names)
+    except (httpx.HTTPError, ValueError):
+        pass
+    _STATUS_CACHE.update(at=now, value=status)
+    return status
+
+
+@router.get("/api/prs")
+def search_index(settings: Settings = Depends(_settings)) -> list[dict[str, Any]]:
+    """What the command palette searches: recent pull requests, newest first."""
+    with session_scope() as session:
+        rows = views.pull_requests(session, threshold=_threshold(settings))[:300]
+    return [
+        {
+            "key": r.run_key,
+            "number": r.number,
+            "title": r.title,
+            "author": r.author,
+            "verdict": r.verdict.key,
+            "label": r.verdict.label,
+        }
+        for r in rows
+    ]
+
+
+def security_headers(settings: Settings) -> dict[str, str]:
+    """Headers every page carries: nothing loads or runs that the service did not serve.
+
+    No inline script and no inline style anywhere in the pages, so the policy can forbid
+    both. A logo from another origin is the one exception, and only when configured.
+    """
+    images = "'self' data:"
+    if settings.ui_logo_url and "://" in settings.ui_logo_url:
+        scheme, _, rest = settings.ui_logo_url.partition("://")
+        images += f" {scheme}://{rest.split('/', 1)[0]}"
+    policy = "; ".join(
+        (
+            "default-src 'self'",
+            "script-src 'self'",
+            "style-src 'self'",
+            f"img-src {images}",
+            "connect-src 'self'",
+            "font-src 'self'",
+            "object-src 'none'",
+            "base-uri 'none'",
+            "form-action 'self'",
+            "frame-ancestors 'none'",
+        )
+    )
+    return {
+        "Content-Security-Policy": policy,
+        "X-Content-Type-Options": "nosniff",
+        "Referrer-Policy": "same-origin",
+        "X-Frame-Options": "DENY",
+        "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
+    }

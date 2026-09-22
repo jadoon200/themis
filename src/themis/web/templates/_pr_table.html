@@ -1,32 +1,52 @@
+{#- rows: PullRequestRow list. compact: the overview's short version, no filtering. -#}
 {% import "_macros.html" as m %}
-{% set table_rows = rows if rows is defined else data.recent %}
-<table>
-  <thead>
-    <tr>
-      <th style="width: 70px">PR</th>
-      <th>Title</th>
-      <th>Author</th>
-      <th>Findings</th>
-      <th>Verdict</th>
-      <th class="num">Reviewed</th>
-    </tr>
-  </thead>
-  <tbody>
-    {% for row in table_rows %}
+<div class="table-wrap">
+  <table {% if not compact %}data-table{% endif %}>
+    <thead>
       <tr>
-        <td class="mono small">{{ m.pr_label(row) }}</td>
-        <td>
-          <a class="pr-title" href="/ui/pr/{{ row.run_key }}">{{ row.title }}</a>
-          {% if row.restates %}<span class="pill tag-restates" title="restates a period already reported">restates</span>{% endif %}
-          <div class="branch mono">{{ row.head }} → {{ row.base }}</div>
-        </td>
-        <td>{{ row.author or "—" }}</td>
-        <td>{{ m.counts(row.severity_counts) }}</td>
-        <td>{{ m.verdict(row.verdict) }}</td>
-        <td class="muted small num">{{ row.reviewed_at | ago }}</td>
+        <th {% if not compact %}data-sort="num"{% endif %}>PR</th>
+        <th {% if not compact %}data-sort="text"{% endif %}>Change</th>
+        {% if not compact %}<th class="hide-sm" data-sort="text">Author</th>{% endif %}
+        <th {% if not compact %}data-sort="num"{% endif %}>Findings</th>
+        {% if not compact %}<th class="hide-sm" data-sort="num">Decided</th>{% endif %}
+        <th {% if not compact %}data-sort="num"{% endif %}>Verdict</th>
+        <th class="hide-sm" {% if not compact %}data-sort="num"{% endif %}>Reviewed</th>
       </tr>
-    {% else %}
-      <tr><td colspan="6" class="muted">No reviews yet.</td></tr>
-    {% endfor %}
-  </tbody>
-</table>
+    </thead>
+    <tbody>
+      {% for r in rows %}
+        <tr data-row data-group="{{ r.verdict.key }}" data-search="{{ (m.pr_label(r) ~ ' ' ~ r.title ~ ' ' ~ (r.author or '') ~ ' ' ~ r.head) | lower }}">
+          <td class="cell-pr" data-value="{{ r.number or 0 }}">{{ m.pr_label(r) }}</td>
+          <td data-value="{{ r.title }}">
+            <a class="cell-title" href="/ui/pr/{{ r.run_key }}">{{ r.title | code_spans }}</a>
+            <div class="cell-sub">{% if compact and r.author %}<span>{{ r.author }}</span> · {% endif %}{{ m.icon("branch", "xs") }}{{ r.head }} → {{ r.base }}
+              {% if r.restates %}<span class="pill tag-restates">restates</span>{% endif %}
+              {% if r.executed and not compact %}<span class="pill tag-measured">measured</span>{% endif %}
+            </div>
+          </td>
+          {% if not compact %}
+            <td class="hide-sm" data-value="{{ r.author or '' }}">
+              {% if r.author %}<span class="who">{{ m.avatar(r.author, "sm") }}{{ r.author }}</span>{% else %}<span class="faint">—</span>{% endif %}
+            </td>
+          {% endif %}
+          <td data-value="{{ r.severity_counts.critical * 1000000 + r.severity_counts.high * 10000 + r.severity_counts.medium * 100 + r.finding_count }}">{{ m.counts(r.severity_counts) }}</td>
+          {% if not compact %}
+            <td class="hide-sm" data-value="{{ (r.decided / r.finding_count) if r.finding_count else 1 }}">
+              {% if r.finding_count %}
+                <span class="small num">{{ r.decided }}/{{ r.finding_count }}</span>
+                {{ meter(r.decided / r.finding_count, width=60, tone=("ok" if r.decided == r.finding_count else "accent")) }}
+              {% else %}<span class="faint small">—</span>{% endif %}
+            </td>
+          {% endif %}
+          <td data-value="{{ {'blocking': 0, 'review': 1}.get(r.verdict.key, 2) }}">{{ m.verdict(r.verdict) }}</td>
+          <td class="hide-sm small muted nowrap" data-value="{{ r.reviewed_at.timestamp() | int }}" title="{{ r.reviewed_at.strftime('%Y-%m-%d %H:%M UTC') }}">{{ r.reviewed_at | ago }}</td>
+        </tr>
+      {% else %}
+        <tr class="empty-row"><td colspan="7">No reviews yet. Run <code>themis review</code>, or <code>python scripts/seed_demo.py</code> for demo data.</td></tr>
+      {% endfor %}
+      {% if not compact and rows %}
+        <tr class="empty-row" data-empty-row hidden><td colspan="7">Nothing matches that filter.</td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+</div>

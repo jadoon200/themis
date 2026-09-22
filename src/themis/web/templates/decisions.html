@@ -1,41 +1,73 @@
 {% extends "base.html" %}
 {% import "_macros.html" as m %}
-{% block title %}Decisions{% endblock %}
+{% block title %}Decision record{% endblock %}
+{% block crumbs %}<span class="here">Decision record</span>{% endblock %}
 {% block content %}
 <div class="page-head">
   <div>
+    <div class="eyebrow">{{ m.icon("shield", "xs") }} Audit trail</div>
     <h1>Decision record</h1>
-    <div class="sub">Every human decision on a finding, in the order it was made. Appended, never edited.</div>
+    <div class="sub">Every human decision on a finding, newest first. Appended, never edited: a changed mind is a second entry.</div>
+  </div>
+  <div class="actions">
+    <button class="btn" type="button" data-export-csv="themis-decisions">{{ m.icon("download", "sm") }} Export CSV</button>
   </div>
 </div>
+
 {% if not trusted_identity %}
-  <div class="banner">
-    Demo mode: authors below are the names people typed. Behind your sign-in proxy, set
-    <code>THEMIS_UI_TRUSTED_USER_HEADER</code> and the author comes from sign-in instead.
+  <div class="notice mb">
+    {{ m.icon("flag", "sm") }}
+    <span>Demo mode: the names below were typed on the page. Behind your sign-in proxy, set <code>THEMIS_UI_TRUSTED_USER_HEADER</code> and the author comes from sign-in instead.</span>
   </div>
 {% endif %}
+
 <div class="card">
-  <table>
-    <thead>
-      <tr>
-        <th>When</th><th>Who</th><th>Decision</th><th>Finding</th><th>Model</th><th>PR</th><th>Note</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for d in rows %}
-        <tr>
-          <td class="small muted" title="{{ d.at }}">{{ d.at | ago }}</td>
-          <td><strong>{{ d.actor }}</strong></td>
-          <td>{{ m.decision(d.disposition) }}</td>
-          <td>{{ m.severity(d.severity) }} <span class="mono small">{{ d.rule_id }}</span> {{ d.title | code_spans }}</td>
-          <td class="mono small">{{ d.model_name }}</td>
-          <td class="small"><a href="/ui/pr/{{ d.run_key }}">{% if d.pr_number %}#{{ d.pr_number }}{% else %}{{ d.run_key[:8] }}{% endif %}</a></td>
-          <td class="small">{{ d.note or "" }}</td>
-        </tr>
-      {% else %}
-        <tr><td colspan="7" class="muted">No decisions recorded yet.</td></tr>
+  <div class="toolbar">
+    <label class="input-icon">
+      {{ m.icon("search", "sm") }}
+      <input class="input" type="search" data-filter-input placeholder="Filter by person, rule, model or note" aria-label="Filter decisions">
+    </label>
+    <div class="segmented" role="group" aria-label="Decision">
+      <button type="button" data-filter-group="" aria-pressed="true">All <span class="count">{{ rows | length }}</span></button>
+      {% for key in ["accepted", "dismissed", "fixed", "deferred"] %}
+        <button type="button" data-filter-group="{{ key }}" aria-pressed="false">{{ key | capitalize }} <span class="count">{{ rows | selectattr("disposition", "equalto", key) | list | length }}</span></button>
       {% endfor %}
-    </tbody>
-  </table>
+    </div>
+    <span class="end" data-shown>{{ rows | length }} shown</span>
+  </div>
+  <div class="table-wrap">
+    <table data-table>
+      <thead>
+        <tr>
+          <th data-sort="num">When</th>
+          <th data-sort="text">Who</th>
+          <th data-sort="text">Decision</th>
+          <th data-sort="text">Finding</th>
+          <th class="hide-sm" data-sort="text">Model</th>
+          <th data-sort="num">PR</th>
+          <th class="hide-sm">Note</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for d in rows %}
+          <tr data-row data-group="{{ d.disposition }}" data-search="{{ (d.actor ~ ' ' ~ d.rule_id ~ ' ' ~ d.title ~ ' ' ~ d.model_name ~ ' ' ~ (d.note or '') ~ ' ' ~ (d.pr_number or '')) | lower }}">
+            <td class="small muted nowrap" data-value="{{ d.at.timestamp() | int }}" data-csv="{{ d.at.strftime('%Y-%m-%d %H:%M:%S UTC') }}" title="{{ d.at.strftime('%Y-%m-%d %H:%M UTC') }}">{{ d.at | ago }}</td>
+            <td data-value="{{ d.actor }}" data-csv="{{ d.actor }}"><span class="who">{{ m.avatar(d.actor, "sm") }}<strong>{{ d.actor }}</strong></span></td>
+            <td data-value="{{ d.disposition }}" data-csv="{{ d.disposition }}">{{ m.decision(d.disposition) }}</td>
+            <td data-value="{{ d.rule_id }}" data-csv="{{ d.severity }} {{ d.rule_id }} {{ d.title | replace('`', '') }}">
+              <div class="f-meta">{{ m.severity(d.severity) }} <span class="rule">{{ d.rule_id }}</span></div>
+              <div class="small">{{ d.title | code_spans }}</div>
+            </td>
+            <td class="hide-sm mono small" data-value="{{ d.model_name }}" data-csv="{{ d.model_name }}">{{ d.model_name }}</td>
+            <td class="small" data-value="{{ d.pr_number or 0 }}" data-csv="{{ d.pr_number or d.run_key[:8] }}"><a href="/ui/pr/{{ d.run_key }}">{% if d.pr_number %}#{{ d.pr_number }}{% else %}{{ d.run_key[:8] }}{% endif %}</a></td>
+            <td class="hide-sm small" data-csv="{{ d.note or '' }}">{{ d.note or "" }}</td>
+          </tr>
+        {% else %}
+          <tr class="empty-row"><td colspan="7">No decisions recorded yet. Open a pull request and decide a finding.</td></tr>
+        {% endfor %}
+        {% if rows %}<tr class="empty-row" data-empty-row hidden><td colspan="7">Nothing matches that filter.</td></tr>{% endif %}
+      </tbody>
+    </table>
+  </div>
 </div>
 {% endblock %}

@@ -130,6 +130,63 @@ uv pip compile <(echo 'mcp>=2.2,<3') -o resolved.txt   # exactly what would be i
 uvx pip-audit -r resolved.txt                          # against the OSV database
 ```
 
+## 9. The pages: one link for everyone outside Jenkins
+
+Jenkins runs the review; the pages are where a reviewer, a lead or a manager reads it —
+the overview across pull requests, one pull request's findings with what building both
+revisions measured, a decision on each finding, and an assistant that answers questions
+about the change from THEMIS's own tools.
+
+```bash
+make migrate          # the schema, on the Postgres the worker writes to
+themis serve          # 127.0.0.1:8040 — put the sign-in proxy in front of it
+```
+
+| setting | what it does |
+|---|---|
+| `THEMIS_DATABASE_URL` | the Postgres the worker writes and the pages read |
+| `THEMIS_LLM_BASE_URL` | the GPU host running Ollama, e.g. `http://gpu-host:11434`. The chat and the status light in the top corner both read it |
+| `THEMIS_LLM_SUPERVISOR_MODEL` | the model the chat asks; it must be pulled on that host |
+| `THEMIS_UI_TRUSTED_USER_HEADER` | the header the sign-in proxy sets to the person's name, e.g. `X-Forwarded-User`. With it, every decision carries the signed-in name and a typed name is refused. Without it the pages are the demo, and say so |
+| `THEMIS_UI_BRAND_NAME`, `THEMIS_UI_BRAND_SUBTITLE`, `THEMIS_UI_LOGO_URL` | the organisation's name and logo. Settings only — this repository is public and carries no organisation's branding |
+| `THEMIS_FAIL_ON_SEVERITY` | the threshold behind "Blocking". The same one the CLI's exit code uses, so the page and the merge check cannot disagree |
+| `THEMIS_API_TOKEN` | bearer token for the JSON API (queueing reviews). The pages do not use it |
+
+**Bind to loopback behind the proxy.** The trusted header names the person, so anything that
+reaches the port without passing the proxy could name anyone. `themis serve` refuses to bind
+beyond loopback while the header is configured, unless `--trust-network` says the network
+already guarantees it.
+
+**What the proxy must allow.**
+
+- The chat streams its answer (server-sent events on `POST /ui/pr/<key>/chat`). The response
+  carries `X-Accel-Buffering: no` for nginx; any other proxy needs buffering off on that path
+  and a read timeout of at least five minutes — a model on a busy GPU takes its time.
+- The pages load nothing from anywhere else — no CDN, no web fonts — and send a
+  content-security policy that forbids inline script, inline style and framing. A proxy that
+  injects its own script into pages (some sign-in banners do) will find it blocked; the
+  browser console says so.
+
+**First time on the server.**
+
+1. `curl http://127.0.0.1:8040/health` — `"database": true`.
+2. Open `/ui`. The light in the top-right corner: green, the model is loaded and answering;
+   amber, the GPU host answers but the model is not pulled; red, the host is down (the pages
+   still work, the chat does not).
+3. Record a decision on any finding, then open *Decision record*: it should carry your
+   signed-in name, not "Guest".
+4. Ask the assistant one of the suggested questions. Reviews stored before this version
+   have no project snapshots and the assistant says so; every review stored from now on
+   keeps them.
+
+To see the pages with something in them before any real review exists,
+`python scripts/seed_demo.py` fills an empty database with eight real reviews of changes
+to the demo project, under invented pull-request titles on a host that does not exist.
+
+Press <kbd>?</kbd> on any page for the keyboard shortcuts: <kbd>⌘K</kbd> searches,
+<kbd>j</kbd>/<kbd>k</kbd> step through findings, <kbd>g</kbd> then <kbd>o</kbd>/<kbd>p</kbd>/<kbd>d</kbd>
+changes page, <kbd>t</kbd> switches light and dark.
+
 ## What was fixed because a real project would have hit it
 
 | on a real project | what happened | now |
