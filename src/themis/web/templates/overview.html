@@ -53,7 +53,7 @@
         {% set n = data.severity_counts[sev] %}
         <div class="bar-row">
           <span class="bar-label">{{ sev }}</span>
-          <span class="bar-track"><span class="bar-fill {{ sev }}" style="width: {{ (n / peak * 100) | round(1) }}%"></span></span>
+          <span class="bar-track">{% if n %}<span class="bar-fill {{ sev }}" style="width: {{ (n / peak * 100) | round(1) }}%"></span>{% endif %}</span>
           <span class="num small">{{ n }}</span>
         </div>
       {% endfor %}
@@ -92,7 +92,7 @@
         {% for d in data.recent_decisions %}
           <tr>
             <td style="width: 120px">{{ m.decision(d.disposition) }}</td>
-            <td><strong>{{ d.actor }}</strong> <span class="muted">on</span> <span class="mono">{{ d.rule_id }}</span> <span class="muted">·</span> {{ d.title }}</td>
+            <td><strong>{{ d.actor }}</strong> <span class="muted">on</span> <span class="mono">{{ d.rule_id }}</span> <span class="muted">·</span> {{ d.title | code_spans }}</td>
             <td class="small"><a href="/ui/pr/{{ d.run_key }}">{% if d.pr_number %}#{{ d.pr_number }}{% else %}{{ d.run_key[:8] }}{% endif %}</a></td>
             <td class="muted small num">{{ d.at | ago }}</td>
           </tr>

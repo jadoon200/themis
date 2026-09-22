@@ -45,9 +45,9 @@
             <span class="rule">{{ row.rule_id }}</span>
             {% if f.measured %}<span class="pill tag-measured" title="demonstrated by building both revisions">measured</span>{% endif %}
             {% if row.rule_id == "X0004" %}<span class="pill tag-restates">restates a reported period</span>{% endif %}
-            <span class="muted small">{{ row.confidence }}</span>
+            {% if not f.measured %}<span class="muted small">{{ row.confidence }}</span>{% endif %}
           </div>
-          <h3>{{ row.title }}</h3>
+          <h3>{{ row.title | code_spans }}</h3>
           <div class="where">{{ row.model_name }}{% if row.file_path %} · {{ row.file_path }}{% if row.line %}:{{ row.line }}{% endif %}{% endif %}</div>
           {% if row.evidence_note %}<div class="evidence">{{ row.evidence_note }}</div>{% endif %}
           <div class="consequence">{{ row.consequence }}</div>
@@ -137,7 +137,7 @@
       {% endif %}
     </div>
     <form class="chat-form" data-chat-form>
-      <textarea data-chat-input placeholder="e.g. Which models downstream of this change are tagged regulatory?" {% if not pr.chat_available %}disabled{% endif %}></textarea>
+      <textarea data-chat-input placeholder="Ask about this change…" {% if not pr.chat_available %}disabled{% endif %}></textarea>
       <button class="btn primary" type="submit" {% if not pr.chat_available %}disabled{% endif %}>Ask</button>
     </form>
     <div class="chat-foot">Runs on the local model. Nothing leaves this network.</div>

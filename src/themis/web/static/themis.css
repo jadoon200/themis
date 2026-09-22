@@ -197,8 +197,11 @@ tbody tr:hover { background: #fcfafa; }
 .bars { padding: 16px 20px 20px; display: grid; gap: 12px; }
 .bar-row { display: grid; grid-template-columns: 78px 1fr 44px; align-items: center; gap: 12px; }
 .bar-label { font-size: 12.5px; font-weight: 600; text-transform: capitalize; }
-.bar-track { height: 10px; background: var(--line-2); border-radius: 999px; overflow: hidden; }
-.bar-fill { height: 100%; border-radius: 999px; }
+.bar-track {
+  display: block; height: 10px; background: var(--line-2); border-radius: 999px; overflow: hidden;
+}
+/* Block, not inline: an inline element ignores width, and every bar rendered empty. */
+.bar-fill { display: block; height: 100%; border-radius: 999px; min-width: 2px; }
 .bar-fill.critical { background: var(--crit); }
 .bar-fill.high { background: var(--high); }
 .bar-fill.medium { background: var(--med); }
@@ -240,7 +243,8 @@ tbody tr:hover { background: #fcfafa; }
 .finding-top { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .rule { font-family: var(--mono); font-size: 12px; font-weight: 700; color: var(--ink-2); }
 .finding h3 { margin: 8px 0 2px; font-size: 15px; }
-.where { color: var(--muted); font-size: 12.5px; font-family: var(--mono); }
+.where { color: var(--muted); font-size: 12.5px; font-family: var(--mono); overflow-wrap: anywhere; }
+.finding h3, .reach, .consequence, .pr-header h1 { overflow-wrap: anywhere; }
 .evidence {
   margin: 10px 0; padding: 10px 12px; border-radius: var(--radius-sm);
   background: #faf8f8; border: 1px solid var(--line-2);
@@ -348,17 +352,27 @@ details.history ul { margin: 6px 0 0; padding-left: 18px; }
 }
 
 @media (max-width: 1100px) {
-  .pr-layout { grid-template-columns: 1fr; }
+  /* minmax(0, …), not 1fr: a bare 1fr grows to the longest unbreakable line of evidence,
+     and one long file path pushed the whole page to 1,350px on a phone. */
+  .pr-layout { grid-template-columns: minmax(0, 1fr); }
   .chat { position: static; height: 620px; }
   .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .two { grid-template-columns: 1fr; }
 }
 @media (max-width: 640px) {
   main { padding: 18px 14px 48px; }
-  .topbar-inner { gap: 14px; padding: 0 14px; }
+  /* Two rows on a phone: the brand and who you are, then the navigation beneath. Measured
+     at 375px the one-row bar ran 170px past the screen and the page scrolled sideways. */
+  .topbar-inner { flex-wrap: wrap; height: auto; gap: 8px 14px; padding: 10px 14px 0; }
   .brand-sub, .who-note { display: none; }
+  .who { margin-left: auto; }
+  .nav { order: 3; width: calc(100% + 28px); margin: 0 -14px; padding: 0 8px 6px; overflow-x: auto; }
+  .nav a { white-space: nowrap; padding: 7px 10px; }
   .kpis { grid-template-columns: 1fr; }
   .pr-header { flex-direction: column; }
   .verdict-box { margin-left: 0; align-items: flex-start; text-align: left; }
-  th, td { padding: 9px 12px; }
+  /* A table scrolls inside its card rather than widening the page. */
+  table { display: block; overflow-x: auto; }
+  th, td { padding: 9px 12px; white-space: nowrap; }
+  td .pr-title { white-space: normal; }
 }

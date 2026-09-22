@@ -19,8 +19,10 @@ Three rules the code below keeps:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import queue
+import re
 import threading
 from collections.abc import Iterator
 from datetime import UTC, datetime
@@ -30,6 +32,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from fastapi.templating import Jinja2Templates
+from markupsafe import Markup, escape
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
@@ -62,6 +65,39 @@ def _ago(value: datetime | None) -> str:
 
 
 templates.env.filters["ago"] = _ago
+
+_TICKS = re.compile(r"`([^`\n]{1,200})`")
+
+
+def _code_spans(value: str | None) -> Markup:
+    """Finding titles name models in backticks; show those as code, and nothing else.
+
+    Escaped *first*, then wrapped: the text comes from the project (a model name) and from
+    rules, and turning backticks into markup must never be a way to turn anything else into
+    markup too.
+    """
+    escaped = str(escape(value or ""))
+    return Markup(_TICKS.sub(r"<code>\1</code>", escaped))
+
+
+templates.env.filters["code_spans"] = _code_spans
+
+
+def _asset_version() -> str:
+    """A short hash of the stylesheet and script, appended to their URLs.
+
+    Found by looking at the pages rather than by a test: a CSS fix was on disk and the
+    browser kept rendering the old file from its cache. After an upgrade at the office every
+    user would do the same, running new pages against stale script. A URL that changes when
+    the content changes is the only cache rule that is right both ways.
+    """
+    digest = hashlib.sha256()
+    for name in ("themis.css", "themis.js"):
+        digest.update((HERE / "static" / name).read_bytes())
+    return digest.hexdigest()[:10]
+
+
+ASSET_VERSION = _asset_version()
 
 router = APIRouter(prefix="/ui", include_in_schema=False)
 
@@ -105,6 +141,7 @@ def _context(request: Request, settings: Settings, **extra: Any) -> dict[str, An
         "trusted_identity": settings.ui_trusted_user_header is not None,
         "threshold": _threshold(settings),
         "severities": views.SEVERITY_ORDER,
+        "asset_version": ASSET_VERSION,
         **extra,
     }
 

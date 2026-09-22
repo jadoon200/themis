@@ -27,7 +27,7 @@
           <td class="small muted" title="{{ d.at }}">{{ d.at | ago }}</td>
           <td><strong>{{ d.actor }}</strong></td>
           <td>{{ m.decision(d.disposition) }}</td>
-          <td>{{ m.severity(d.severity) }} <span class="mono small">{{ d.rule_id }}</span> {{ d.title }}</td>
+          <td>{{ m.severity(d.severity) }} <span class="mono small">{{ d.rule_id }}</span> {{ d.title | code_spans }}</td>
           <td class="mono small">{{ d.model_name }}</td>
           <td class="small"><a href="/ui/pr/{{ d.run_key }}">{% if d.pr_number %}#{{ d.pr_number }}{% else %}{{ d.run_key[:8] }}{% endif %}</a></td>
           <td class="small">{{ d.note or "" }}</td>
