@@ -38,6 +38,27 @@ _NUMERIC_TYPES = (
 
 
 @dataclass(frozen=True)
+class Relation:
+    """Where a model physically is: catalog, schema, table.
+
+    Taken from what dbt reports it built, never assembled from the run's schema and the
+    model's name. A model with a custom schema, an alias or a catalog of its own lives
+    somewhere else — and a lookup in the wrong place finds nothing on either side, which
+    the differ reads as "nothing moved". On a project that sets `+schema:` per folder,
+    as most do, that is most of the project reported clean without being measured.
+
+    ``catalog`` None means the connection's own.
+    """
+
+    catalog: str | None
+    schema: str
+    name: str
+
+    def describe(self) -> str:
+        return ".".join(p for p in (self.catalog, self.schema, self.name) if p)
+
+
+@dataclass(frozen=True)
 class TableShape:
     """What a materialised table looks like, as measured rather than declared."""
 
@@ -239,18 +260,18 @@ def _paired_rows(
 class WarehouseClient(Protocol):
     """The measurements Stage 3 needs. Deliberately small."""
 
-    def shape(self, schema: str, table: str) -> TableShape: ...
+    def shape(self, relation: Relation) -> TableShape: ...
 
-    def sums(self, schema: str, table: str, columns: tuple[str, ...]) -> dict[str, float]: ...
+    def sums(self, relation: Relation, columns: tuple[str, ...]) -> dict[str, float]: ...
 
-    def null_rates(self, schema: str, table: str, columns: tuple[str, ...]) -> dict[str, float]: ...
+    def null_rates(self, relation: Relation, columns: tuple[str, ...]) -> dict[str, float]: ...
 
-    def distinct_count(self, schema: str, table: str, columns: tuple[str, ...]) -> int | None: ...
+    def distinct_count(self, relation: Relation, columns: tuple[str, ...]) -> int | None: ...
 
     def paired_rows(
         self,
-        base: tuple[str, str],
-        head: tuple[str, str],
+        base: Relation,
+        head: Relation,
         *,
         key: tuple[str, ...],
         columns: tuple[str, ...],
@@ -264,10 +285,16 @@ class WarehouseClient(Protocol):
 class DuckDBClient:
     """DuckDB implementation. Read-only — Stage 3 measures, dbt writes."""
 
-    def __init__(self, database: Path) -> None:
+    def __init__(self, database: Path, attached: tuple[tuple[Path, str], ...] = ()) -> None:
         import duckdb
 
         self._conn = duckdb.connect(str(database), read_only=True)
+        # A model dbt put in an attached database is only readable once it is attached
+        # here too, under the alias dbt used as its catalog.
+        for path, alias in attached:
+            if path.exists():
+                quoted = str(path).replace("'", "''")
+                self._conn.execute(f"attach '{quoted}' as {self._quote(alias)} (read_only)")
 
     def _query(self, sql: str) -> list[tuple[Any, ...]]:
         try:
@@ -283,30 +310,39 @@ class DuckDBClient:
     def _quote(identifier: str) -> str:
         return '"' + identifier.replace('"', '""') + '"'
 
-    def _ref(self, schema: str, table: str) -> str:
-        return f"{self._quote(schema)}.{self._quote(table)}"
+    @staticmethod
+    def _literal(value: str) -> str:
+        return "'" + value.replace("'", "''") + "'"
 
-    def shape(self, schema: str, table: str) -> TableShape:
+    def _ref(self, relation: Relation) -> str:
+        parts = (relation.catalog, relation.schema, relation.name)
+        return ".".join(self._quote(part) for part in parts if part)
+
+    def shape(self, relation: Relation) -> TableShape:
+        catalog = (
+            f"and table_catalog = {self._literal(relation.catalog)} " if relation.catalog else ""
+        )
         columns = self._query(
             "select column_name, data_type from information_schema.columns "
-            f"where table_schema = '{schema}' and table_name = '{table}'"
+            f"where table_schema = {self._literal(relation.schema)} "
+            f"and table_name = {self._literal(relation.name)} {catalog}"
         )
         if not columns:
             return TableShape(exists=False)
-        rows = self._query(f"select count(*) from {self._ref(schema, table)}")
+        rows = self._query(f"select count(*) from {self._ref(relation)}")
         return TableShape(
             exists=True,
             row_count=int(rows[0][0]) if rows else 0,
             column_types={str(name): str(dtype) for name, dtype in columns},
         )
 
-    def sums(self, schema: str, table: str, columns: tuple[str, ...]) -> dict[str, float]:
+    def sums(self, relation: Relation, columns: tuple[str, ...]) -> dict[str, float]:
         if not columns:
             return {}
         # One query for every column: a sum per column across millions of rows is
         # still a single scan, and N queries would be N scans.
         projection = ", ".join(f"sum({self._quote(c)})" for c in columns)
-        rows = self._query(f"select {projection} from {self._ref(schema, table)}")
+        rows = self._query(f"select {projection} from {self._ref(relation)}")
         if not rows:
             return {}
         return {
@@ -315,14 +351,14 @@ class DuckDBClient:
             if value is not None
         }
 
-    def null_rates(self, schema: str, table: str, columns: tuple[str, ...]) -> dict[str, float]:
+    def null_rates(self, relation: Relation, columns: tuple[str, ...]) -> dict[str, float]:
         if not columns:
             return {}
         projection = ", ".join(
             f"cast(count(*) - count({self._quote(c)}) as double) / nullif(count(*), 0)"
             for c in columns
         )
-        rows = self._query(f"select {projection} from {self._ref(schema, table)}")
+        rows = self._query(f"select {projection} from {self._ref(relation)}")
         if not rows:
             return {}
         return {
@@ -331,7 +367,7 @@ class DuckDBClient:
             if value is not None
         }
 
-    def distinct_count(self, schema: str, table: str, columns: tuple[str, ...]) -> int | None:
+    def distinct_count(self, relation: Relation, columns: tuple[str, ...]) -> int | None:
         """Distinct combinations of a candidate key.
 
         Paired with the row count this settles grain outright: equal means the key is
@@ -342,13 +378,13 @@ class DuckDBClient:
             return None
         key = ", ".join(self._quote(c) for c in columns)
         expression = f"({key})" if len(columns) > 1 else key
-        rows = self._query(f"select count(distinct {expression}) from {self._ref(schema, table)}")
+        rows = self._query(f"select count(distinct {expression}) from {self._ref(relation)}")
         return int(rows[0][0]) if rows and rows[0][0] is not None else None
 
     def paired_rows(
         self,
-        base: tuple[str, str],
-        head: tuple[str, str],
+        base: Relation,
+        head: Relation,
         *,
         key: tuple[str, ...],
         columns: tuple[str, ...],
@@ -358,8 +394,8 @@ class DuckDBClient:
         """Pair base and head rows on ``key`` and count what differs."""
         return _paired_rows(
             self._query,
-            self._ref(*base),
-            self._ref(*head),
+            self._ref(base),
+            self._ref(head),
             key=key,
             columns=columns,
             numeric=numeric,
@@ -424,30 +460,39 @@ class TrinoClient:
     def _quote(identifier: str) -> str:
         return '"' + identifier.replace('"', '""') + '"'
 
-    def _ref(self, schema: str, table: str) -> str:
-        # Fully qualified. Trino resolves an unqualified name against the session
-        # catalog, and Stage 3 builds into schemas the session was not opened on.
-        return ".".join(self._quote(part) for part in (self._catalog, schema, table))
+    @staticmethod
+    def _literal(value: str) -> str:
+        return "'" + value.replace("'", "''") + "'"
 
-    def shape(self, schema: str, table: str) -> TableShape:
+    def _ref(self, relation: Relation) -> str:
+        # Fully qualified. Trino resolves an unqualified name against the session
+        # catalog, and a model may live in another catalog as well as another schema.
+        parts = (relation.catalog or self._catalog, relation.schema, relation.name)
+        return ".".join(self._quote(part) for part in parts)
+
+    def shape(self, relation: Relation) -> TableShape:
+        # The information schema of the catalog the model is in: the session's catalog
+        # knows nothing about a table in another one.
+        catalog = self._quote(relation.catalog or self._catalog)
         columns = self._query(
-            "select column_name, data_type from information_schema.columns "
-            f"where table_schema = '{schema}' and table_name = '{table}'"
+            f"select column_name, data_type from {catalog}.information_schema.columns "
+            f"where table_schema = {self._literal(relation.schema)} "
+            f"and table_name = {self._literal(relation.name)}"
         )
         if not columns:
             return TableShape(exists=False)
-        rows = self._query(f"select count(*) from {self._ref(schema, table)}")
+        rows = self._query(f"select count(*) from {self._ref(relation)}")
         return TableShape(
             exists=True,
             row_count=int(rows[0][0]) if rows else 0,
             column_types={str(name): str(dtype) for name, dtype in columns},
         )
 
-    def sums(self, schema: str, table: str, columns: tuple[str, ...]) -> dict[str, float]:
+    def sums(self, relation: Relation, columns: tuple[str, ...]) -> dict[str, float]:
         if not columns:
             return {}
         projection = ", ".join(f"sum({self._quote(c)})" for c in columns)
-        rows = self._query(f"select {projection} from {self._ref(schema, table)}")
+        rows = self._query(f"select {projection} from {self._ref(relation)}")
         if not rows:
             return {}
         return {
@@ -456,14 +501,14 @@ class TrinoClient:
             if value is not None
         }
 
-    def null_rates(self, schema: str, table: str, columns: tuple[str, ...]) -> dict[str, float]:
+    def null_rates(self, relation: Relation, columns: tuple[str, ...]) -> dict[str, float]:
         if not columns:
             return {}
         projection = ", ".join(
             f"cast(count(*) - count({self._quote(c)}) as double) / nullif(count(*), 0)"
             for c in columns
         )
-        rows = self._query(f"select {projection} from {self._ref(schema, table)}")
+        rows = self._query(f"select {projection} from {self._ref(relation)}")
         if not rows:
             return {}
         return {
@@ -472,7 +517,7 @@ class TrinoClient:
             if value is not None
         }
 
-    def distinct_count(self, schema: str, table: str, columns: tuple[str, ...]) -> int | None:
+    def distinct_count(self, relation: Relation, columns: tuple[str, ...]) -> int | None:
         """Distinct combinations of a candidate key.
 
         Trino has no row-constructor equality in count(distinct ...), so a composite
@@ -487,13 +532,13 @@ class TrinoClient:
         else:
             parts = ", ".join(f"cast({self._quote(c)} as varchar)" for c in columns)
             expression = f"concat_ws(chr(31), {parts})"
-        rows = self._query(f"select count(distinct {expression}) from {self._ref(schema, table)}")
+        rows = self._query(f"select count(distinct {expression}) from {self._ref(relation)}")
         return int(rows[0][0]) if rows and rows[0][0] is not None else None
 
     def paired_rows(
         self,
-        base: tuple[str, str],
-        head: tuple[str, str],
+        base: Relation,
+        head: Relation,
         *,
         key: tuple[str, ...],
         columns: tuple[str, ...],
@@ -503,8 +548,8 @@ class TrinoClient:
         """Pair base and head rows on ``key`` and count what differs."""
         return _paired_rows(
             self._query,
-            self._ref(*base),
-            self._ref(*head),
+            self._ref(base),
+            self._ref(head),
             key=key,
             columns=columns,
             numeric=numeric,
@@ -543,7 +588,11 @@ def _duckdb_files(profile: dict[str, Any], project_dir: Path) -> list[Path]:
 
 
 def drop_run_schemas(
-    profile: dict[str, Any], project_dir: Path, prefixes: tuple[str, ...]
+    profile: dict[str, Any],
+    project_dir: Path,
+    prefixes: tuple[str, ...],
+    *,
+    catalogs: tuple[str, ...] = (),
 ) -> tuple[str, ...]:
     """Drop the schemas one Stage 3 run built into. Returns what was dropped.
 
@@ -579,7 +628,12 @@ def drop_run_schemas(
                 finally:
                     conn.close()
         elif adapter == "trino":
-            dropped.extend(_drop_trino_schemas(profile, prefixes))
+            # The profile's catalog and every other one the builds put a model in: a run
+            # that wrote Hive marts and Iceberg reference data has schemas in both.
+            own = str(profile.get("database") or profile.get("catalog") or "")
+            for catalog in dict.fromkeys((own, *catalogs)):
+                if catalog:
+                    dropped.extend(_drop_trino_schemas(profile, prefixes, catalog))
         else:
             log.warning("warehouse.cleanup_unsupported", adapter=adapter)
     except Exception as exc:
@@ -589,15 +643,16 @@ def drop_run_schemas(
     return tuple(dropped)
 
 
-def _drop_trino_schemas(profile: dict[str, Any], prefixes: tuple[str, ...]) -> list[str]:
-    """Drop a run's schemas on Trino, relation by relation.
+def _drop_trino_schemas(
+    profile: dict[str, Any], prefixes: tuple[str, ...], catalog: str
+) -> list[str]:
+    """Drop a run's schemas in one Trino catalog, relation by relation.
 
     ``DROP SCHEMA ... CASCADE`` is not supported by every connector, so the relations
     are dropped first and the schema after — which works on all of them.
     """
     import trino
 
-    catalog = str(profile.get("database") or profile.get("catalog") or "")
     password = profile.get("password")
     connect: Any = trino.dbapi.connect
     conn = connect(
@@ -636,7 +691,7 @@ def _drop_trino_schemas(profile: dict[str, Any], prefixes: tuple[str, ...]) -> l
                 statement = "drop view" if str(kind).upper() == "VIEW" else "drop table"
                 run(f"{statement} if exists {quote(catalog)}.{quote(schema)}.{quote(str(name))}")
             run(f"drop schema if exists {quote(catalog)}.{quote(schema)}")
-            dropped.append(schema)
+            dropped.append(f"{catalog}.{schema}")
     finally:
         conn.close()
     return dropped
@@ -680,4 +735,12 @@ def client_for_profile(profile: dict[str, Any], project_dir: Path) -> WarehouseC
     if not database.exists():
         log.warning("warehouse.database_missing", path=str(database))
         return None
-    return DuckDBClient(database)
+    attached: list[tuple[Path, str]] = []
+    for entry in profile.get("attach") or []:
+        if not isinstance(entry, dict) or not entry.get("path"):
+            continue
+        path = Path(str(entry["path"]))
+        if not path.is_absolute():
+            path = (project_dir / path).resolve()
+        attached.append((path, str(entry.get("alias") or path.stem)))
+    return DuckDBClient(database, tuple(attached))

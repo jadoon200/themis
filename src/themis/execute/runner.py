@@ -20,6 +20,7 @@ from themis import vocabulary
 from themis.acquire import git
 from themis.acquire.dbt_runner import (
     assert_target_allowed,
+    built_relations,
     extract_dbt_error,
     node_statuses,
     run_dbt,
@@ -29,7 +30,12 @@ from themis.capabilities import Capability, CapabilityError, require
 from themis.config import Settings
 from themis.execute.differ import diff_tables, measure_grain, pair_rows
 from themis.execute.profiles import ProfileError, read_profile, write_profile_for_schema
-from themis.execute.warehouse import WarehouseClient, client_for_profile, drop_run_schemas
+from themis.execute.warehouse import (
+    Relation,
+    WarehouseClient,
+    client_for_profile,
+    drop_run_schemas,
+)
 from themis.logging import get_logger
 from themis.models import ExecutionDelta, Grain
 from themis.vocabulary import DEFAULT as DEFAULT_VOCABULARY
@@ -60,6 +66,13 @@ class BuildOutcome:
     # full-refresh tables are real and are measured; what was not exercised is the
     # incremental path, and that is a check that did not run, not a model that failed.
     incremental_not_run: tuple[str, ...] = ()
+    # Where dbt put each model, from the manifest this build wrote: catalog, schema and
+    # identifier as dbt resolved them, custom schemas and aliases included.
+    relations: dict[str, Relation] = field(default_factory=dict)
+
+    def relation(self, model: str, schema: str) -> Relation:
+        """Where to measure a model: where dbt says it built it, else the run's schema."""
+        return self.relations.get(model) or Relation(None, schema, model)
 
     def failure(self, model: str) -> str | None:
         """Why a model was not built, or None when it was."""
@@ -217,6 +230,10 @@ def _build(
         return result.ok, result.stdout, node_statuses(target_dir)
 
     ok, stdout, statuses = run(["build", "--full-refresh", *selection, *defer_args])
+    relations = {
+        name: Relation(catalog, schema, identifier)
+        for name, (catalog, schema, identifier) in built_relations(target_dir).items()
+    }
     if ok and incremental_models:
         # The second pass only needs to re-run the incremental models themselves.
         # Pass one already built their upstreams, and rebuilding the whole closure
@@ -231,7 +248,9 @@ def _build(
             # what did not happen is the incremental path being exercised, and that is
             # reported as a check that could not run. Not conflated with a model that
             # failed to build, which is a finding about the change (X0002).
-            return BuildOutcome(statuses=statuses, incremental_not_run=incremental_models)
+            return BuildOutcome(
+                statuses=statuses, incremental_not_run=incremental_models, relations=relations
+            )
         if not ok and not second_statuses:
             # The second pass failed before recording anything, so the first pass's
             # "success" for these models describes a table the second pass never
@@ -240,12 +259,12 @@ def _build(
         statuses = {**statuses, **second_statuses}
 
     if ok:
-        return BuildOutcome(statuses=statuses)
+        return BuildOutcome(statuses=statuses, relations=relations)
     # A partial build is still worth measuring — the models that did build give real
     # evidence, and the failure itself is a finding.
     message = extract_dbt_error(stdout) or "dbt build failed"
     log.warning("execute.build_failed", label=label, error=message[:300])
-    return BuildOutcome(error=message, statuses=statuses)
+    return BuildOutcome(error=message, statuses=statuses, relations=relations)
 
 
 def execute(
@@ -328,8 +347,12 @@ def execute(
     base_schema = f"{settings.execute_base_schema}_{token}"
     head_schema = f"{settings.execute_head_schema}_{token}"
 
+    # Every build that finished, so cleanup can reach each catalog one wrote to even when
+    # the other build, or the measurement after, did not happen.
+    finished: list[BuildOutcome] = []
+
     def build(tree: Path, schema: str, label: str, root: Path) -> BuildOutcome:
-        return _build(
+        outcome = _build(
             tree,
             models=models,
             schema=schema,
@@ -342,6 +365,8 @@ def execute(
             incremental_models=incremental_models,
             defer_state=defer_state,
         )
+        finished.append(outcome)
+        return outcome
 
     try:
         with tempfile.TemporaryDirectory(prefix="themis-exec-") as tmp:
@@ -383,7 +408,26 @@ def execute(
         if settings.execute_keep_schemas:
             log.info("execute.schemas_kept", base=base_schema, head=head_schema)
         else:
-            drop_run_schemas(profile, anchor, (base_schema, head_schema))
+            drop_run_schemas(
+                profile,
+                anchor,
+                (base_schema, head_schema),
+                catalogs=_catalogs_written(*finished),
+            )
+
+
+def _catalogs_written(*builds: BuildOutcome) -> tuple[str, ...]:
+    """Every catalog a build put a model in. A run's schemas live in each of them."""
+    return tuple(
+        sorted(
+            {
+                relation.catalog
+                for build in builds
+                for relation in build.relations.values()
+                if relation.catalog
+            }
+        )
+    )
 
 
 def _unbuilt_delta(
@@ -413,8 +457,10 @@ def _unbuilt_delta(
         message = f"base revision did not build: {base_failure}"
         skipped = base_build.skipped(model)
 
-    before = client.shape(base_schema, model) if base_failure is None else None
-    after = client.shape(head_schema, model) if head_failure is None else None
+    base_at = base_build.relation(model, base_schema)
+    head_at = head_build.relation(model, head_schema)
+    before = client.shape(base_at) if base_failure is None else None
+    after = client.shape(head_at) if head_failure is None else None
     return ExecutionDelta(
         model_name=model,
         rows_before=before.row_count if before is not None and before.exists else None,
@@ -460,19 +506,21 @@ def _measure(
             )
             continue
 
+        base_at = base_build.relation(model, base_schema)
+        head_at = head_build.relation(model, head_schema)
         deltas[model] = diff_tables(
             client,
             model,
-            base_schema=base_schema,
-            head_schema=head_schema,
+            base=base_at,
+            head=head_at,
             max_rows=max_rows,
             vocabulary=vocab,
         )
         candidate = grain_candidates.get(model)
-        measured = measure_grain(client, model, schema=head_schema, candidate=candidate)
+        measured = measure_grain(client, model, relation=head_at, candidate=candidate)
         if measured is not None:
             grains[model] = measured
-        baseline = measure_grain(client, model, schema=base_schema, candidate=candidate)
+        baseline = measure_grain(client, model, relation=base_at, candidate=candidate)
         if baseline is not None:
             baselines[model] = baseline
 
@@ -480,8 +528,8 @@ def _measure(
             keyed, keyed_reason = pair_rows(
                 client,
                 model,
-                base_schema=base_schema,
-                head_schema=head_schema,
+                base=base_at,
+                head=head_at,
                 head_grain=measured,
                 base_grain=baseline,
                 max_rows=max_rows,

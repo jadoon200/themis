@@ -19,7 +19,7 @@ from themis.execute.profiles import (
     read_profile,
     write_profile_for_schema,
 )
-from themis.execute.warehouse import TableShape
+from themis.execute.warehouse import Relation, TableShape
 from themis.models import Grain, GrainSource
 
 
@@ -30,17 +30,17 @@ class FakeWarehouse:
         self._tables = tables
         self._values = values or {}
 
-    def shape(self, schema: str, table: str) -> TableShape:
-        return self._tables.get((schema, table), TableShape(exists=False))
+    def shape(self, relation: Relation) -> TableShape:
+        return self._tables.get((relation.schema, relation.name), TableShape(exists=False))
 
-    def sums(self, schema: str, table: str, columns: tuple[str, ...]) -> dict[str, float]:
-        return self._values.get(("sums", schema, table), {})
+    def sums(self, relation: Relation, columns: tuple[str, ...]) -> dict[str, float]:
+        return self._values.get(("sums", relation.schema, relation.name), {})
 
-    def null_rates(self, schema: str, table: str, columns: tuple[str, ...]) -> dict[str, float]:
-        return self._values.get(("nulls", schema, table), {})
+    def null_rates(self, relation: Relation, columns: tuple[str, ...]) -> dict[str, float]:
+        return self._values.get(("nulls", relation.schema, relation.name), {})
 
-    def distinct_count(self, schema: str, table: str, columns: tuple[str, ...]) -> int | None:
-        return self._values.get(("distinct", schema, table))
+    def distinct_count(self, relation: Relation, columns: tuple[str, ...]) -> int | None:
+        return self._values.get(("distinct", relation.schema, relation.name))
 
     def close(self) -> None:
         return None
@@ -55,7 +55,13 @@ def _candidate(*columns: str) -> Grain:
 
 
 def _diff(client: FakeWarehouse, model: str = "m"):
-    return diff_tables(client, model, base_schema="b", head_schema="h", max_rows=1_000_000)
+    return diff_tables(
+        client,
+        model,
+        base=Relation(None, "b", model),
+        head=Relation(None, "h", model),
+        max_rows=1_000_000,
+    )
 
 
 def test_row_count_growth_is_measured() -> None:
@@ -135,7 +141,9 @@ def test_oversized_tables_skip_aggregates_but_keep_row_counts() -> None:
             ("h", "m"): _shape(10_000_001, amount_usd="DECIMAL"),
         }
     )
-    delta = diff_tables(client, "m", base_schema="b", head_schema="h", max_rows=1000)
+    delta = diff_tables(
+        client, "m", base=Relation(None, "b", "m"), head=Relation(None, "h", "m"), max_rows=1000
+    )
     assert delta.row_delta == 1
     assert delta.sum_deltas == {}
 
@@ -151,7 +159,7 @@ def test_measured_grain_reports_the_exact_multiplier() -> None:
     grain = measure_grain(
         client,
         "m",
-        schema="h",
+        relation=Relation(None, "h", "m"),
         candidate=Grain(model_name="m", columns=("entry_id",), source=GrainSource.HEURISTIC),
     )
     assert grain is not None
@@ -167,7 +175,7 @@ def test_measurement_confirms_a_genuinely_unique_key() -> None:
     grain = measure_grain(
         client,
         "m",
-        schema="h",
+        relation=Relation(None, "h", "m"),
         candidate=Grain(model_name="m", columns=("entry_id",), source=GrainSource.HEURISTIC),
     )
     assert grain is not None
@@ -182,7 +190,7 @@ def test_a_derived_key_absent_from_the_table_is_not_measured() -> None:
         measure_grain(
             client,
             "m",
-            schema="h",
+            relation=Relation(None, "h", "m"),
             candidate=Grain(model_name="m", columns=("entry_id",), source=GrainSource.HEURISTIC),
         )
         is None
@@ -195,7 +203,7 @@ def test_unknown_grain_is_not_measured() -> None:
         measure_grain(
             client,
             "m",
-            schema="h",
+            relation=Relation(None, "h", "m"),
             candidate=Grain(model_name="m", columns=(), source=GrainSource.UNKNOWN),
         )
         is None

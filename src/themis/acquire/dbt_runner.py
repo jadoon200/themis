@@ -196,6 +196,34 @@ def node_statuses(target_dir: Path) -> dict[str, str]:
     return statuses
 
 
+def built_relations(target_dir: Path) -> dict[str, tuple[str | None, str, str]]:
+    """Where dbt put each model and seed, from the manifest a build wrote.
+
+    Keyed by node name: (catalog, schema, identifier). Read from dbt rather than
+    rebuilt from the run's schema, because dbt is what applied the project's
+    `generate_schema_name`, its custom schemas, aliases and per-model catalogs — and any
+    of those moves a table away from where a guess would look. Empty when the manifest is
+    missing or unreadable, and the caller falls back to the guess.
+    """
+    path = target_dir / "manifest.json"
+    try:
+        payload = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+    relations: dict[str, tuple[str | None, str, str]] = {}
+    for unique_id, node in (payload.get("nodes") or {}).items():
+        if not str(unique_id).startswith(("model.", "seed.", "snapshot.")):
+            continue
+        name = str(node.get("name") or unique_id.split(".")[-1])
+        schema = node.get("schema")
+        if not schema:
+            continue
+        identifier = str(node.get("alias") or node.get("identifier") or name)
+        database = node.get("database")
+        relations[name] = (str(database) if database else None, str(schema), identifier)
+    return relations
+
+
 def seed_partial_parse(source_project: Path, target_dir: Path) -> bool:
     """Copy dbt's parse cache into a target directory before a run uses it.
 
