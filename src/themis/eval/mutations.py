@@ -119,10 +119,25 @@ class Mutation:
     # THEMIS targets and byte-identical output on the one the corpus usually builds on.
     # Keyed by dbt target name; the harness picks the kind for the target it ran.
     kind_on: dict[str, Kind] = field(default_factory=dict)
+    # Whether the head builds can also depend on the engine: Trino rejects a duplicate
+    # column name DuckDB tolerates, and has functions DuckDB does not. Keyed by target;
+    # a value of None means it builds there although it fails elsewhere.
+    build_fails_on: dict[str, str | None] = field(default_factory=dict)
+    # Engines where this case says nothing, with the reason. Not a way to hide a miss:
+    # the case is listed as declared-unmeasurable in the report, and the reason has to
+    # name what about the warehouse makes it so — a connector that cannot delete rows,
+    # a second catalog that only one engine has.
+    not_measurable_on: dict[str, str] = field(default_factory=dict)
 
     def kind_for(self, target: str) -> Kind:
         """What this case is on the engine it was actually measured on."""
         return self.kind_on.get(target, self.kind)
+
+    def build_fails_for(self, target: str) -> str | None:
+        """Why the head is expected not to build on this engine, if it is."""
+        if target in self.build_fails_on:
+            return self.build_fails_on[target]
+        return self.build_fails
 
     def apply(self, project_dir: Path) -> bool:
         """Apply to a checked-out project. False if the anchor text is not present."""
@@ -322,6 +337,12 @@ _ALL_INJECTED: tuple[Mutation, ...] = (
     ),
     Mutation(
         id="incremental_key_changed",
+        not_measurable_on={
+            "trino": (
+                "the incremental pass cannot run on Trino's memory connector, which "
+                "cannot modify rows, so a changed unique key moves nothing to measure"
+            )
+        },
         kind=Kind.DEFECT,
         expects_family="F5",
         description="unique_key changed, so existing rows match differently",
@@ -363,6 +384,12 @@ _ALL_INJECTED: tuple[Mutation, ...] = (
     ),
     Mutation(
         id="hardcoded_table_reference",
+        build_fails_on={
+            "trino": (
+                "a hardcoded DuckDB catalog name cannot resolve on Trino, which is the "
+                "hazard the rule exists for — read statically, not from a build"
+            )
+        },
         kind=Kind.LATENT,
         expects_family="F6",
         description="ref() replaced by a literal table name, cutting the DAG edge",
@@ -405,6 +432,9 @@ _ALL_INJECTED: tuple[Mutation, ...] = (
     ),
     Mutation(
         id="approx_aggregate_in_regulatory",
+        # It builds on Trino: approx_distinct is a Trino function, and this is the
+        # engine the rule was written for.
+        build_fails_on={"trino": None},
         kind=Kind.LATENT,
         expects_family="F7",
         description=(
@@ -448,6 +478,7 @@ _ALL_INJECTED: tuple[Mutation, ...] = (
     ),
     Mutation(
         id="select_star_introduced",
+        build_fails_on={"trino": "Trino rejects the duplicate column name that DuckDB tolerates"},
         kind=Kind.LATENT,
         expects_family="F6",
         description=(
@@ -460,6 +491,12 @@ _ALL_INJECTED: tuple[Mutation, ...] = (
     ),
     Mutation(
         id="cross_catalog_join_introduced",
+        not_measurable_on={
+            "trino": (
+                "the demo's second catalog is a DuckDB attachment; the Trino target has "
+                "only `memory`, so the join this writes is not across catalogs there"
+            )
+        },
         kind=Kind.LATENT,
         expects_family="F8",
         description=(
@@ -544,6 +581,12 @@ _ALL_INJECTED: tuple[Mutation, ...] = (
     ),
     Mutation(
         id="partition_spec_changed",
+        not_measurable_on={
+            "trino": (
+                "the partition property is deliberately not sent to Trino — the memory "
+                "connector rejects an unknown table property — so there is no spec to change"
+            )
+        },
         kind=Kind.LATENT,
         expects_family="F5",
         description=(

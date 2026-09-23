@@ -44,6 +44,10 @@ class MutationOutcome:
     families_fired: tuple[str, ...]
     expected_family_fired: bool
     finding_count: int
+    # Declared as saying nothing on this engine, with the reason. Not scored, not gated,
+    # and printed — a case silently dropped on one warehouse is how an engine-specific
+    # blind spot would hide.
+    declared_unmeasurable: str | None = None
     # Severity of each finding. A level almost everything reaches stops telling a
     # reviewer which one to open first, and that is only visible if it is counted.
     severities: tuple[str, ...] = ()
@@ -339,7 +343,7 @@ def run_mutation(
         execution and execution.ran and any(d.is_material for d in execution.deltas.values())
     )
 
-    invalid = _unscorable(mutation, result, use_execution=use_execution)
+    invalid = _unscorable(mutation, result, use_execution=use_execution, target=target)
     if invalid is not None:
         # Recorded as an error rather than a result. Each of these used to score: a
         # review with twenty rules skipped counted as a detection when the safety net
@@ -392,7 +396,9 @@ def run_mutation(
     )
 
 
-def _unscorable(mutation: Mutation, result: ReviewResult, *, use_execution: bool) -> str | None:
+def _unscorable(
+    mutation: Mutation, result: ReviewResult, *, use_execution: bool, target: str = "dev"
+) -> str | None:
     """Why a review cannot be scored against its mutation, or None when it can.
 
     Two ways a case measures something other than the reviewer:
@@ -417,14 +423,15 @@ def _unscorable(mutation: Mutation, result: ReviewResult, *, use_execution: bool
     base_failures = [d for d in unbuilt.values() if d.failed_revision in ("base", "both")]
     if base_failures:
         return f"the base revision does not build: {base_failures[0].build_error}"
-    if unbuilt and mutation.build_fails is None:
+    build_fails = mutation.build_fails_for(target)
+    if unbuilt and build_fails is None:
         first = next(iter(unbuilt.values()))
         return (
             f"the mutated head does not build ({first.build_error}) — the mutation is invalid "
             "SQL here, or declare why it is meant to break the build"
         )
-    if not unbuilt and mutation.build_fails is not None:
-        return f"declared to break the build ({mutation.build_fails}), but it built"
+    if not unbuilt and build_fails is not None:
+        return f"declared to break the build ({build_fails}), but it built"
     return None
 
 
@@ -435,7 +442,16 @@ class EvalReport:
     @property
     def usable(self) -> list[MutationOutcome]:
         """Mutations that applied. A stale one is excluded, and reported."""
-        return [o for o in self.outcomes if o.applied and o.error is None]
+        return [
+            o
+            for o in self.outcomes
+            if o.applied and o.error is None and o.declared_unmeasurable is None
+        ]
+
+    @property
+    def not_measurable(self) -> list[MutationOutcome]:
+        """Cases declared to say nothing on the engine this run used."""
+        return [o for o in self.outcomes if o.declared_unmeasurable is not None]
 
     @property
     def scored(self) -> list[MutationOutcome]:
@@ -631,6 +647,8 @@ class EvalReport:
         for outcome in self.outcomes:
             if outcome.mutation.kind is Kind.GENERATED:
                 continue  # nobody chose these; they are reported, never gated
+            if outcome.declared_unmeasurable is not None:
+                continue  # declared as saying nothing here, and printed as such
             if not outcome.applied or outcome.error is not None:
                 failures.append(f"{outcome.mutation.id}: could not be scored — {outcome.error}")
         for outcome in self.usable:
@@ -671,7 +689,11 @@ class EvalReport:
         )
         if full_corpus:
             _, never = self.rule_coverage()
-            if never:
+            # Coverage is a gate only where the whole corpus can be measured. On an
+            # engine where some cases say nothing — a connector that cannot delete, a
+            # catalog that is not there — a rule can be unexercised for that reason
+            # alone, and failing on it would teach nobody anything. It is still printed.
+            if never and not self.not_measurable:
                 failures.append(f"rules that never fired: {', '.join(never)}")
         return failures
 
@@ -693,6 +715,22 @@ def run_corpus(
         assert_clean(git.repo_root(project_dir))
     outcomes: list[MutationOutcome] = []
     for index, mutation in enumerate(mutations, start=1):
+        declared = mutation.not_measurable_on.get(target)
+        if declared is not None:
+            log.info("eval.not_measurable", id=mutation.id, target=target, reason=declared)
+            outcomes.append(
+                MutationOutcome(
+                    mutation=mutation,
+                    applied=True,
+                    declared_unmeasurable=declared,
+                    changed_results=False,
+                    detected=False,
+                    families_fired=(),
+                    expected_family_fired=False,
+                    finding_count=0,
+                )
+            )
+            continue
         log.info("eval.mutation", n=f"{index}/{len(mutations)}", id=mutation.id)
         outcomes.append(
             run_mutation(

@@ -397,6 +397,12 @@ def eval_cmd(
             else:
                 typer.echo(f"  {outcome.mutation.id}: should not change results, but it did")
 
+    if report.not_measurable:
+        typer.echo("")
+        typer.echo(f"Says nothing on this engine ({target}), by declaration:")
+        for outcome in report.not_measurable:
+            typer.echo(f"  {outcome.mutation.id}: {outcome.declared_unmeasurable}")
+
     if report.stale:
         typer.echo("")
         typer.echo("Could not be scored:")
