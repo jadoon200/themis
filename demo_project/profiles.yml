@@ -1,35 +1,36 @@
-# Local, zero-cost, credential-free. The target name must stay within the THEMIS
+# Local, zero-cost, credential-free. The target names must stay within the THEMIS
 # execution allowlist — the Stage 3 guard refuses anything that is not clearly a
 # dev/CI target.
 themis_demo:
   target: dev
   outputs:
-    dev:
-      type: duckdb
-      path: themis_demo.duckdb
-      schema: main
-      threads: 4
-      # A second catalog. Trino projects routinely join across catalogs, and that is
-      # the one case the engine cannot push down — both sides are read in full and
-      # joined on the coordinator. Attaching one here makes that testable locally.
-      attach:
-        - path: reference.duckdb
-          alias: reference
-
-    # The engine THEMIS actually targets. Running the demo project here as well as on
-    # DuckDB is what makes the rules exercised against Trino-compiled SQL rather than
-    # against a dialect that merely resembles it — the two disagree on decimal
-    # arithmetic, on how date_trunc parses, and on what a three-part name means.
+    # The engine of record, because it is the only one used at work: Trino, with most
+    # tables in Hive and snapshot history in Iceberg (`make up` starts both). Every
+    # default in THEMIS names `dev`, so building, reviewing and the corpus all measure
+    # here unless told otherwise.
     #
-    # The memory connector holds everything in the coordinator's heap, which is fine
-    # for a demo of this size and needs no object store to stand up.
-    trino:
+    # The two catalogs are also what makes a cross-catalog join real: a Hive mart joined
+    # to Iceberg reference data is the one case the engine cannot push down.
+    dev:
       type: trino
       method: none
       user: themis
       host: 127.0.0.1
       port: 8085
-      catalog: memory
+      catalog: hive
       schema: main
       threads: 4
       http_scheme: http
+
+    # An offline fallback for when no container can run. Not the engine anything is
+    # measured on: DuckDB divides integers into decimals, tolerates duplicate column
+    # names, has no partitions, and deletes any row it is asked to — each of which has
+    # hidden a defect Trino shows. Build with `--target duckdb`.
+    duckdb:
+      type: duckdb
+      path: themis_demo.duckdb
+      schema: main
+      threads: 4
+      attach:
+        - path: reference.duckdb
+          alias: reference

@@ -11,11 +11,11 @@ Runs from a throwaway worktree, so the caller's checkout is never touched:
 1. seed and build the demo project on Trino, cold;
 2. commit the fan-out mutation on top of HEAD;
 3. review that commit with execution, against Trino;
-4. assert the review is complete, the fan-out is reported and measured, the incremental
-   model the memory connector cannot rebuild is not blamed on the change, and no
-   schema the run built is left behind.
+4. assert the review is complete, the fan-out is reported and measured, every model
+   that built was found where dbt put it — Hive marts and Iceberg reference data alike —
+   and no schema the run built is left behind in either catalog.
 
-    docker run -d -p 8085:8080 trinodb/trino:latest
+    make up                     # Postgres, and Trino with Hive and Iceberg catalogs
     python scripts/trino_smoke.py
 
 Exits non-zero, naming what failed, if any check does.
@@ -36,7 +36,9 @@ from themis.eval.mutations import select  # noqa: E402
 from themis.logging import configure_logging  # noqa: E402
 from themis.pipeline import review  # noqa: E402
 
-TARGET = "trino"
+# The demo project's `dev` is Trino with Hive and Iceberg — the engine of record.
+TARGET = "dev"
+CATALOGS = ("hive", "iceberg")
 MUTATION = "fanout_drop_join_predicate"
 
 
@@ -49,13 +51,15 @@ def _run(args: list[str], cwd: Path) -> None:
 
 
 def _trino_schemas() -> set[str]:
+    """Every schema in every catalog a build writes to, qualified by catalog."""
     import trino
 
-    cursor = trino.dbapi.connect(
-        host="127.0.0.1", port=8085, user="themis", catalog="memory", schema="default"
-    ).cursor()
-    cursor.execute("select schema_name from memory.information_schema.schemata")
-    return {str(row[0]) for row in cursor.fetchall()}
+    cursor = trino.dbapi.connect(host="127.0.0.1", port=8085, user="themis").cursor()
+    schemas: set[str] = set()
+    for catalog in CATALOGS:
+        cursor.execute(f"select schema_name from {catalog}.information_schema.schemata")
+        schemas.update(f"{catalog}.{row[0]}" for row in cursor.fetchall())
+    return schemas
 
 
 def main() -> int:
@@ -105,7 +109,7 @@ def main() -> int:
                 run_llm=False,
                 use_manifest_cache=False,
             )
-            leftover = {s for s in _trino_schemas() - before if s.startswith("themis_")}
+            leftover = {s for s in _trino_schemas() - before if ".themis_" in s}
 
             rules = sorted({f.rule_id for f in result.findings})
             print(f"findings: {rules}")
@@ -126,12 +130,25 @@ def main() -> int:
                         "the fan-out did not measure: "
                         f"{revenue.rows_before} -> {revenue.rows_after}"
                     )
+                # Found where dbt put it, or it was never measured at all: a model that
+                # built on both sides and has no row count on either was looked up in the
+                # wrong place, which reads as "nothing moved".
+                lost = sorted(
+                    name
+                    for name, delta in result.execution.deltas.items()
+                    if delta.failed_revision is None
+                    and delta.rows_before is None
+                    and delta.rows_after is None
+                )
+                if lost:
+                    failures.append(f"built but not found where dbt put them: {lost}")
             if "F1001" not in rules:
                 failures.append("F1001 did not report the dropped join predicate")
             if "X0002" in rules:
-                # The memory connector cannot DELETE, so the incremental model fails its
-                # second pass on both revisions. That is not the change's doing.
-                failures.append("X0002 blamed the change for a build that fails on both sides")
+                # Hive overwrites partitions, so the incremental model's second pass builds
+                # on both revisions. A build failure here would be a regression in the
+                # demo project, not the change's doing.
+                failures.append("X0002 blamed the change for a build that should succeed")
             if leftover:
                 failures.append(f"schemas left behind: {sorted(leftover)}")
         finally:

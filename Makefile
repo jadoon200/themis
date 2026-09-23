@@ -24,9 +24,10 @@ test:
 
 check: lint typecheck test
 
-# --- demo project (DuckDB, no warehouse, no credentials) ---
+# --- demo project (Trino: Hive tables, Iceberg reference data; `make up` first) ---
 
-# Seed and build the synthetic financial dbt project.
+# Seed and build the synthetic financial dbt project on the engine of record. Offline,
+# with no container: `cd demo_project && dbt seed --target duckdb && dbt build --target duckdb`.
 demo-build:
 	cd demo_project && dbt seed && dbt build
 
@@ -62,9 +63,10 @@ eval:
 
 # --- infrastructure ---
 
-# Postgres via Docker Compose (host port 5436 — coexists with the siblings), then migrate.
+# Postgres (5436, clear of the siblings) and Trino (8085: Hive + Iceberg), then migrate.
+# `--wait` returns once both report healthy, so what follows never races a cold start.
 up:
-	docker compose up -d db && sleep 3 && $(MAKE) migrate
+	docker compose up -d --wait db trino && $(MAKE) migrate
 
 down:
 	docker compose down

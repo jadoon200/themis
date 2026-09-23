@@ -64,9 +64,9 @@ def eval_cmd(
         typer.Option(
             "--target",
             help=(
-                "dbt target every case builds on. 'dev' is DuckDB, which is cheap and is "
-                "not the engine THEMIS targets; 'trino' measures on Trino, where a defect "
-                "DuckDB cannot show becomes visible."
+                "dbt target every case builds on. The demo project's 'dev' is Trino, the "
+                "engine of record; 'duckdb' is an offline fallback, where several defects "
+                "Trino shows are invisible."
             ),
         ),
     ] = "dev",
@@ -399,7 +399,7 @@ def eval_cmd(
 
     if report.not_measurable:
         typer.echo("")
-        typer.echo(f"Says nothing on this engine ({target}), by declaration:")
+        typer.echo(f"Says nothing on this engine ({report.engine}), by declaration:")
         for outcome in report.not_measurable:
             typer.echo(f"  {outcome.mutation.id}: {outcome.declared_unmeasurable}")
 

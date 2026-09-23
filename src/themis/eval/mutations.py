@@ -309,8 +309,8 @@ _ALL_INJECTED: tuple[Mutation, ...] = (
         description="is_incremental() guard dropped, so every run reprocesses all history",
         relative_path=_INCREMENTAL,
         find="""    {% if is_incremental() %}
-    where posting_date >= (
-        select coalesce(max(posting_date), date '1900-01-01') - interval '3' day
+    where period_month >= (
+        select coalesce(max(period_month), date '1900-01-01') - interval '1' month
         from {{ this }}
     )
     {% endif %}
@@ -318,37 +318,64 @@ _ALL_INJECTED: tuple[Mutation, ...] = (
         replace="",
     ),
     Mutation(
-        id="incremental_strategy_to_append",
+        id="incremental_strategy_row_level_on_hive",
+        # Measured on Trino's Hive connector: the first run is a CREATE TABLE AS and
+        # succeeds, the second needs a row-level DELETE and is refused — "Modifying Hive
+        # table rows is only supported for transactional tables". This is how the change
+        # merges green and breaks the next day.
         kind=Kind.DEFECT,
         expects_family="F5",
-        description="Strategy switched to append, which never deduplicates",
+        description=(
+            "Strategy switched from partition overwrite to delete+insert on a Hive table, "
+            "which cannot delete rows: builds once, fails on every incremental run after"
+        ),
         relative_path=_INCREMENTAL,
-        find="    incremental_strategy='delete+insert',",
-        replace="    incremental_strategy='append',",
+        find="    incremental_strategy='append',\n",
+        replace="    incremental_strategy='delete+insert',\n    unique_key='entry_id',\n",
+        build_fails=(
+            "the incremental run needs a row-level DELETE, which Hive refuses — the "
+            "breakage is the defect"
+        ),
+        not_measurable_on={
+            "duckdb": "DuckDB deletes any row it is asked to; the refusal is Hive's",
+        },
     ),
     Mutation(
         id="incremental_lookback_narrowed",
         kind=Kind.LATENT,
         expects_family="F5",
-        description="Late-arrival window cut from 3 days to 1, silently dropping late rows",
+        description=(
+            "Late-arrival window cut from one period back to none, so an entry posted "
+            "after its period closed never reaches it"
+        ),
         relative_path=_INCREMENTAL,
-        find="- interval '3' day",
-        replace="- interval '1' day",
+        find="- interval '1' month",
+        replace="- interval '0' month",
     ),
     Mutation(
-        id="incremental_key_changed",
-        not_measurable_on={
-            "trino": (
-                "the incremental pass cannot run on Trino's memory connector, which "
-                "cannot modify rows, so a changed unique key moves nothing to measure"
-            )
-        },
+        id="incremental_filter_narrower_than_partition",
+        # Measured on Hive: 142 rows and 334.6M become 122 rows and 291.3M on the second
+        # run. The filter picks the last three days of a month, the overwrite replaces the
+        # whole month with them, and everything else in that month is gone. Nothing
+        # errors; the total is simply smaller.
         kind=Kind.DEFECT,
         expects_family="F5",
-        description="unique_key changed, so existing rows match differently",
+        description=(
+            "The incremental filter moved from whole periods to recent posting dates, so "
+            "each period it overwrites is replaced by a few days of it"
+        ),
         relative_path=_INCREMENTAL,
-        find="    unique_key='entry_id',",
-        replace="    unique_key='account_id',",
+        find=(
+            "    where period_month >= (\n"
+            "        select coalesce(max(period_month), date '1900-01-01') - interval '1' month"
+        ),
+        replace=(
+            "    where posting_date >= (\n"
+            "        select coalesce(max(posting_date), date '1900-01-01') - interval '3' day"
+        ),
+        not_measurable_on={
+            "duckdb": "DuckDB has no partitions to overwrite, so nothing is replaced",
+        },
     ),
     Mutation(
         id="column_removed_with_consumers",
@@ -384,18 +411,17 @@ _ALL_INJECTED: tuple[Mutation, ...] = (
     ),
     Mutation(
         id="hardcoded_table_reference",
+        # On Trino it resolves — to whatever table the last full build left in hive.main,
+        # which is the hazard: it builds, and reads data the DAG no longer orders.
         build_fails_on={
-            "trino": (
-                "a hardcoded DuckDB catalog name cannot resolve on Trino, which is the "
-                "hazard the rule exists for — read statically, not from a build"
-            )
+            "duckdb": "the Hive catalog the literal names does not exist on DuckDB",
         },
         kind=Kind.LATENT,
         expects_family="F6",
         description="ref() replaced by a literal table name, cutting the DAG edge",
         relative_path=_MART_REVENUE,
         find="from {{ ref('int_revenue_recognized') }}",
-        replace='from "themis_demo"."main"."int_revenue_recognized"',
+        replace="from hive.main.int_revenue_recognized",
     ),
     Mutation(
         id="cartesian_join_introduced",
@@ -433,8 +459,13 @@ _ALL_INJECTED: tuple[Mutation, ...] = (
     Mutation(
         id="approx_aggregate_in_regulatory",
         # It builds on Trino: approx_distinct is a Trino function, and this is the
-        # engine the rule was written for.
-        build_fails_on={"trino": None},
+        # engine the rule was written for. DuckDB has no such function.
+        build_fails_on={
+            "duckdb": (
+                "DuckDB has no approx_distinct; the Trino function is the case the rule "
+                "exists for, and a latent case is scored on detection, not on the build"
+            )
+        },
         kind=Kind.LATENT,
         expects_family="F7",
         description=(
@@ -444,10 +475,6 @@ _ALL_INJECTED: tuple[Mutation, ...] = (
         relative_path=_MART_SUMMARY,
         find="count(distinct contract_id)     as contract_count",
         replace="approx_distinct(contract_id)    as contract_count",
-        build_fails=(
-            "DuckDB has no approx_distinct; the Trino function is the case the rule exists "
-            "for, and a latent case is scored on detection, not on the build"
-        ),
     ),
     Mutation(
         id="grain_unprovable_on_regulatory",
@@ -478,7 +505,8 @@ _ALL_INJECTED: tuple[Mutation, ...] = (
     ),
     Mutation(
         id="select_star_introduced",
-        build_fails_on={"trino": "Trino rejects the duplicate column name that DuckDB tolerates"},
+        build_fails="Trino rejects the duplicate column name that DuckDB tolerates",
+        build_fails_on={"duckdb": None},
         kind=Kind.LATENT,
         expects_family="F6",
         description=(
@@ -491,12 +519,8 @@ _ALL_INJECTED: tuple[Mutation, ...] = (
     ),
     Mutation(
         id="cross_catalog_join_introduced",
-        not_measurable_on={
-            "trino": (
-                "the demo's second catalog is a DuckDB attachment; the Trino target has "
-                "only `memory`, so the join this writes is not across catalogs there"
-            )
-        },
+        # A Hive mart joined to Iceberg reference data on Trino; a second attached
+        # database on DuckDB. Across catalogs on both.
         kind=Kind.LATENT,
         expects_family="F8",
         description=(
@@ -581,12 +605,14 @@ _ALL_INJECTED: tuple[Mutation, ...] = (
     ),
     Mutation(
         id="partition_spec_changed",
-        not_measurable_on={
-            "trino": (
-                "the partition property is deliberately not sent to Trino — the memory "
-                "connector rejects an unknown table property — so there is no spec to change"
-            )
-        },
+        # On Hive the new partition key is not the last column, and the build is refused:
+        # HIVE_COLUMN_ORDER_MISMATCH. Measured, not assumed. At work the same edit fails
+        # the same way — unless the select is reordered too, which is when the layout
+        # hazard the description names takes over.
+        build_fails=(
+            "Hive requires partition keys to be the last columns, and posting_date is not"
+        ),
+        build_fails_on={"duckdb": None},
         kind=Kind.LATENT,
         expects_family="F5",
         description=(
@@ -599,7 +625,12 @@ _ALL_INJECTED: tuple[Mutation, ...] = (
     ),
     Mutation(
         id="partition_overwrite_hook_removed",
-        kind=Kind.LATENT,
+        # A defect on Hive, measured: without the overwrite setting the incremental run
+        # appends, and every reprocessed period is there twice — 142 rows and 334.6M
+        # become 189 and 445.7M. DuckDB has no partitions and no such setting, so there it
+        # changes nothing and can only be caught by reading the config.
+        kind=Kind.DEFECT,
+        kind_on={"duckdb": Kind.LATENT},
         expects_family="F5",
         description=(
             "The hook that made writes replace whole partitions is gone, so "
@@ -852,20 +883,17 @@ rates as (select * from fx),""",
         description_is_honest=False,
         # The kind depends on the engine, which is why it is declared per engine. Trino
         # divides whole numbers as whole numbers — `select 5/2` is 2 — while DuckDB
-        # returns 2.5. Measured on Trino with `themis eval --target trino`: nine models
-        # move and X fires alongside F8. On DuckDB the output is byte-identical, so
-        # declaring it a defect there scored "measured the opposite" — the oracle telling
-        # the truth about the warehouse it was given.
-        kind=Kind.LATENT,
-        kind_on={"trino": Kind.DEFECT},
+        # returns 2.5. Measured on Trino: nine models move and X fires alongside F8. On
+        # DuckDB the output is byte-identical, so declaring it a defect there scored
+        # "measured the opposite" — the oracle telling the truth about its warehouse.
+        kind=Kind.DEFECT,
+        kind_on={"duckdb": Kind.LATENT},
         expects_family="F8",
         description=(
             "The inner decimal cast leaves the minor-to-major macro, so the division "
             "happens between whole numbers. Trino truncates those and every ledger amount "
             "loses its fractional units — a plausible figure that is quietly short, on "
-            "every row. DuckDB returns 2.5 for 5/2 where Trino returns 2, so the demo "
-            "project cannot demonstrate it by building: caught by reading the SQL or not "
-            "at all, which is what latent means here"
+            "every row"
         ),
         relative_path=_MACRO_MONEY,
         find="cast(cast({{ expr }} as decimal(38, 6)) / 100 as decimal(38, 6))",

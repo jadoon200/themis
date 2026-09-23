@@ -217,6 +217,21 @@ def assert_clean(repo: Path) -> None:
         )
 
 
+def engine_of(project_dir: Path, target: str) -> str:
+    """The adapter a target builds on — `trino`, `duckdb` — read from the profile.
+
+    Per-engine declarations are keyed by this rather than by the target's name, because
+    a profile can call its outputs anything and the engine is what decides whether
+    `5/2` is 2 or 2.5. Trino when the profile cannot be read: it is the engine of record.
+    """
+    from themis.execute.profiles import ProfileError, read_profile
+
+    try:
+        return str(read_profile(project_dir, target=target).get("type") or "trino").lower()
+    except (ProfileError, OSError, ValueError):
+        return "trino"
+
+
 def run_mutation(
     project_dir: Path,
     mutation: Mutation,
@@ -230,10 +245,12 @@ def run_mutation(
     # verdicts as with it off.
     narrow_execution: bool = False,
     variant: str | None = None,
-    # The dbt target every build in this case uses. The default measures on DuckDB, which
-    # is cheap; `trino` measures on the engine THEMIS actually targets, where decimal
-    # arithmetic, date_trunc and three-part names all differ.
+    # The dbt target every build in this case uses. The demo project's `dev` is Trino,
+    # the engine of record; `duckdb` is the offline fallback, where integer division,
+    # duplicate column names and deletes all behave differently.
     target: str = "dev",
+    # The adapter that target builds on. Resolved from the profile when not given.
+    engine: str | None = None,
 ) -> MutationOutcome:
     """Apply one mutation in an isolated worktree, review it, and discard the worktree.
 
@@ -246,6 +263,7 @@ def run_mutation(
     Working in a throwaway worktree removes the possibility rather than guarding
     against it.
     """
+    engine = engine or engine_of(project_dir, target)
     repo = git.repo_root(project_dir)
     relative = project_dir.resolve().relative_to(repo.resolve())
     base_sha = _git(repo, "rev-parse", base_ref).strip()
@@ -297,7 +315,7 @@ def run_mutation(
 
             # Scored as what it is on the engine it was measured on: a case can be a
             # defect on Trino and produce byte-identical output on DuckDB.
-            mutation = replace(mutation, kind=mutation.kind_for(target))
+            mutation = replace(mutation, kind=mutation.kind_for(engine))
             result = run_review(
                 mutated_project,
                 base=base_sha,
@@ -343,7 +361,7 @@ def run_mutation(
         execution and execution.ran and any(d.is_material for d in execution.deltas.values())
     )
 
-    invalid = _unscorable(mutation, result, use_execution=use_execution, target=target)
+    invalid = _unscorable(mutation, result, use_execution=use_execution, engine=engine)
     if invalid is not None:
         # Recorded as an error rather than a result. Each of these used to score: a
         # review with twenty rules skipped counted as a detection when the safety net
@@ -397,7 +415,7 @@ def run_mutation(
 
 
 def _unscorable(
-    mutation: Mutation, result: ReviewResult, *, use_execution: bool, target: str = "dev"
+    mutation: Mutation, result: ReviewResult, *, use_execution: bool, engine: str = "trino"
 ) -> str | None:
     """Why a review cannot be scored against its mutation, or None when it can.
 
@@ -423,7 +441,7 @@ def _unscorable(
     base_failures = [d for d in unbuilt.values() if d.failed_revision in ("base", "both")]
     if base_failures:
         return f"the base revision does not build: {base_failures[0].build_error}"
-    build_fails = mutation.build_fails_for(target)
+    build_fails = mutation.build_fails_for(engine)
     if unbuilt and build_fails is None:
         first = next(iter(unbuilt.values()))
         return (
@@ -438,6 +456,8 @@ def _unscorable(
 @dataclass
 class EvalReport:
     outcomes: list[MutationOutcome]
+    # The adapter every case was measured on. A corpus result is a claim about a warehouse.
+    engine: str = "trino"
 
     @property
     def usable(self) -> list[MutationOutcome]:
@@ -713,11 +733,12 @@ def run_corpus(
 ) -> EvalReport:
     if not allow_dirty:
         assert_clean(git.repo_root(project_dir))
+    engine = engine_of(project_dir, target)
     outcomes: list[MutationOutcome] = []
     for index, mutation in enumerate(mutations, start=1):
-        declared = mutation.not_measurable_on.get(target)
+        declared = mutation.not_measurable_on.get(engine)
         if declared is not None:
-            log.info("eval.not_measurable", id=mutation.id, target=target, reason=declared)
+            log.info("eval.not_measurable", id=mutation.id, engine=engine, reason=declared)
             outcomes.append(
                 MutationOutcome(
                     mutation=mutation,
@@ -743,6 +764,7 @@ def run_corpus(
                 narrow_execution=narrow_execution,
                 variant=variant,
                 target=target,
+                engine=engine,
             )
         )
-    return EvalReport(outcomes=outcomes)
+    return EvalReport(outcomes=outcomes, engine=engine)

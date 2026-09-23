@@ -1,15 +1,15 @@
 {{ config(
     materialized='table',
-    database=('reference' if target.type == 'duckdb' else target.database),
+    database=('reference' if target.type == 'duckdb' else 'iceberg'),
     schema='main'
 ) }}
 
 -- Entity reference data.
 --
--- On DuckDB this lands in a second attached catalog so a cross-catalog join is real and
--- measurable. Trino's memory connector is a single catalog, so there it sits alongside
--- everything else — the federated case is exercised on DuckDB, and the dialect case on
--- Trino.
+-- Kept in Iceberg, where slowly-changing reference data is headed at work, while the
+-- marts are Hive. A mart that joins it therefore joins across catalogs — the one join
+-- Trino cannot push down, so both sides are read in full. On DuckDB it lands in a second
+-- attached database, which is the nearest thing that engine has.
 
 select
     entity_code,
