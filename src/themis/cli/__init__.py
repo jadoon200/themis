@@ -5,7 +5,7 @@ and the eval harness all exercise exactly the same code path. Commands live in m
 purpose; importing them here registers them on the one Typer app, in help order.
 """
 
-from themis.cli import agent, evaluate, explore, review, setup, store  # noqa: F401
+from themis.cli import agent, evaluate, explore, review, serve, setup, store  # noqa: F401
 from themis.cli._app import app
 from themis.cli._shared import EXIT_INCOMPLETE, _gate_exit_code, _review_exit_code
 

@@ -11,8 +11,11 @@ from __future__ import annotations
 import secrets
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
+from typing import Any
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
+from fastapi.responses import RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
@@ -28,10 +31,18 @@ from themis.api.schemas import (
 )
 from themis.config import Settings, load_settings
 from themis.db.base import get_engine, session_scope
-from themis.db.models import Finding, GrainRecord, ModelDelta, ReviewRun, RunSource, utcnow
-from themis.db.store import dismissal_rate, enqueue_run, prior_occurrences
+from themis.db.models import Finding, GrainRecord, ModelDelta, ReviewRun, RunSource
+from themis.db.store import (
+    dismissal_rate,
+    enqueue_run,
+    prior_occurrences,
+    record_disposition,
+)
 from themis.logging import get_logger
 from themis.projects import ProjectNotAllowedError, validate_project_ref
+from themis.web.routes import HERE as WEB_ROOT
+from themis.web.routes import router as web_router
+from themis.web.routes import security_headers as web_security_headers
 
 log = get_logger(__name__)
 
@@ -55,6 +66,28 @@ app = FastAPI(
     description="Automated review of dbt model changes for financial SQL.",
     lifespan=lifespan,
 )
+
+# The pages share the process and the database with the API, not a second service: one
+# thing to deploy behind the organisation's sign-in proxy, and one set of queries. Static
+# files are the pages' own stylesheet and script — nothing fetched from anywhere else.
+app.include_router(web_router)
+app.mount("/ui/static", StaticFiles(directory=str(WEB_ROOT / "static")), name="ui-static")
+
+
+@app.get("/", include_in_schema=False)
+def _root() -> RedirectResponse:
+    """The address people will type is the bare host; send them to the pages."""
+    return RedirectResponse("/ui", status_code=307)
+
+
+@app.middleware("http")
+async def _ui_security_headers(request: Request, call_next: Any) -> Any:
+    """The pages' content-security policy and friends. The JSON API is left as it was."""
+    response = await call_next(request)
+    if request.url.path.startswith("/ui"):
+        for name, value in web_security_headers(load_settings()).items():
+            response.headers.setdefault(name, value)
+    return response
 
 
 def get_session() -> Iterator[Session]:
@@ -252,10 +285,15 @@ def set_disposition(
     row = session.get(Finding, finding_id)
     if row is None:
         raise HTTPException(status_code=404, detail=f"no finding {finding_id}")
-    row.disposition = request.disposition
-    row.disposition_note = request.note
-    row.disposition_at = utcnow()
-    session.flush()
+    # One record whichever way a decision arrives: the pages and this endpoint both append
+    # to it, and a caller that does not say who it is acting for is recorded as the API.
+    record_disposition(
+        session,
+        row,
+        disposition=request.disposition,
+        note=request.note,
+        actor=(request.by or "api").strip()[:255] or "api",
+    )
     return _finding_out(session, row)
 
 

@@ -179,6 +179,21 @@ class Settings(BaseSettings):
     # anyone holding a list of likely names can hash them and match. Keep it private.
     redact_salt: str = ""
 
+    # --- the web interface ------------------------------------------------------
+    # What the pages call themselves. Deliberately generic by default: this repository is
+    # public, and an organisation's name or logo belongs in its own deployment's settings,
+    # never in the code.
+    ui_brand_name: str = "THEMIS"
+    ui_brand_subtitle: str = "dbt change review"
+    # A logo image URL served from inside the deployment. None shows the name as text.
+    ui_logo_url: str | None = None
+    # The header an authenticating proxy sets to the signed-in user, e.g. X-Remote-User.
+    # When set, a decision recorded through the pages takes its author from this header
+    # and is refused without it. When unset — a demo — the author is the name typed on the
+    # page, and the pages say so, because a decision record that anyone can sign as anyone
+    # is not an audit trail and should never be mistaken for one.
+    ui_trusted_user_header: str | None = None
+
     # --- learning from what reviewers decided ---------------------------------
     # How many past judgements on the same rule a specialist is shown. 0 turns the
     # retrieval off entirely and leaves the ranking's use of dispositions untouched —

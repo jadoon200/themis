@@ -1,0 +1,58 @@
+{% macro icon(name, cls="") -%}
+  <svg class="icon {{ cls }}" aria-hidden="true" focusable="false"><use href="#i-{{ name }}"/></svg>
+{%- endmacro %}
+
+{% macro sev_icon(value) -%}
+  {{ icon({"critical": "octagon", "high": "alert"}.get(value, "info"), "sm") }}
+{%- endmacro %}
+
+{% macro severity(value) -%}
+  <span class="pill sev-{{ value }}">{{ value }}</span>
+{%- endmacro %}
+
+{% macro verdict(v, attrs="") -%}
+  <span class="pill verdict verdict-{{ v.key }}" title="{{ v.reason }}" {{ attrs }}>
+    {{- icon({"blocking": "octagon", "review": "clock"}.get(v.key, "check-circle"), "xs") }} {{ v.label -}}
+  </span>
+{%- endmacro %}
+
+{% macro counts(severity_counts) -%}
+  <span class="counts">
+    {%- for sev in ["critical", "high", "medium", "low"] %}
+      {%- if severity_counts[sev] %}
+        <span class="pill count sev-{{ sev }}" title="{{ severity_counts[sev] }} {{ sev }}">{{ severity_counts[sev] }}</span>
+      {%- endif %}
+    {%- endfor %}
+    {%- if not (severity_counts["critical"] or severity_counts["high"] or severity_counts["medium"] or severity_counts["low"]) %}
+      <span class="faint small">none</span>
+    {%- endif -%}
+  </span>
+{%- endmacro %}
+
+{% macro decision(value) -%}
+  <span class="pill d-{{ value or 'open' }}">{{ value or "open" }}</span>
+{%- endmacro %}
+
+{% macro pr_label(row) -%}
+  {%- if row.number %}#{{ row.number }}{% else %}{{ row.run_key[:8] }}{% endif -%}
+{%- endmacro %}
+
+{% macro avatar(name, cls="") -%}
+  <span class="avatar {{ cls }}" aria-hidden="true">{{ name | initials }}</span>
+{%- endmacro %}
+
+{% macro delta(change, suffix) -%}
+  {%- if change -%}
+    <span class="delta {{ 'up' if change.direction == 'up' }}" title="against the {{ suffix }} before">
+      {%- if change.direction == "up" %}+{% endif %}{{ change.diff }}
+    </span>
+  {%- endif -%}
+{%- endmacro %}
+
+{% macro empty(icon_name, heading, text) -%}
+  <div class="empty">
+    <div class="empty-icon">{{ icon(icon_name, "lg") }}</div>
+    <h3>{{ heading }}</h3>
+    <p>{{ text }}</p>
+  </div>
+{%- endmacro %}

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import secrets
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -332,8 +333,15 @@ def investigate(
     settings: Settings,
     tools: dict[str, Tool] | None = None,
     max_steps: int = 6,
+    on_step: Callable[[Step], None] | None = None,
 ) -> AgentAnswer:
-    """Answer a question by choosing tools, or refuse with the reason."""
+    """Answer a question by choosing tools, or refuse with the reason.
+
+    ``on_step`` is called with each tool result as it arrives. A local model takes several
+    seconds a step and an answer can take twenty; a page that shows nothing for that long
+    reads as broken, and one that shows each tool being consulted reads as working — which
+    it is. The callback only observes: nothing it does can change what the agent does next.
+    """
     session = _Session(question, workspace, provider, settings, tools or registry())
     outcome = session.outcome
     try:
@@ -342,7 +350,13 @@ def investigate(
             if choice == ANSWER:
                 break
             tool = session.tools[choice]
-            if not session.execute(tool, session.arguments(tool)):
+            keep_going = session.execute(tool, session.arguments(tool))
+            if on_step is not None and session.steps:
+                try:
+                    on_step(session.steps[-1])
+                except Exception as exc:  # an observer must never break the investigation
+                    log.warning("agent.on_step_failed", error=str(exc)[:200])
+            if not keep_going:
                 break
 
         payload, problems = session.answer()

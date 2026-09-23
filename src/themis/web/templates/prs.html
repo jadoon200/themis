@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m %}
+{% block title %}Pull requests{% endblock %}
+{% block crumbs %}<span class="here">Pull requests</span>{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <div class="eyebrow">{{ m.icon("pr", "xs") }} Every reviewed change</div>
+    <h1>Pull requests</h1>
+    <div class="sub">Newest first. The verdict is the merge gate's: blocking means an open finding at or above <strong>{{ threshold }}</strong>.</div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="toolbar">
+    <label class="input-icon">
+      {{ m.icon("search", "sm") }}
+      <input class="input" type="search" data-filter-input placeholder="Filter by title, number, author or branch" aria-label="Filter pull requests">
+    </label>
+    <div class="segmented" role="group" aria-label="Verdict">
+      <button type="button" data-filter-group="" aria-pressed="true">All <span class="count">{{ rows | length }}</span></button>
+      {% for key, label in [("blocking", "Blocking"), ("review", "Needs review"), ("clear", "Clear")] %}
+        <button type="button" data-filter-group="{{ key }}" aria-pressed="false">{{ label }} <span class="count">{{ rows | selectattr("verdict.key", "equalto", key) | list | length }}</span></button>
+      {% endfor %}
+    </div>
+    <span class="end" data-shown>{{ rows | length }} shown</span>
+  </div>
+  {% with compact=false %}{% include "_pr_table.html" %}{% endwith %}
+</div>
+{% endblock %}

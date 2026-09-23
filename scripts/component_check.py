@@ -36,6 +36,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 REPO = Path(__file__).resolve().parents[1]
 PROJECT = REPO / "demo_project"
@@ -1129,10 +1130,10 @@ def check_learning_loop(
     )
 
 
-def check_service(shas: dict[str, str], tmp: Path) -> None:
-    print("\nservice: Postgres, API, worker")
+def check_service(shas: dict[str, str], tmp: Path, *, ollama: bool = False) -> None:
+    print("\nservice: Postgres, API, worker, pages")
     if not port_open(5436):
-        for name in ("migrations on Postgres", "API", "worker"):
+        for name in ("migrations on Postgres", "API", "worker", "pages"):
             skip(name, "no Postgres on 5436 (make up)")
         return
 
@@ -1297,12 +1298,81 @@ def check_service(shas: dict[str, str], tmp: Path) -> None:
             history.status_code == 200 and history.json(),
             history.text[-200:],
         )
+        check_pages(base, key, finding, ollama=ollama)
     finally:
         if api is not None:
             api.terminate()
             api.wait(timeout=10)
         with admin.connect() as conn:
             conn.execute(text(f"drop database if exists {PG_CHECK_DB} with (force)"))
+
+
+def check_pages(base: str, key: str, finding: dict[str, Any] | None, *, ollama: bool) -> None:
+    """The pages, against the review the worker just stored on real Postgres.
+
+    What a unit test cannot see: that a review stored by a real worker keeps the snapshots
+    the chat needs, that the API's decision and the page's decision land in one record, and
+    that the chat streams from a real model.
+    """
+    import httpx
+
+    overview = httpx.get(f"{base}/ui", timeout=10)
+    record(
+        "pages: overview renders under its security policy",
+        overview.status_code == 200
+        and "script-src 'self'" in overview.headers.get("content-security-policy", ""),
+        f"status {overview.status_code}",
+    )
+    page = httpx.get(f"{base}/ui/pr/{key}", timeout=10)
+    record(
+        "pages: the stored review renders, with its snapshots for the chat",
+        page.status_code == 200
+        and "F1001" in page.text
+        and "stored without its project snapshots" not in page.text,
+        f"status {page.status_code}",
+    )
+    record(
+        "pages: the API's decision is in the record, authored as api",
+        finding is not None and ">api<" in httpx.get(f"{base}/ui/decisions", timeout=10).text,
+    )
+    if finding is not None:
+        refused = httpx.post(
+            f"{base}/ui/findings/{finding['id']}/decision",
+            json={"disposition": "fixed"},
+            cookies={"themis_user": "check"},
+            timeout=5,
+        )
+        decided = httpx.post(
+            f"{base}/ui/findings/{finding['id']}/decision",
+            json={"disposition": "fixed", "note": "component check"},
+            cookies={"themis_user": "check"},
+            headers={"X-Themis-UI": "1"},
+            timeout=5,
+        )
+        record(
+            "pages: a decision needs the page's header, then lands with its author",
+            refused.status_code == 403
+            and decided.status_code == 200
+            and decided.json().get("actor") == "check",
+            f"{refused.status_code} {decided.text[-160:]}",
+        )
+    if not ollama:
+        skip("pages: the chat streams a grounded answer from the local model", "no Ollama")
+        return
+    with httpx.stream(
+        "POST",
+        f"{base}/ui/pr/{key}/chat",
+        json={"question": "What does rule F1001 check for?"},
+        headers={"X-Themis-UI": "1"},
+        timeout=httpx.Timeout(10, read=320),
+    ) as stream:
+        events = [json.loads(line[6:]) for line in stream.iter_lines() if line.startswith("data: ")]
+    kinds = [e.get("type") for e in events]
+    record(
+        "pages: the chat streams a grounded answer from the local model",
+        "step" in kinds and kinds[-1] in ("answer", "refusal"),
+        f"events {kinds} last {events[-1] if events else None}",
+    )
 
 
 def check_trino() -> None:
@@ -1394,7 +1464,7 @@ def main() -> int:
         check_volatile_values(shas, tmp, env)
         check_agent_and_setup(shas, tmp, env, ollama=ollama and not args.quick)
         check_learning_loop(shas, tmp, env, ollama=ollama and not args.quick)
-        check_service(shas, tmp)
+        check_service(shas, tmp, ollama=ollama and not args.quick)
         if args.quick:
             skip("Trino", "--quick")
             skip("corpus harness", "--quick")

@@ -1,0 +1,272 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m %}
+{% set s = pr.summary %}
+{% set run = pr.run %}
+{% block title %}{{ m.pr_label(s) }} {{ s.title | replace("`", "") }}{% endblock %}
+{% block crumbs %}
+  <a href="/ui/prs">Pull requests</a>{{ m.icon("chevron-right", "xs") }}<span class="here">{{ m.pr_label(s) }}</span>
+{% endblock %}
+{% block content %}
+
+<section class="hero" aria-label="Pull request summary">
+  <div class="hero-grid">
+    <div>
+      <div class="hero-top">
+        <span class="pr-chip">{{ m.pr_label(s) }}</span>
+        {% if s.executed %}<span class="pill tag-measured" title="both revisions were built and their results compared">{{ m.icon("scale", "xs") }} measured</span>{% endif %}
+        {% if s.restates %}<span class="pill tag-restates" title="a measured change to a period already reported">restates a reported period</span>{% endif %}
+      </div>
+      <h1>{{ s.title | code_spans }}</h1>
+      <div class="hero-meta">
+        {% if s.author %}<span>{{ m.avatar(s.author, "sm") }}<strong>{{ s.author }}</strong></span>{% endif %}
+        <span>{{ m.icon("branch", "sm") }}<code>{{ s.head }}</code> → <code>{{ s.base }}</code></span>
+        <span title="{{ s.reviewed_at.strftime('%Y-%m-%d %H:%M UTC') }}">{{ m.icon("clock", "sm") }}reviewed {{ s.reviewed_at | ago }}</span>
+        <span>{{ m.icon("layers", "sm") }}{{ s.models_reviewed }} model{{ 's' if s.models_reviewed != 1 }} changed</span>
+        {% if run.pr_url %}<span>{{ m.icon("external", "sm") }}<a class="hero-link" href="{{ run.pr_url }}" rel="noopener noreferrer" target="_blank">Open in Bitbucket</a></span>{% endif %}
+      </div>
+      {% if run.pr_description %}
+        <div class="quote"><strong>Author's description.</strong> {{ run.pr_description }}</div>
+      {% endif %}
+    </div>
+
+    <div class="verdict-card">
+      <div class="v-label">Merge gate</div>
+      <div>{{ m.verdict(s.verdict, 'data-verdict') }}</div>
+      <div class="v-reason" data-verdict-reason>{{ s.verdict.reason }}</div>
+      {% if pr.finding_count %}
+        <div class="progress-label"><span>Decided</span><span class="num" data-progress-label>{{ s.decided }} of {{ s.finding_count }}</span></div>
+        <div data-progress>{{ meter(s.decided / s.finding_count) }}</div>
+      {% endif %}
+      <div>{{ m.counts(s.severity_counts) }}</div>
+    </div>
+  </div>
+</section>
+
+<section class="card pipeline" aria-label="What ran">
+  <div class="step">
+    <span class="step-icon {{ 'warn' if run.degraded_reason }}">{{ m.icon("alert" if run.degraded_reason else "code", "sm") }}</span>
+    <div class="list-main"><div class="step-title">Compiled</div><div class="step-sub" title="{{ run.degraded_reason or '' }}">{{ run.degraded_reason or "both revisions, macros expanded" }}</div></div>
+  </div>
+  <div class="step">
+    <span class="step-icon">{{ m.icon("flag", "sm") }}</span>
+    <div class="list-main"><div class="step-title">Analysed</div><div class="step-sub">{{ s.models_reviewed }} model{{ 's' if s.models_reviewed != 1 }}, {{ pr.finding_count }} finding{{ 's' if pr.finding_count != 1 }}</div></div>
+  </div>
+  <div class="step">
+    <span class="step-icon {{ '' if s.executed else 'off' }}">{{ m.icon("database", "sm") }}</span>
+    <div class="list-main"><div class="step-title">Executed</div><div class="step-sub">{% if s.executed %}built both, {{ pr.deltas | length }} model{{ 's' if pr.deltas | length != 1 }} measured{% else %}not requested{% endif %}</div></div>
+  </div>
+  <div class="step">
+    <span class="step-icon {{ '' if run.llm_requested else 'off' }}">{{ m.icon("sparkles", "sm") }}</span>
+    <div class="list-main"><div class="step-title">Model review</div><div class="step-sub">{% if run.llm_requested %}specialists judged the findings{% else %}rules only{% endif %}</div></div>
+  </div>
+</section>
+
+<div class="pr-layout">
+  <div class="card">
+    <div class="tabs" role="tablist" aria-label="Review detail">
+      <button class="tab" role="tab" type="button" id="tab-findings" aria-controls="panel-findings" aria-selected="true">{{ m.icon("alert", "sm") }} Findings <span class="n">{{ pr.finding_count }}</span></button>
+      <button class="tab" role="tab" type="button" id="tab-measured" aria-controls="panel-measured" aria-selected="false" tabindex="-1">{{ m.icon("scale", "sm") }} Measured <span class="n">{{ pr.deltas | length }}</span></button>
+      <button class="tab" role="tab" type="button" id="tab-activity" aria-controls="panel-activity" aria-selected="false" tabindex="-1">{{ m.icon("activity", "sm") }} Decisions <span class="n" data-event-count>{{ pr.events | length }}</span></button>
+    </div>
+
+    <div role="tabpanel" id="panel-findings" aria-labelledby="tab-findings">
+      {% if pr.groups %}
+        {% set open_n = s.open_count %}
+        <div class="toolbar">
+          <div class="segmented" role="group" aria-label="Show">
+            <button type="button" data-finding-filter="all" aria-pressed="true">All <span class="count">{{ pr.finding_count }}</span></button>
+            <button type="button" data-finding-filter="open" aria-pressed="false">Open <span class="count" data-open-count>{{ open_n }}</span></button>
+            <button type="button" data-finding-filter="decided" aria-pressed="false">Decided <span class="count" data-decided-count>{{ pr.finding_count - open_n }}</span></button>
+          </div>
+          {% if s.executed %}<label class="toggle"><input type="checkbox" data-measured-only> Measured only</label>{% endif %}
+          <span class="end"><button class="btn ghost sm" type="button" data-expand-all>{{ m.icon("expand", "xs") }} Expand all</button></span>
+        </div>
+        <div class="findings" data-findings>
+          {% for sev, members in pr.groups %}
+            {% for f in members %}
+              {% set row = f.row %}
+              {% set expanded = row.id == pr.focus_id %}
+              <article class="finding s-{{ sev }} {{ 'expanded' if expanded }}" id="finding-{{ row.id }}"
+                       data-finding="{{ row.id }}" data-sev="{{ sev }}" data-open="{{ '1' if f.open else '0' }}" data-measured="{{ '1' if f.measured else '0' }}">
+                <button class="finding-head" type="button" aria-expanded="{{ 'true' if expanded else 'false' }}" aria-controls="finding-body-{{ row.id }}">
+                  <span class="sev-ico">{{ m.sev_icon(sev) }}</span>
+                  <span class="f-main">
+                    <span class="f-title">{{ row.title | code_spans }}</span>
+                    <span class="f-meta">
+                      <span class="rule">{{ row.rule_id }}</span>
+                      {{ m.severity(sev) }}
+                      <span class="model">{{ row.model_name }}</span>
+                      {% if f.measured %}<span class="pill tag-measured">measured</span>{% else %}<span>{{ row.confidence }}</span>{% endif %}
+                      {% if row.rule_id == "X0004" %}<span class="pill tag-restates">restates</span>{% endif %}
+                      <span data-decision-pill>{{ m.decision(row.disposition) }}</span>
+                    </span>
+                  </span>
+                  <span class="chev">{{ m.icon("chevron-down", "sm") }}</span>
+                </button>
+                <div class="finding-body" id="finding-body-{{ row.id }}">
+                  {% if row.evidence_note %}
+                    <div class="section-label">Evidence</div>
+                    <div class="prose">{{ row.evidence_note }}</div>
+                  {% endif %}
+                  {% if row.sql_after %}
+                    <div class="code"><span data-copy-src>{{ row.sql_after }}</span><button class="btn ghost sm icon-only copy" type="button" data-copy aria-label="Copy SQL">{{ m.icon("copy", "xs") }}</button></div>
+                  {% endif %}
+                  <div class="section-label">Why it matters</div>
+                  <div class="prose">{{ row.consequence }}</div>
+                  {% if row.suggestion %}
+                    <div class="callout">{{ m.icon("check-circle", "sm") }}<div><strong>Suggested.</strong> {{ row.suggestion }}</div></div>
+                  {% endif %}
+                  {% if row.llm_rationale %}
+                    <div class="section-label">Reviewer model's note</div>
+                    <div class="prose">{{ row.llm_rationale }}</div>
+                  {% endif %}
+                  {% if row.blast_radius %}
+                    <div class="section-label">Reaches {{ row.blast_radius | length }} downstream model{{ 's' if row.blast_radius | length != 1 }}</div>
+                    <div class="chips">
+                      {% for name in row.blast_radius[:12] %}<span class="chip-model">{{ name }}</span>{% endfor %}
+                      {% if row.blast_radius | length > 12 %}<span class="chip-model">+{{ row.blast_radius | length - 12 }} more</span>{% endif %}
+                    </div>
+                  {% endif %}
+                  {% if row.file_path %}
+                    <div class="section-label">Where</div>
+                    <div class="prose mono small">{{ row.file_path }}{% if row.line %}:{{ row.line }}{% endif %}</div>
+                  {% endif %}
+
+                  <div class="decide">
+                    <div class="decide-row">
+                      <div class="decide-status" data-status>
+                        {% if row.disposition %}
+                          {{ m.decision(row.disposition) }} by <strong>{{ row.disposition_by or "unknown" }}</strong> {{ row.disposition_at | ago }}
+                        {% else %}
+                          No decision yet
+                        {% endif %}
+                      </div>
+                      <div class="decide-actions" role="group" aria-label="Decide">
+                        <button class="btn sm" type="button" data-decide="accepted" aria-pressed="false" title="A real problem, knowingly taken on">Accept risk</button>
+                        <button class="btn sm" type="button" data-decide="dismissed" aria-pressed="false" title="Not a problem">Dismiss</button>
+                        <button class="btn sm" type="button" data-decide="fixed" aria-pressed="false" title="Fixed in a later commit">Fixed</button>
+                        <button class="btn sm" type="button" data-decide="deferred" aria-pressed="false" title="Decide later; stays open">Defer</button>
+                      </div>
+                    </div>
+                    <form class="composer-inline" data-decision-form>
+                      <input class="input" type="text" maxlength="2000" data-note placeholder="Why? Recorded with your decision" aria-label="Reason for the decision">
+                      <button class="btn primary sm" type="submit">{{ m.icon("check", "xs") }} Record decision</button>
+                      <button class="btn ghost sm" type="button" data-cancel>Cancel</button>
+                    </form>
+                    <div class="history" data-history>
+                      {% for e in f.events | reverse %}
+                        <div class="history-item">
+                          {{ m.avatar(e.actor, "sm") }}
+                          <div><strong>{{ e.actor }}</strong> {{ m.decision(e.disposition) }} <span title="{{ e.at }}">{{ e.at | ago }}</span>{% if e.note %}<div class="note">“{{ e.note }}”</div>{% endif %}</div>
+                        </div>
+                      {% endfor %}
+                    </div>
+                  </div>
+                </div>
+              </article>
+            {% endfor %}
+          {% endfor %}
+          <div class="empty" data-findings-empty hidden><p>No findings match that filter.</p></div>
+        </div>
+      {% else %}
+        {{ m.empty("check-circle", "No findings", "Every check that applied ran and raised nothing.") }}
+      {% endif %}
+    </div>
+
+    <div role="tabpanel" id="panel-measured" aria-labelledby="tab-measured" hidden>
+      {% if pr.deltas %}
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Model</th><th class="right">Rows</th><th>Totals that moved</th><th>Rows paired on the key</th></tr></thead>
+            <tbody>
+              {% for d in pr.deltas %}
+                <tr>
+                  <td class="mono small">
+                    {{ d.model }}
+                    {% if d.build_error %}<div><span class="pill sev-critical">did not build</span></div>
+                    {% elif d.material %}<div><span class="pill sev-high">moved</span></div>{% endif %}
+                  </td>
+                  <td class="right num small nowrap">
+                    {% if d.rows_before is not none and d.rows_after is not none %}
+                      {{ "{:,}".format(d.rows_before) }} → <strong>{{ "{:,}".format(d.rows_after) }}</strong>
+                    {% else %}<span class="faint">—</span>{% endif %}
+                  </td>
+                  <td class="small">
+                    {% for col, pair in d.moved.items() %}
+                      <div class="nowrap"><span class="mono">{{ col }}</span> <span class="num">{{ "{:,.2f}".format(pair[0] or 0) }} → <strong>{{ "{:,.2f}".format(pair[1] or 0) }}</strong></span></div>
+                    {% else %}<span class="faint">none</span>{% endfor %}
+                  </td>
+                  <td class="small">
+                    {% if d.keyed %}
+                      <div><strong class="num">{{ d.keyed.rows_changed }}</strong> changed on <span class="mono">{{ d.keyed.key | join(", ") }}</span></div>
+                      {% if d.keyed.rows_added or d.keyed.rows_removed %}<div class="muted">{{ d.keyed.rows_added }} added, {{ d.keyed.rows_removed }} removed</div>{% endif %}
+                      {% if d.keyed.prior_period_rows %}<div class="chips"><span class="pill tag-restates">{{ d.keyed.prior_period_rows }} in periods before {{ d.keyed.latest_period }}</span></div>{% endif %}
+                    {% else %}<span class="faint">not paired</span>{% endif %}
+                  </td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      {% else %}
+        {{ m.empty("database", "Nothing was measured", "This review ran without --execute, so both revisions were not built and compared.") }}
+      {% endif %}
+    </div>
+
+    <div role="tabpanel" id="panel-activity" aria-labelledby="tab-activity" hidden>
+      <div class="feed" data-event-feed>
+        {% for e in pr.events %}
+          <a class="feed-item" href="#finding-{{ e.finding_id }}" data-jump="{{ e.finding_id }}">
+            <span class="feed-icon t-{{ e.disposition }}">{{ m.icon("shield", "sm") }}</span>
+            <div class="feed-text">
+              <div><strong>{{ e.actor }}</strong> {{ e.disposition }} <span class="mono">{{ e.rule_id }}</span> on <span class="mono">{{ e.model_name }}</span></div>
+              <div class="feed-detail">{{ e.note or (e.title | replace("`", "")) }}</div>
+            </div>
+            <span class="feed-when">{{ e.at | ago }}</span>
+          </a>
+        {% endfor %}
+      </div>
+      {% if not pr.events %}
+        <div data-event-empty>{{ m.empty("shield", "No decisions yet", "Decisions on this pull request's findings will be listed here, newest first.") }}</div>
+      {% endif %}
+    </div>
+  </div>
+
+  <aside class="card assistant" data-chat="{{ s.run_key }}" aria-label="Review assistant">
+    <div class="assistant-head">
+      <div class="row">
+        <span class="bot-avatar">{{ m.icon("sparkles") }}</span>
+        <div>
+          <h2>Review assistant</h2>
+          <p>Answers from this review's findings, lineage and SQL</p>
+        </div>
+        <span class="status-pill" data-model-status data-state="unknown"><span class="led"></span><span class="label" data-model-label>Model</span></span>
+      </div>
+    </div>
+    <div class="thread" data-thread aria-live="polite">
+      <div class="msg bot">
+        <span class="bot-avatar sm">{{ m.icon("sparkles") }}</span>
+        <div class="bubble">
+          {% if pr.chat_available %}
+            Ask me about {{ m.pr_label(s) }}. I look things up with THEMIS's own tools, and every claim I make quotes what they returned. If I can't ground an answer, I'll say so rather than guess.
+            {% if pr.suggestions %}
+              <div class="suggestions">
+                {% for q in pr.suggestions %}<button class="suggestion" type="button" data-suggest>{{ m.icon("message", "xs") }}<span>{{ q }}</span></button>{% endfor %}
+              </div>
+            {% endif %}
+          {% else %}
+            This review was stored without its project snapshots, so there is nothing for me to investigate. Reviews stored from now on keep them.
+          {% endif %}
+        </div>
+      </div>
+    </div>
+    <form class="composer" data-chat-form>
+      <div class="composer-box">
+        <textarea data-chat-input rows="1" maxlength="500" placeholder="Ask about this change…" aria-label="Question" {% if not pr.chat_available %}disabled{% endif %}></textarea>
+        <button class="btn primary icon-only" type="submit" data-send aria-label="Send" {% if not pr.chat_available %}disabled{% endif %}>{{ m.icon("send", "sm") }}</button>
+      </div>
+      <div class="composer-hint"><span><kbd>↵</kbd> send · <kbd>⇧</kbd><kbd>↵</kbd> new line</span><span>Stays on this network</span></div>
+    </form>
+  </aside>
+</div>
+{% endblock %}
