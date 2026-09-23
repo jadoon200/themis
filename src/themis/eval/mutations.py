@@ -13,7 +13,7 @@ decide measures it against the data instead.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 
@@ -114,6 +114,15 @@ class Mutation:
     # is how "mixing currencies in one total" was counted as caught for months while the
     # mutation never ran at all.
     build_fails: str | None = None
+    # A kind that only holds on some engines. `select 5/2` is 2 on Trino and 2.5 on
+    # DuckDB, so a change that truncates every amount is a measured defect on the engine
+    # THEMIS targets and byte-identical output on the one the corpus usually builds on.
+    # Keyed by dbt target name; the harness picks the kind for the target it ran.
+    kind_on: dict[str, Kind] = field(default_factory=dict)
+
+    def kind_for(self, target: str) -> Kind:
+        """What this case is on the engine it was actually measured on."""
+        return self.kind_on.get(target, self.kind)
 
     def apply(self, project_dir: Path) -> bool:
         """Apply to a checked-out project. False if the anchor text is not present."""
@@ -798,12 +807,14 @@ rates as (select * from fx),""",
         id="minor_units_divided_as_integers",
         pr_description="Simplify the minor-to-major macro: one cast instead of two.",
         description_is_honest=False,
-        # LATENT, and the reason is the engine. Trino divides whole numbers as whole
-        # numbers — `select 5/2` is 2 — while DuckDB, which the demo project builds on,
-        # returns 2.5. So the defect is real on the engine this tool targets and produces
-        # byte-identical output on the one the corpus can measure. Declaring it a defect
-        # scored it "measured the opposite", which was the oracle telling the truth.
+        # The kind depends on the engine, which is why it is declared per engine. Trino
+        # divides whole numbers as whole numbers — `select 5/2` is 2 — while DuckDB
+        # returns 2.5. Measured on Trino with `themis eval --target trino`: nine models
+        # move and X fires alongside F8. On DuckDB the output is byte-identical, so
+        # declaring it a defect there scored "measured the opposite" — the oracle telling
+        # the truth about the warehouse it was given.
         kind=Kind.LATENT,
+        kind_on={"trino": Kind.DEFECT},
         expects_family="F8",
         description=(
             "The inner decimal cast leaves the minor-to-major macro, so the division "

@@ -59,6 +59,17 @@ def eval_cmd(
             "falls back to how each mutation was declared.",
         ),
     ] = True,
+    target: Annotated[
+        str,
+        typer.Option(
+            "--target",
+            help=(
+                "dbt target every case builds on. 'dev' is DuckDB, which is cheap and is "
+                "not the engine THEMIS targets; 'trino' measures on Trino, where a defect "
+                "DuckDB cannot show becomes visible."
+            ),
+        ),
+    ] = "dev",
     narrow: Annotated[
         bool,
         typer.Option(
@@ -131,6 +142,7 @@ def eval_cmd(
             narrow_execution=narrow,
             allow_dirty=allow_dirty,
             variant=variant,
+            target=target,
         )
     except DirtyRepositoryError as exc:
         typer.echo(str(exc), err=True)

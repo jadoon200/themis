@@ -56,6 +56,10 @@ class BuildOutcome:
     # Node name to dbt status, from run_results.json. Empty when dbt wrote none — a
     # crash before any node ran — in which case the exit code is all there is to go on.
     statuses: dict[str, str] = field(default_factory=dict)
+    # Incremental models whose second pass the warehouse cannot run at all. Their
+    # full-refresh tables are real and are measured; what was not exercised is the
+    # incremental path, and that is a check that did not run, not a model that failed.
+    incremental_not_run: tuple[str, ...] = ()
 
     def failure(self, model: str) -> str | None:
         """Why a model was not built, or None when it was."""
@@ -79,6 +83,16 @@ class BuildOutcome:
         return tuple(sorted(name for name, status in self.statuses.items() if status in _ERRORED))
 
 
+def cannot_modify_rows(stdout: str) -> bool:
+    """Does this dbt output say the warehouse cannot modify rows at all?
+
+    Matched narrowly on the engine's own words. Anything broader would swallow a real
+    build failure, and a build that failed for any other reason must stay a failure.
+    """
+    text = stdout.lower()
+    return "not_supported" in text and "does not support modifying table rows" in text
+
+
 @dataclass
 class ExecutionResult:
     """What Stage 3 measured, and what it could not."""
@@ -92,6 +106,15 @@ class ExecutionResult:
     head_build: BuildOutcome = field(default_factory=BuildOutcome)
     base_build: BuildOutcome = field(default_factory=BuildOutcome)
     skipped_reason: str | None = None
+
+    @property
+    def incremental_not_run(self) -> tuple[str, ...]:
+        """Models built by full refresh only, because this warehouse cannot do the rest."""
+        return tuple(
+            sorted(
+                set(self.head_build.incremental_not_run) | set(self.base_build.incremental_not_run)
+            )
+        )
 
     @property
     def ran(self) -> bool:
@@ -201,6 +224,14 @@ def _build(
         second = [arg for model in incremental_models for arg in ("--select", model)]
         second += ["--exclude-resource-type", "test", "--exclude-resource-type", "unit_test"]
         ok, stdout, second_statuses = run(["build", *second, *defer_args])
+        if not ok and cannot_modify_rows(stdout):
+            # The warehouse cannot delete or merge rows at all — Trino's memory
+            # connector, a view-backed table, a read-only catalog. Pass one's tables
+            # were written by a full refresh and are real, so the measurement stands;
+            # what did not happen is the incremental path being exercised, and that is
+            # reported as a check that could not run. Not conflated with a model that
+            # failed to build, which is a finding about the change (X0002).
+            return BuildOutcome(statuses=statuses, incremental_not_run=incremental_models)
         if not ok and not second_statuses:
             # The second pass failed before recording anything, so the first pass's
             # "success" for these models describes a table the second pass never

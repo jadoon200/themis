@@ -344,3 +344,99 @@ def test_deferral_selects_only_the_measured_models(monkeypatch: pytest.MonkeyPat
     # over the state relation, so two runs of the same code could measure differently.
     assert "--favor-state" in with_state
     assert "--state" in with_state
+
+
+# --- a warehouse that cannot modify rows ---------------------------------------------------
+
+_TRINO_NO_DELETE = (
+    "1 of 1 ERROR creating sql incremental model themis_head_x.fct_revenue_incremental\n"
+    "Database Error in model fct_revenue_incremental\n"
+    '  TrinoUserError(type=USER_ERROR, name=NOT_SUPPORTED, message="This connector does '
+    'not support modifying table rows", query_id=20260923_141950_00153_m3iks)\n'
+)
+
+
+def test_only_the_engines_own_words_count_as_cannot_modify_rows() -> None:
+    """Matched narrowly on purpose: anything broader swallows a real build failure."""
+    from themis.execute.runner import cannot_modify_rows
+
+    assert cannot_modify_rows(_TRINO_NO_DELETE)
+    assert not cannot_modify_rows("Database Error: column amount_usd does not exist")
+    assert not cannot_modify_rows("NOT_SUPPORTED: this connector does not support views")
+
+
+def _capture_builds(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    *,
+    second_pass_stdout: str,
+    second_pass_ok: bool,
+) -> object:
+    """Run one _build with a fake dbt: pass one succeeds, pass two answers as given."""
+    from themis.config import Settings
+    from themis.execute import runner
+
+    calls: list[list[str]] = []
+
+    class _Result:
+        def __init__(self, ok: bool, stdout: str) -> None:
+            self.ok = ok
+            self.stdout = stdout
+
+    def _fake_run_dbt(project_dir: Path, args: list[str], **kwargs: object) -> _Result:
+        calls.append(args)
+        if len(calls) == 1:
+            return _Result(True, "")
+        return _Result(second_pass_ok, second_pass_stdout)
+
+    def _fake_statuses(target_dir: Path) -> dict[str, str]:
+        # Pass one built both models; pass two wrote nothing, as a failed run does.
+        return {"mart": "success", "inc": "success"} if len(calls) == 1 else {}
+
+    monkeypatch.setattr(runner, "run_dbt", _fake_run_dbt)
+    monkeypatch.setattr(runner, "node_statuses", _fake_statuses)
+    monkeypatch.setattr(runner, "write_profile_for_schema", lambda *a, **k: tmp_path / "profiles")
+    return runner._build(
+        tmp_path / "project",
+        models=("mart", "inc"),
+        schema="themis_head_x",
+        target="trino",
+        settings=Settings(),
+        profiles_root=tmp_path,
+        anchor_dir=tmp_path / "project",
+        label="head",
+        incremental_models=("inc",),
+    )
+
+
+def test_a_warehouse_that_cannot_modify_rows_keeps_the_full_refresh_measurement(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Trino's memory connector cannot DELETE, so the incremental pass cannot run.
+
+    The full-refresh tables pass one wrote are real and worth measuring. Treating this
+    as a failed build instead made every case on that engine unscorable — the corpus
+    could not be run on the engine THEMIS actually targets.
+    """
+    outcome = _capture_builds(
+        monkeypatch, tmp_path, second_pass_stdout=_TRINO_NO_DELETE, second_pass_ok=False
+    )
+    assert outcome.error is None
+    assert outcome.failure("mart") is None and outcome.failure("inc") is None
+    # And it is said out loud: the incremental path was never exercised.
+    assert outcome.incremental_not_run == ("inc",)
+
+
+def test_any_other_second_pass_failure_is_still_a_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The narrow match must not become a way for a real incremental bug to pass."""
+    outcome = _capture_builds(
+        monkeypatch,
+        tmp_path,
+        second_pass_stdout="Database Error in model inc: column merge_key does not exist",
+        second_pass_ok=False,
+    )
+    assert outcome.error is not None
+    assert outcome.incremental_not_run == ()
+    assert outcome.failure("inc") is not None

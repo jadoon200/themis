@@ -976,6 +976,20 @@ def review(
             # does not tell a reviewer that what moved was a period already reported.
             findings.extend(restated_period_findings(execution, acquired.after, vocab))
             grains = {**grains, **execution.measured_grains}
+            # A warehouse that cannot modify rows was measured on full-refresh tables
+            # only. The numbers are real; the incremental path was never exercised, and
+            # an incremental model's bugs live exactly there.
+            skipped += [
+                SkippedRule(
+                    rule_id="X0005",
+                    model_name=model,
+                    reason=(
+                        "built by full refresh only: this warehouse cannot modify rows, so "
+                        "the incremental run was not exercised"
+                    ),
+                )
+                for model in execution.incremental_not_run
+            ]
         else:
             log.warning("execute.skipped", reason=execution.skipped_reason)
 

@@ -16,7 +16,7 @@ from __future__ import annotations
 import contextlib
 import subprocess
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -226,6 +226,10 @@ def run_mutation(
     # verdicts as with it off.
     narrow_execution: bool = False,
     variant: str | None = None,
+    # The dbt target every build in this case uses. The default measures on DuckDB, which
+    # is cheap; `trino` measures on the engine THEMIS actually targets, where decimal
+    # arithmetic, date_trunc and three-part names all differ.
+    target: str = "dev",
 ) -> MutationOutcome:
     """Apply one mutation in an isolated worktree, review it, and discard the worktree.
 
@@ -287,6 +291,9 @@ def run_mutation(
             _git(tree, "add", "--", str((mutated_project / mutation.relative_path).resolve()))
             _commit(tree, f"eval: {mutation.id}")
 
+            # Scored as what it is on the engine it was measured on: a case can be a
+            # defect on Trino and produce byte-identical output on DuckDB.
+            mutation = replace(mutation, kind=mutation.kind_for(target))
             result = run_review(
                 mutated_project,
                 base=base_sha,
@@ -295,6 +302,7 @@ def run_mutation(
                 run_execution=use_execution,
                 narrow_execution=narrow_execution,
                 run_llm=use_llm,
+                target=target,
                 # Without this the intent pass never runs at all, which is how the
                 # only reviewer with no rule behind it went unmeasured.
                 pr_description=mutation.pr_description,
@@ -679,6 +687,7 @@ def run_corpus(
     use_execution: bool = True,
     narrow_execution: bool = False,
     variant: str | None = None,
+    target: str = "dev",
 ) -> EvalReport:
     if not allow_dirty:
         assert_clean(git.repo_root(project_dir))
@@ -695,6 +704,7 @@ def run_corpus(
                 use_execution=use_execution,
                 narrow_execution=narrow_execution,
                 variant=variant,
+                target=target,
             )
         )
     return EvalReport(outcomes=outcomes)
