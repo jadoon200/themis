@@ -74,3 +74,19 @@ models:
         data_type: varchar
       - name: reference_code
         data_type: varchar
+
+  - name: dim_contract_terms
+    description: >
+      Contract terms in force now, from the contract snapshot. One row per contract_id,
+      because only the current version has no dbt_valid_to.
+
+snapshots:
+  - name: snap_contracts
+    description: >
+      Every version of each contract's terms, in Iceberg. A new version when the source's
+      updated_at advances; a contract deleted at the source is closed, not left current.
+
+  - name: snap_accounts
+    description: >
+      Every version of the chart of accounts, in Iceberg. The source has no last-modified
+      time, so a version is written whenever a checked column differs.

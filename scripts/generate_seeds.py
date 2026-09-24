@@ -15,6 +15,9 @@ some defect class is undetectable without it:
 - amounts whose cents are not representable in binary floating point, in enough volume
   that a DOUBLE cast actually drifts a total rather than only changing a column type
 - contracts referenced but absent, so an inner join to them loses revenue
+- a last-modified time on every contract, which is what a snapshot's `timestamp` strategy
+  reads — otherwise the demo could only snapshot with `check`, and the edits that break
+  history under the other strategy could not be written at all
 
 Deterministic: same seed, same bytes. The corpus compares runs, so data that moved
 between them would make every comparison meaningless.
@@ -77,7 +80,7 @@ def _contracts() -> tuple[str, list[str]]:
     rng = random.Random(SEED + 2)
     rows = [
         "contract_id,customer_id,contract_start,contract_end,recognition_method,"
-        "term_months,customer_email"
+        "term_months,customer_email,updated_at"
     ]
     ids: list[str] = []
     for i in range(1, 41):
@@ -89,7 +92,10 @@ def _contracts() -> tuple[str, list[str]]:
         rows.append(
             f"{cid},CUST{rng.randrange(1, 15):02d},{start},"
             f"{start + timedelta(days=30 * months)},{method},{months},"
-            f"ops{i}@counterparty{i % 7}.example"
+            f"ops{i}@counterparty{i % 7}.example,"
+            # Not drawn from the generator, so every other column stays byte-identical to
+            # the data the corpus was calibrated on.
+            f"{start - timedelta(days=(i * 3) % 20 + 1)} 09:{i % 60:02d}:00"
         )
     return "\n".join(rows) + "\n", ids
 
