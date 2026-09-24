@@ -549,12 +549,13 @@ _ALL_INJECTED: tuple[Mutation, ...] = (
         kind=Kind.LATENT,
         expects_family="F8",
         description=(
-            "A date filter wrapped in a function, so the engine can no longer prune "
-            "partitions and scans everything"
+            "The partition column wrapped in a function inside the incremental filter, so "
+            "the engine can no longer prune partitions and scans every one of them — same "
+            "rows, since each value is already the first of its month"
         ),
         relative_path=_INCREMENTAL,
-        find="    where posting_date >= (",
-        replace="    where date_trunc('day', posting_date) >= (",
+        find="    where period_month >= (",
+        replace="    where date_trunc('month', period_month) >= (",
     ),
     Mutation(
         id="not_in_nullable_subquery",
@@ -709,13 +710,13 @@ _ALL_INJECTED: tuple[Mutation, ...] = (
         kind=Kind.BENIGN,
         expects_family="F2",
         description=(
-            "The late-arrival window widened rather than narrowed. The mirror of a "
-            "real defect in this corpus: narrowing loses data silently, widening costs "
-            "compute and changes no number"
+            "The late-arrival window widened from one period to three rather than "
+            "narrowed. The mirror of a real defect in this corpus: narrowing loses data "
+            "silently, widening reprocesses more whole periods and changes no number"
         ),
         relative_path=_INCREMENTAL,
-        find="- interval '3' day",
-        replace="- interval '30' day",
+        find="- interval '1' month",
+        replace="- interval '3' month",
     ),
     Mutation(
         id="unruled_fx_inverted",

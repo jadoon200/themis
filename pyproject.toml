@@ -14,9 +14,11 @@ dependencies = [
     "rich>=13.7",
     "httpx>=0.27",
     "pyyaml>=6.0",
-    # dbt + the local zero-cost warehouse. dbt is not optional here: the compiled
-    # manifest is the primary grounding backend and Stage 3 shells out to `dbt build`.
+    # dbt, on Trino (the engine of record) and DuckDB (an offline fallback). dbt is not
+    # optional: the compiled manifest is the primary grounding backend and Stage 3
+    # shells out to `dbt build`.
     "dbt-core>=1.8",
+    "dbt-trino>=1.10,<1.11",
     "dbt-duckdb>=1.8",
     "duckdb>=1.0",
     "trino>=0.330",
