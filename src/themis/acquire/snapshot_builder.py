@@ -66,17 +66,15 @@ class AcquireResult:
     def unanalysed_changes(self) -> tuple[str, ...]:
         """Changed dbt files this review did not look at, by path.
 
-        A snapshot is the case that found this. `resource_type` is filtered to models and
-        seeds at load, and a snapshot lives in `snapshots/`, so a change to one resolved to
-        no node, matched no folder fallback, and fell out of the review without a word — a
-        pull request that only touches snapshots would be reported as "No findings". In a
-        bank a snapshot is slowly-changing reference data, which is exactly the kind of
-        change somebody wants read.
+        A snapshot is the case that found this: snapshots were once filtered out at load,
+        so a change to one resolved to no node, matched no folder fallback, and fell out of
+        the review without a word — "No findings" for a pull request that only touched
+        slowly-changing data. They are analysed now (rule family F9). What is left here is
+        SQL that neither manifest knows at all.
 
-        Analysing them is a feature with its own semantics and is not built. Saying that a
-        change was not analysed costs nothing and is the difference between a blind spot
-        and a silent one, so these are reported as skipped checks and make a review
-        incomplete for the merge gate.
+        Saying that a change was not analysed costs nothing and is the difference between a
+        blind spot and a silent one, so these are reported as skipped checks and make a
+        review incomplete for the merge gate.
         """
         out: list[str] = []
         for change in self.changed:

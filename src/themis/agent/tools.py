@@ -531,7 +531,7 @@ def _rule(workspace: Workspace, args: dict[str, Any]) -> ToolResult:
     safety = {
         "X0001": "a measured change no rule accounts for — the safety net under every rule",
         "X0002": "the head revision no longer builds",
-        "X0003": "a changed dbt file THEMIS does not analyse — a snapshot, for instance",
+        "X0003": "a changed SQL file no manifest knows as a model, seed, snapshot or macro",
         "X0004": "a measured change to a period that had already been reported",
     }
     if wanted in safety:

@@ -243,6 +243,9 @@ def build_column_graph(
     graph = ColumnGraph()
     schema = MappingSchema(dialect=dialect, normalize=False)
     parsed: dict[str, exp.Expression] = {}
+    # Columns a model's table has that its SQL does not produce: a snapshot's bookkeeping.
+    # Roots, like a seed's columns — nothing upstream feeds them.
+    generated: dict[str, frozenset[str]] = {}
 
     for name in _topological(snapshot):
         model = snapshot.models[name]
@@ -279,6 +282,13 @@ def build_column_graph(
         if not columns:
             graph.unresolved[name] = "projection is a star over an undeclared relation"
             continue
+        if model.history is not None:
+            # A snapshot's table is its query plus the columns dbt writes on every row.
+            # Without them, a model filtering on dbt_valid_to could not be resolved at
+            # all — and the column that decides which versions it reads is that one.
+            meta = tuple(c for c in model.history.meta_columns if c not in columns)
+            generated[name] = frozenset(meta)
+            columns = [*columns, *meta]
 
         parsed[name] = tree
         graph.outputs[name] = tuple(columns)
@@ -300,7 +310,7 @@ def build_column_graph(
         sql = snapshot.models[name].analysable_sql
         if sql is None:
             continue
-        traced = graph.outputs[name]
+        traced = tuple(c for c in graph.outputs[name] if c not in generated.get(name, ()))
         if len(traced) > _MAX_COLUMNS_PER_MODEL:
             graph.unresolved[name] = f"too wide to trace ({len(traced)} columns)"
             graph.outputs.pop(name, None)

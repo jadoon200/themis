@@ -20,12 +20,19 @@ Five sources, in descending confidence:
 Anything unresolved is UNKNOWN, and UNKNOWN escalates to a human rather than being
 assumed safe. On a project with nothing declared, an over-confident default would be
 the single most dangerous thing this tool could do.
+
+A dbt snapshot has two grains, and confusing them is the mistake to avoid. Its *query*
+should be unique on the snapshot's ``unique_key`` — ``query_grain`` answers whether it
+is. Its *table* keeps a row per version, so it is unique on the key plus
+``dbt_valid_from``, never on the key alone. A model reading it gets the key back only
+by taking one version (``where dbt_valid_to is null``); see ``analyze.history``.
 """
 
 from __future__ import annotations
 
 from sqlglot import exp
 
+from themis.analyze import history as snapshot_history
 from themis.analyze.parse import ParseError, parse_sql, select_from, select_joins
 from themis.logging import get_logger
 from themis.models import Grain, GrainSource
@@ -328,6 +335,8 @@ def infer_model_grain(
     model: ModelNode, snapshot: ProjectSnapshot, *, dialect: str = "trino"
 ) -> Grain:
     """Derive one model's grain from the highest-confidence source available."""
+    if model.is_snapshot:
+        return _snapshot_table_grain(model, snapshot, {}, dialect)
     # A seed's grain is counted, not derived: the data is in the repository, so the
     # columns that identify a row can be read off the CSV. It ranks with a warehouse
     # measurement because it is one — over the whole file, or it is not reported at all.
@@ -409,12 +418,106 @@ def _unknown_reason(model: ModelNode, snapshot: ProjectSnapshot) -> str:
     return "no GROUP BY, DISTINCT, dedup pattern, unique_key or test to derive from"
 
 
-def _propagate(model: ModelNode, grains: dict[str, Grain], dialect: str) -> Grain | None:
+def query_grain(
+    model: ModelNode,
+    snapshot: ProjectSnapshot,
+    grains: dict[str, Grain],
+    *,
+    dialect: str = "trino",
+) -> Grain:
+    """The grain of a snapshot's query: what its ``unique_key`` has to identify.
+
+    Derived as a model's would be, less the two sources that would answer the question
+    with itself: the ``unique_key`` is the claim under test, and a test declared on a
+    snapshot is about its table, not its query.
+    """
+    sql = model.analysable_sql
+    if sql is not None:
+        structural = _structural_grain(sql, dialect)
+        if structural is not None:
+            columns, note = structural
+            return Grain(
+                model_name=model.name,
+                columns=columns,
+                source=GrainSource.STRUCTURAL,
+                note=note,
+            )
+    inherited = _propagate(model, grains, dialect, snapshot)
+    if inherited is not None:
+        return inherited
+    return Grain(
+        model_name=model.name,
+        columns=(),
+        source=GrainSource.UNKNOWN,
+        note=_unknown_reason(model, snapshot),
+    )
+
+
+def _snapshot_table_grain(
+    model: ModelNode, snapshot: ProjectSnapshot, grains: dict[str, Grain], dialect: str
+) -> Grain:
+    """A snapshot's table: one row per version of each key."""
+    history = model.history
+    if history is None or not model.unique_key:
+        return Grain(
+            model_name=model.name,
+            columns=(),
+            source=GrainSource.UNKNOWN,
+            note="a snapshot with no unique_key, so nothing says what a version is of",
+        )
+    columns = (*model.unique_key, history.valid_from)
+    key = ", ".join(model.unique_key)
+    query = query_grain(model, snapshot, grains, dialect=dialect)
+    if query.is_proven and set(query.columns) <= set(model.unique_key):
+        return Grain(
+            model_name=model.name,
+            columns=columns,
+            source=GrainSource.PROPAGATED,
+            note=(
+                f"a snapshot keeps a row per version: its query is unique on ({key}) "
+                f"[{query.source.value}], and each change adds a version from "
+                f"{history.valid_from}"
+            ),
+        )
+    if query.is_proven:
+        # The query is provably unique on something the key does not cover, so the key
+        # does not identify a row and neither does the key plus a version time. Claiming
+        # either would tell every join onto this table that it is safe.
+        return Grain(
+            model_name=model.name,
+            columns=(),
+            source=GrainSource.UNKNOWN,
+            note=(
+                f"the snapshot's unique_key ({key}) does not identify a row of its query, "
+                f"which is unique on ({', '.join(query.columns)})"
+            ),
+        )
+    return Grain(
+        model_name=model.name,
+        columns=columns,
+        source=GrainSource.CONFIG,
+        note=(
+            f"a snapshot keeps a row per version of its unique_key ({key}); that its "
+            "query is unique on that key is not established"
+        ),
+    )
+
+
+def _propagate(
+    model: ModelNode,
+    grains: dict[str, Grain],
+    dialect: str,
+    project: ProjectSnapshot | None = None,
+) -> Grain | None:
     """Inherit grain from a single upstream model when this one only passes it through.
 
     A pass-through is a model with exactly one upstream and no grain-changing
     construct of its own. Anything with a join is excluded: a join is precisely where
     grain changes, and inheriting across one would assert the fan-out away.
+
+    Reading a snapshot is the one pass-through that can narrow its parent's key: taking
+    one version (``where dbt_valid_to is null``, or an as-of predicate) leaves a row per
+    key, so the key alone is inherited. Without that, the key plus the version time is.
     """
     upstreams = [u.split(".")[-1] for u in model.depends_on_models]
     if len(upstreams) != 1:
@@ -422,6 +525,7 @@ def _propagate(model: ModelNode, grains: dict[str, Grain], dialect: str) -> Grai
     parent = grains.get(upstreams[0])
     if parent is None or not parent.is_proven:
         return None
+    parent_node = project.models.get(upstreams[0]) if project is not None else None
 
     sql = model.analysable_sql
     if sql is None:
@@ -451,6 +555,26 @@ def _propagate(model: ModelNode, grains: dict[str, Grain], dialect: str) -> Grai
     select = tree if isinstance(tree, exp.Select) else tree.find(exp.Select)
     if not isinstance(select, exp.Select):
         return None
+
+    if (
+        parent_node is not None
+        and parent_node.is_snapshot
+        and parent_node.unique_key
+        and snapshot_history.restricted_to_one_version(tree, parent_node)
+    ):
+        key = parent_node.unique_key
+        if not _projection_covers(select, key):
+            return None
+        return Grain(
+            model_name=model.name,
+            columns=key,
+            source=GrainSource.PROPAGATED,
+            note=(
+                f"takes one version of each key from snapshot {parent.model_name} "
+                f"(single upstream, no join), whose rows are {parent.source.value}"
+            ),
+        )
+
     if not _projection_covers(select, parent.columns):
         return None
 
@@ -472,11 +596,23 @@ def infer_grains(snapshot: ProjectSnapshot, *, dialect: str = "trino") -> dict[s
         for name, model in snapshot.models.items()
     }
 
+    # What each model derived on its own, before inheriting anything.
+    initial = dict(grains)
+
     # Propagation is iterative: a chain of pass-throughs resolves one link per pass.
     # Bounded by depth so a cyclic manifest cannot spin here.
     for _ in range(10):
         changed = False
         for name, grain in grains.items():
+            model = snapshot.models[name]
+            if model.is_snapshot:
+                # Its query's grain can arrive from upstream on any pass, and the table's
+                # grain follows from it — so it is recomputed, never frozen at first sight.
+                table = _snapshot_table_grain(model, snapshot, grains, dialect)
+                if table != grain:
+                    grains[name] = table
+                    changed = True
+                continue
             # A naming heuristic is replaceable too. It says "column naming only — not
             # asserted", and a key carried unchanged from a parent that was *counted* is a
             # stronger statement than a name. It matters on exactly the models it sounds
@@ -485,10 +621,19 @@ def infer_grains(snapshot: ProjectSnapshot, *, dialect: str = "trino") -> dict[s
             # the difference between those two is the whole of the fan-out this tool
             # exists to catch. Propagation still refuses a join, a set operation, or a key
             # the projection drops.
-            if grain.source not in (GrainSource.UNKNOWN, GrainSource.HEURISTIC):
+            #
+            # A model reading a snapshot is re-derived on every pass, because the
+            # snapshot's grain can still change under it — and a key inherited from a
+            # snapshot whose key turned out not to identify a row must not outlive that.
+            inheritable = initial[name].source in (GrainSource.UNKNOWN, GrainSource.HEURISTIC)
+            if not inheritable:
                 continue
-            inherited = _propagate(snapshot.models[name], grains, dialect)
-            if inherited is not None:
+            if grain.source not in (GrainSource.UNKNOWN, GrainSource.HEURISTIC) and not (
+                snapshot_history.snapshot_parents(model, snapshot)
+            ):
+                continue
+            inherited = _propagate(model, grains, dialect, snapshot) or initial[name]
+            if inherited != grain:
                 grains[name] = inherited
                 changed = True
         if not changed:

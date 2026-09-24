@@ -35,12 +35,13 @@ from themis.models import Confidence, Finding, Severity
 # arguable rather than emerging from a heuristic nobody can check.
 _SUBSUMED_BY: dict[str, tuple[frozenset[str], str]] = {
     "F2001": (
-        frozenset({"F4002", "F5001", "F5004", "F5005", "F8003"}),
+        frozenset({"F4002", "F5001", "F5004", "F5005", "F8003", "F9005", "F9007"}),
         "the predicate that changed is the one this finding already names",
     ),
     "F1001": (
-        frozenset({"F8002"}),
-        "an always-true join condition is why the join fans out",
+        frozenset({"F8002", "F9007"}),
+        "the finding covering it says why the join fans out — an always-true condition, "
+        "or every version of a snapshot",
     ),
 }
 
