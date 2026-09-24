@@ -90,7 +90,8 @@ class SnapshotKeyNotUniqueRule(Rule):
     dbt does not check. On Trino the snapshot's MERGE refuses the moment one stored
     version matches two query rows — measured on the demo: the build passes, and the next
     run fails with MERGE_TARGET_ROW_MULTIPLE_MATCHES. An engine that does not refuse
-    writes several current versions of one key instead.
+    writes several current versions of one key instead: on DuckDB the demo's 20 accounts
+    became 420 rows over three runs, 320 of them current.
 
     Fires when the change is what put the key in doubt: a new snapshot, a changed key, or
     a query that was provably unique on the key and no longer is.

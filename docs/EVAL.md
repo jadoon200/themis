@@ -1654,6 +1654,7 @@ Each on the demo, in a scratch copy, on Trino 483 with Iceberg:
 | edit | what happened |
 |---|---|
 | `unique_key` coarsened to a column five accounts share | builds; the next snapshot run fails: `MERGE_TARGET_ROW_MULTIPLE_MATCHES` |
+| the same, on DuckDB, which does not refuse | 20 accounts become 420 rows over three runs, 320 of them current |
 | `updated_at` replaced by `current_timestamp` | 40 rows, 80 after the second run, 120 after the third — every run versions every row |
 | a `check` snapshot pointed at the Hive catalog | fails on its first run: `Unsupported Hive type: timestamp(3) with time zone` |
 | a Hive mart copying the snapshot's `dbt_valid_from` | refused: Iceberg keeps microseconds, the Hive catalog milliseconds |

@@ -832,6 +832,9 @@ _ALL_INJECTED: tuple[Mutation, ...] = (
             "the snapshot's second run: Trino's MERGE refuses when one stored version "
             "matches more than one query row"
         ),
+        # DuckDB does not refuse. It writes several current versions of each key instead:
+        # measured, 20 accounts became 420 rows over three runs, 320 of them current.
+        build_fails_on={"duckdb": None},
     ),
     Mutation(
         id="snapshot_updated_at_stamped",
