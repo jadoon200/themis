@@ -104,7 +104,8 @@ themis lineage --project demo_project --model stg_fx_rates --column rate
 ```bash
 make env && conda activate themis
 make install
-make demo-build          # seeds and builds the demo project on DuckDB
+make up                  # Postgres, and Trino with Hive and Iceberg catalogs
+make demo-build          # seeds and builds the demo project on Trino
 make review              # review the working tree against main
 ```
 
@@ -188,8 +189,10 @@ themis review --prod-manifest path/to/prod/target --defer-state path/to/prod/tar
 If the manifest turns out to be missing or unreadable, the review says so and rebuilds
 the base from git. It does not quietly answer a different question than the one asked.
 
-Everything runs locally and costs nothing: DuckDB as the warehouse, Ollama for the
-model. No warehouse credentials, no API keys, no paid dependency.
+Everything runs locally and costs nothing: Trino in a container as the warehouse (Hive
+tables, Iceberg reference data), Ollama for the model, DuckDB as an offline fallback. No
+warehouse credentials, no API keys, no paid dependency, and every image runs natively on
+Apple silicon.
 
 Calibrating on a project whose code cannot be shared: `themis profile` describes it in
 counts — how much of its SQL parses, how much grain and lineage resolve, how often the
@@ -228,22 +231,26 @@ Several of these ideas came from reading how other tools work — Recce, dbt-aud
 SQLMesh, Semgrep, Alibaba's Open Code Review. `docs/PRIOR_ART.md` records what was adapted,
 what was deliberately not, and why.
 
-To check that every part actually runs — not a stand-in for it — with Postgres (`make up`),
-Ollama and a Trino on port 8085 available:
+To check that every part actually runs — not a stand-in for it — with Postgres and Trino
+(`make up`) and Ollama available:
 
 ```bash
 python scripts/component_check.py
 ```
 
-47 checks from a throwaway worktree: the CLI, five scenario reviews, exit codes, reports,
-execution, persistence, `ask`, the API and a worker, Trino, and the corpus. `--quick` skips
-the model, Trino and the corpus.
+78 checks from a throwaway worktree: the CLI, five scenario reviews, exit codes, reports,
+execution, persistence, `ask`, the API and a worker, the pages, Trino, and the corpus.
+`--quick` skips the model, Trino and the corpus.
 
 ## Dialect
 
-SQL is parsed as **Trino** (Starburst), independently of what executes it. The demo
-project runs on DuckDB purely so results can be compared cheaply — THEMIS itself never
-executes SQL during analysis.
+SQL is parsed as **Trino** (Starburst), and Trino is what the demo project, the corpus
+and CI build on — most models as Hive tables, reference data in Iceberg, the way the
+target environment is laid out. Analysis never executes SQL; Stage 3 builds both
+revisions and measures them where dbt says it put each model. DuckDB remains an offline
+fallback (`--target duckdb`), and nothing is measured on it: it divides integers into
+decimals, tolerates duplicate column names and deletes any row it is asked to, each of
+which has hidden a defect Trino shows (docs/EVAL.md, "Measured on the engine of record").
 
 ## Status
 
