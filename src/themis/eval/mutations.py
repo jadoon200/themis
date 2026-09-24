@@ -1215,7 +1215,9 @@ ALL: tuple[Mutation, ...] = DEFECTS + LATENT + UNRULED + BENIGN + CONTROLS
 
 
 def select(name: str) -> tuple[Mutation, ...]:
-    """Resolve a mutation selector: 'all', 'defects', 'controls', or an id."""
+    """Resolve a mutation selector: 'all', 'defects', 'controls', an id, or ids with commas."""
+    if "," in name:
+        return tuple(m for part in name.split(",") if part.strip() for m in select(part.strip()))
     if name == "all":
         return ALL
     if name == "defects":

@@ -8,6 +8,8 @@ what a run must now refuse to call a pass.
 
 from __future__ import annotations
 
+import pytest
+
 from themis.eval.harness import EvalReport, MutationOutcome, _unscorable
 from themis.eval.mutations import Kind, Mutation
 from themis.execute.runner import ExecutionResult
@@ -245,3 +247,22 @@ def test_rule_coverage_is_gated_only_where_every_case_can_be_measured() -> None:
         ]
     )
     assert not any("never fired" in f for f in partly.gate_failures(full_corpus=True))
+
+
+def test_several_cases_can_be_selected_at_once() -> None:
+    from themis.eval.mutations import select
+
+    picked = select("snapshot_moved, snapshot_on_hive")
+    assert [m.id for m in picked] == ["snapshot_moved", "snapshot_on_hive"]
+    with pytest.raises(KeyError):
+        select("snapshot_moved,no_such_case")
+
+
+def test_every_rule_family_has_a_corpus_case() -> None:
+    """A family nothing in the corpus exercises is one the gate cannot hold to account."""
+    from themis.eval.mutations import ALL
+    from themis.rules.registry import ALL_RULES
+
+    families = {rule.family for rule in ALL_RULES}
+    exercised = {m.expects_family for m in ALL if m.expects_family}
+    assert families <= exercised

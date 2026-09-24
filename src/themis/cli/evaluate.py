@@ -20,7 +20,10 @@ from themis.logging import configure_logging
 def eval_cmd(
     project: ProjectOpt = Path("demo_project"),
     mutations: Annotated[
-        str, typer.Option("--mutations", help="all, defects, controls, or a mutation id.")
+        str,
+        typer.Option(
+            "--mutations", help="all, defects, controls, a mutation id, or ids separated by commas."
+        ),
     ] = "all",
     variant: Annotated[
         str | None,
