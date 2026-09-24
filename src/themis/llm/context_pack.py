@@ -117,6 +117,18 @@ def _config_section(model: ModelNode) -> list[str]:
         lines.append(f"- on_schema_change: {model.on_schema_change}")
     if model.partitioned_by:
         lines.append(f"- partitioned_by: {model.partitioned_by}")
+    history = model.history
+    if history is not None:
+        # What decides how a snapshot writes history. Only for a snapshot, so every other
+        # pack reads exactly as it did.
+        lines.append(f"- strategy: {history.strategy or 'not set'}")
+        if history.updated_at:
+            lines.append(f"- updated_at: {history.updated_at}")
+        if history.check_cols:
+            lines.append(f"- check_cols: {', '.join(history.check_cols)}")
+        lines.append(f"- hard_deletes: {history.hard_deletes}")
+        if model.relation_name:
+            lines.append(f"- written to: {model.relation_name.replace(chr(34), '')}")
     return lines
 
 

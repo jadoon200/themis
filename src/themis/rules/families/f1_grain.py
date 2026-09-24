@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 
 from sqlglot import exp
 
+from themis.analyze import history as snapshot_history
 from themis.analyze.grain import structural_grain
 from themis.analyze.parse import (
     ParseError,
@@ -28,6 +29,7 @@ from themis.models import (
     Confidence,
     Evidence,
     Finding,
+    Grain,
     GrainSource,
     Severity,
 )
@@ -79,6 +81,23 @@ def _severity_for(ctx: RuleContext, base: Severity) -> Severity:
     return base
 
 
+def _one_version(
+    ctx: RuleContext, tree: exp.Expression, relation: str, grain: Grain | None
+) -> Grain | None:
+    """A snapshot's grain as this model reads it.
+
+    Its table is unique on the key plus the version time. A read that takes one version
+    per key — the current one, or as of a date — gets the key back, so a join on the key
+    alone is safe. One that does not is F9007's to report, not a question of the key.
+    """
+    node = ctx.after_snapshot.models.get(relation)
+    if grain is None or not grain.is_proven or node is None or not node.is_snapshot:
+        return grain
+    if not node.unique_key or not snapshot_history.restricted_to_one_version(tree, node):
+        return grain
+    return grain.model_copy(update={"columns": node.unique_key})
+
+
 @dataclass
 class JoinFanOutRule(Rule):
     """A join was added whose right-hand key is not proven unique.
@@ -128,7 +147,7 @@ class JoinFanOutRule(Rule):
             if (relation, keys) in before_joins:
                 continue  # unchanged join; not this PR's problem
 
-            grain = ctx.grains.get(relation)
+            grain = _one_version(ctx, after_tree, relation, ctx.grains.get(relation))
             if grain is not None and grain.is_proven and set(grain.columns) <= set(keys):
                 continue  # the join key covers a proven unique key: safe
 

@@ -32,7 +32,7 @@ from sqlglot import exp
 
 from themis.analyze.parse import ParseError, parse_sql
 from themis.logging import get_logger
-from themis.snapshot import ProjectSnapshot
+from themis.snapshot import ModelNode, ProjectSnapshot
 
 log = get_logger(__name__)
 
@@ -191,6 +191,22 @@ def _volatile_in_model(tree: exp.Expression, inherited: set[str]) -> set[str]:
     return names
 
 
+def _snapshot_stamped(model: ModelNode, volatile: set[str]) -> set[str]:
+    """A snapshot's bookkeeping columns, when they record when the build ran.
+
+    Under `check` every version is stamped with the time of the run that wrote it, so
+    two builds of identical data disagree on each of them. Under `timestamp` they are the
+    source's own `updated_at` — unless that is itself stamped at build time, which is
+    the defect F9004 exists for.
+    """
+    history = model.history
+    if history is None:
+        return set()
+    if history.strategy == "check" or (history.updated_at or "") in volatile:
+        return set(history.meta_columns)
+    return set()
+
+
 def volatile_columns(
     snapshot: ProjectSnapshot, *, dialect: str = "trino"
 ) -> dict[str, frozenset[str]]:
@@ -219,6 +235,7 @@ def volatile_columns(
         names = _volatile_in_model(tree, upstream)
         outputs = _output_names(tree)
         volatile = names if outputs is None else names & outputs
+        volatile |= _snapshot_stamped(model, volatile)
         if volatile:
             found[name] = frozenset(volatile)
     if found:

@@ -197,7 +197,7 @@ def _config_line(raw_sql: str) -> int | None:
 
 # Families whose findings are about how a model is configured rather than a statement in
 # its SQL. Their natural home is the config block.
-_CONFIG_FAMILIES = frozenset({"F5", "F7"})
+_CONFIG_FAMILIES = frozenset({"F5", "F7", "F9"})
 
 
 def position_findings(findings: list[Finding], snapshot: ProjectSnapshot) -> list[Finding]:

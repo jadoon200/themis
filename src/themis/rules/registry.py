@@ -14,6 +14,7 @@ from themis.rules.families import (
     f6_contracts,
     f7_governance,
     f8_engine,
+    f9_history,
 )
 
 log = get_logger(__name__)
@@ -29,6 +30,7 @@ ALL_RULES: tuple[Rule, ...] = (
     *f6_contracts.RULES,
     *f7_governance.RULES,
     *f8_engine.RULES,
+    *f9_history.RULES,
 )
 
 

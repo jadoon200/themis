@@ -9,6 +9,7 @@ select
     cast(contract_end as date)   as contract_end,
     recognition_method,
     term_months,
+    cast(updated_at as timestamp(6)) as updated_at,
     -- Counterparty contact detail. Deliberately not carried into any mart.
     customer_email
 from {{ ref('raw_contracts') }}

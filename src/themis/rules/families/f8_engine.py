@@ -512,6 +512,68 @@ class RowLevelIncrementalOnHiveRule(Rule):
         ]
 
 
+def _snapshot_on_hive(node: ModelNode | None, ctx: RuleContext) -> bool:
+    return (
+        node is not None
+        and node.history is not None
+        and ctx.vocabulary.is_hive_catalog(_model_catalog(node))
+    )
+
+
+@dataclass
+class SnapshotOnHiveRule(Rule):
+    """A snapshot written to a Hive table.
+
+    A snapshot closes versions with MERGE, which Hive refuses on a table that is not
+    transactional, and its bookkeeping columns are timestamps with a time zone under the
+    `check` strategy, which Hive cannot store at all. Measured on the demo: a `check`
+    snapshot pointed at the Hive catalog fails on its first run ("Unsupported Hive type:
+    timestamp(3) with time zone"); one that gets past that fails on its second, at the
+    MERGE. Iceberg does both.
+    """
+
+    rule_id: str = field(init=False, default="F8007")
+    family: str = field(init=False, default=FAMILY)
+    severity: Severity = field(init=False, default=Severity.HIGH)
+    requires_compiled_sql: bool = field(init=False, default=False)
+
+    def check(self, ctx: RuleContext) -> list[Finding]:
+        if not _snapshot_on_hive(ctx.after, ctx):
+            return []
+        if _snapshot_on_hive(ctx.before, ctx):
+            return []  # already there: it fails today, not because of this change
+        after = ctx.after
+        assert after is not None
+        catalog = _model_catalog(after) or "a Hive catalog"
+        return [
+            Finding(
+                rule_id=self.rule_id,
+                family=self.family,
+                title="Snapshot written to a Hive table, which cannot hold its history",
+                severity=self.severity,
+                confidence=Confidence.LIKELY,
+                evidence=Evidence(
+                    model_name=ctx.model_name,
+                    file_path=after.file_path,
+                    note=f"snapshot written to {catalog}",
+                ),
+                consequence=(
+                    "Every run after the first has to close old versions with MERGE, which "
+                    "Hive refuses on a table that is not transactional; under the `check` "
+                    "strategy the first run fails too, because Hive has no timestamp with a "
+                    "time zone. Either way the snapshot records nothing, and everything "
+                    "reading it stops refreshing."
+                ),
+                suggestion=(
+                    "Write snapshots to Iceberg: `database='<iceberg catalog>'` in the "
+                    "snapshot's config. If this catalog is not Hive, name the ones that are "
+                    "in THEMIS_HIVE_CATALOGS."
+                ),
+                blast_radius=ctx.blast_radius,
+            )
+        ]
+
+
 RULES: tuple[Rule, ...] = (
     CrossCatalogJoinRule(),
     CartesianJoinRule(),
@@ -519,4 +581,5 @@ RULES: tuple[Rule, ...] = (
     UnorderedLimitRule(),
     IntegerDivisionRule(),
     RowLevelIncrementalOnHiveRule(),
+    SnapshotOnHiveRule(),
 )

@@ -392,6 +392,8 @@ def _capture_builds(
             self.stdout = stdout
 
     def _fake_run_dbt(project_dir: Path, args: list[str], **kwargs: object) -> _Result:
+        if args[0] == "ls":  # where the build would write: nowhere outside the run
+            return _Result(True, "")
         calls.append(args)
         if len(calls) == 1:
             return _Result(True, "")

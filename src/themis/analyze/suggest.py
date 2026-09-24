@@ -21,7 +21,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from themis.models import Grain, GrainSource
-from themis.snapshot import DeclaredTest, ProjectSnapshot
+from themis.snapshot import DeclaredTest, ModelNode, ProjectSnapshot
 
 # Tests that assert uniqueness under one name or another. A model already carrying one
 # of these on its key needs nothing from us.
@@ -42,6 +42,10 @@ class TestSuggestion:
     columns: tuple[str, ...]
     basis: GrainSource
     rows_per_key: float | None = None
+    # The properties key the node lives under. dbt reads a seed's tests only under
+    # `seeds:` and a snapshot's only under `snapshots:`; under `models:` they match nothing,
+    # and a pasted test that matches nothing is a test that never runs.
+    resource: str = "models"
 
     @property
     def test_name(self) -> str:
@@ -55,6 +59,8 @@ class TestSuggestion:
             return f"measured: {self.rows_per_key:.2f} rows per key"
         if self.basis is GrainSource.STRUCTURAL:
             return "derived from the model's own GROUP BY / DISTINCT / dedup"
+        if self.basis is GrainSource.CONFIG and self.resource == "snapshots":
+            return "the snapshot's unique_key, once per version"
         if self.basis is GrainSource.CONFIG:
             return "declared as the incremental unique_key"
         return f"grain source: {self.basis.value}"
@@ -128,15 +134,25 @@ def suggest_tests(
         emitted = (outputs or {}).get(name)
         if emitted is not None and not set(grain.columns) <= set(emitted):
             continue
+        node = snapshot.models.get(name)
         suggestions.append(
             TestSuggestion(
                 model_name=name,
                 columns=grain.columns,
                 basis=grain.source,
                 rows_per_key=grain.rows_per_key,
+                resource=_resource(node),
             )
         )
     return suggestions
+
+
+def _resource(node: ModelNode | None) -> str:
+    if node is not None and node.is_seed:
+        return "seeds"
+    if node is not None and node.is_snapshot:
+        return "snapshots"
+    return "models"
 
 
 def render_yaml(suggestions: list[TestSuggestion]) -> str:
@@ -147,8 +163,13 @@ def render_yaml(suggestions: list[TestSuggestion]) -> str:
     """
     if not suggestions:
         return ""
-    body = "".join(suggestion.yaml for suggestion in suggestions)
-    header = "version: 2\n\nmodels:\n"
+    sections = []
+    for resource in ("models", "seeds", "snapshots"):
+        entries = [s.yaml for s in suggestions if s.resource == resource]
+        if entries:
+            sections.append(f"{resource}:\n" + "".join(entries))
+    body = "\n".join(sections)
+    header = "version: 2\n\n"
     needs_utils = any(len(s.columns) > 1 for s in suggestions)
     note = (
         "\n# Composite keys use dbt_utils.unique_combination_of_columns — add dbt_utils\n"

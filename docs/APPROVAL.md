@@ -44,7 +44,9 @@ on a GPU host, for the parts that use a language model; every review also runs w
 - **In the warehouse, only with `--execute`**: dbt builds the two revisions into schemas
   named `themis_base_<random>` and `themis_head_<random>`, and THEMIS drops them afterwards —
   the only writes THEMIS issues itself (`drop_run_schemas`); everything else it sends is a
-  read. The dbt target must be on
+  read. Before building, it asks dbt where every node would be written and refuses the
+  build if anything would land outside those schemas — a snapshot's legacy
+  `target_schema` would (`execute/runner.py`, `outside_run_schema`). The dbt target must be on
   an allowlist that fails closed; `themis init` proposes only targets whose names do not
   say production (`acquire/dbt_runner.py`, `assert_target_allowed`).
 - `dbt compile` is not read-only — a project's macros can run queries while compiling — so
@@ -72,7 +74,7 @@ Nothing. Enforced, not assumed:
 | for | access |
 |---|---|
 | reviewing a change, rules only | read access to the git repository; a dbt profile whose target can compile |
-| `--execute` | create and drop schemas in one non-production catalog |
+| `--execute` | create and drop schemas in each non-production catalog the project writes to — Hive for models and Iceberg for snapshots, at work |
 | the web page | behind the organisation's sign-in proxy, which passes the user's name in a header (`THEMIS_UI_TRUSTED_USER_HEADER`). `themis serve` binds to the local machine by default, and with that header configured refuses to bind beyond it unless told only the proxy can reach the port — otherwise anyone reaching it directly could claim any name |
 | the queue API | a bearer token (`THEMIS_API_TOKEN`) |
 

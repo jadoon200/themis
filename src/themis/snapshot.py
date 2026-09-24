@@ -53,6 +53,65 @@ class DeclaredTest(BaseModel):
     severity: str = "error"
 
 
+# dbt's names for a snapshot's bookkeeping columns. A project can rename them with
+# `snapshot_meta_column_names`, so nothing reads these directly: see ``HistoryConfig``.
+META_COLUMNS = ("dbt_scd_id", "dbt_updated_at", "dbt_valid_from", "dbt_valid_to")
+IS_DELETED = "dbt_is_deleted"
+
+
+class HistoryConfig(BaseModel):
+    """How a dbt snapshot writes history.
+
+    A snapshot is the one node whose table outlives its code. A model can be rebuilt from
+    its sources at any time; a snapshot's earlier versions exist nowhere else, so an edit
+    to how it recognises a row, detects a change or treats a deletion is permanent for
+    everything already written. These are the settings that decide that.
+    """
+
+    model_config = {"frozen": True}
+
+    # "timestamp" (a new version when `updated_at` advances) or "check" (when a
+    # checked column's value differs). Anything else is a custom strategy.
+    strategy: str | None = None
+    updated_at: str | None = None
+    # `check_cols='all'` is kept as ("all",): every column the query returns.
+    check_cols: tuple[str, ...] = ()
+    # What happens to a row that disappears from the query: "ignore" leaves its version
+    # current forever, "invalidate" closes it, "new_record" writes a deletion version.
+    # The legacy `invalidate_hard_deletes=true` is "invalidate".
+    hard_deletes: str = "ignore"
+    # The legacy `target_schema` / `target_database`. Set, the location is fixed: it
+    # bypasses the schema macro, so the snapshot lands there whatever the target says.
+    fixed_schema: str | None = None
+    fixed_database: str | None = None
+    # dbt name -> this project's name, for the bookkeeping columns it renamed.
+    meta_names: dict[str, str] = Field(default_factory=dict)
+
+    def column(self, dbt_name: str) -> str:
+        """This project's name for one of dbt's bookkeeping columns."""
+        return self.meta_names.get(dbt_name) or dbt_name
+
+    @property
+    def valid_from(self) -> str:
+        return self.column("dbt_valid_from")
+
+    @property
+    def valid_to(self) -> str:
+        return self.column("dbt_valid_to")
+
+    @property
+    def meta_columns(self) -> tuple[str, ...]:
+        """The columns dbt adds to every row, under this project's names."""
+        names = tuple(self.column(name) for name in META_COLUMNS)
+        if self.hard_deletes == "new_record":
+            names += (self.column(IS_DELETED),)
+        return names
+
+    @property
+    def checks_all(self) -> bool:
+        return tuple(c.lower() for c in self.check_cols) == ("all",)
+
+
 class ModelNode(BaseModel):
     """One dbt model as THEMIS sees it."""
 
@@ -108,11 +167,18 @@ class ModelNode(BaseModel):
     depends_on_models: tuple[str, ...] = ()
     depends_on_macros: tuple[str, ...] = ()
     depends_on_sources: tuple[str, ...] = ()
+    # Set for a dbt snapshot, and only for one.
+    history: HistoryConfig | None = None
 
     @property
     def is_seed(self) -> bool:
         """Seeds are CSV data, not SQL. Their grain can be measured but never derived."""
         return self.resource_type == "seed"
+
+    @property
+    def is_snapshot(self) -> bool:
+        """A dbt snapshot: its SQL is a query, and its table is every version of it."""
+        return self.resource_type == "snapshot"
 
     @property
     def analysable_sql(self) -> str | None:

@@ -249,6 +249,7 @@ def _reconfigured_models(before: ProjectSnapshot, after: ProjectSnapshot) -> tup
             tuple(sorted(model.properties.items())),
             model.pre_hooks,
             model.post_hooks,
+            model.history,
         )
 
     names = set(before.models) | set(after.models)
@@ -411,12 +412,12 @@ def unexplained_change_findings(
     # the year alters no row count and no monetary sum in the staging model itself,
     # and shifts every figure below it. Requiring an origin to have moved left those
     # six descendants ownerless, so one explained change produced six criticals.
-    origins: set[str] = {
-        name
-        for name in set(before.models) | set(after.models)
-        if not (after.models.get(name) or before.models[name]).is_seed
-        and code_changed(name, before, after)
-    }
+    #
+    # Its configuration counts as its code. A snapshot told to date versions by another
+    # column compiles to the same SQL and writes different history, and the mart beneath
+    # it moved while its origin read as untouched — so the mart was reported as moving for
+    # no reason anyone could name, beside the finding that named it.
+    origins: set[str] = set(_reconfigured_models(before, after))
     # A seed whose data changed is an origin too, with no SQL to show for it. Without
     # this every model beneath an edited FX-rate file read as having moved for no
     # reason anyone could name.
@@ -869,14 +870,14 @@ def review(
     contexts = build_contexts(acquired, grains, dialect=settings.dialect, vocab=vocab)
     findings, skipped = run_rules(contexts)
 
-    # A changed dbt file no stage looked at. A snapshot is the case: it is not a model or a
-    # seed, so it resolves to no node and would drop out of the review without a word. What
+    # A changed dbt file no stage looked at: SQL that neither revision's manifest knows as a
+    # model, seed, snapshot or macro. It would drop out of the review without a word. What
     # is not analysed is said, and counts towards the review being incomplete.
     skipped += [
         SkippedRule(
             rule_id="X0003",
             model_name=Path(path).stem,
-            reason=f"{path} is not a model, seed or macro — THEMIS did not analyse it",
+            reason=f"{path} is not a model, seed, snapshot or macro — THEMIS did not analyse it",
         )
         for path in acquired.unanalysed_changes
     ]
@@ -926,18 +927,33 @@ def review(
                     models=sorted(narrowing.excluded)[:5],
                 )
                 targets = changed | set(narrowing.kept)
-        # Two-pass building is only needed when something in the selection is
-        # incremental; for everything else the second pass is wasted time.
-        # Only the incremental models need a second pass, and only when they are in
-        # the selection at all.
+        # Two-pass building is only needed when something in the selection carries
+        # state between runs; for everything else the second pass is wasted time.
+        # Incremental models need it to exercise their incremental branch, and snapshots
+        # to exercise the MERGE that closes versions — which is where a key that does not
+        # identify a row, or an updated_at stamped at build time, shows itself.
         incremental_models = tuple(
             sorted(
                 name
                 for name in targets
                 if (model := acquired.after.models.get(name) or acquired.before.models.get(name))
-                and model.materialization == "incremental"
+                and (model.materialization == "incremental" or model.is_snapshot)
             )
         )
+        # A snapshot is counted and paired on its key, not its table's key: a fresh build
+        # writes one version per key, and under `check` the version time is the moment of
+        # the build, so no two builds agree on it and nothing would pair.
+        candidates = {
+            name: (
+                grain.model_copy(update={"columns": node.unique_key})
+                if (node := acquired.after.models.get(name)) is not None
+                and node.is_snapshot
+                and node.unique_key
+                and grain.columns
+                else grain
+            )
+            for name, grain in grains.items()
+        }
         execution = execute(
             project_dir,
             base=base,
@@ -945,7 +961,7 @@ def review(
             models=tuple(sorted(targets)),
             settings=settings,
             target=target,
-            grain_candidates=grains,
+            grain_candidates=candidates,
             incremental_models=incremental_models,
             defer_state=defer_state,
             capabilities=capabilities,
@@ -975,7 +991,16 @@ def review(
             # Not suppressed by anything above it: a rule explaining *why* the numbers moved
             # does not tell a reviewer that what moved was a period already reported.
             findings.extend(restated_period_findings(execution, acquired.after, vocab))
-            grains = {**grains, **execution.measured_grains}
+            # Not for a snapshot: counting a fresh build of one measures a single version
+            # of everything, which says nothing about the table it keeps in production.
+            grains = {
+                **grains,
+                **{
+                    name: grain
+                    for name, grain in execution.measured_grains.items()
+                    if not ((node := acquired.after.models.get(name)) and node.is_snapshot)
+                },
+            }
             # Built, and unreadable where dbt said it put them: not measured, and said so.
             skipped += [
                 SkippedRule(rule_id="X0006", model_name=model, reason=reason)

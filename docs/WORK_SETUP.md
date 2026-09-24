@@ -11,13 +11,14 @@ sends.
 
 ## 0. Before the first day
 
-Five answers decide how the first week goes. Ask a colleague before arriving:
+Six answers decide how the first week goes. Ask a colleague before arriving:
 
 | question | why it matters |
 |---|---|
 | How does Trino log in — LDAP (password over HTTPS), JWT, Kerberos, certificate, OAuth? | THEMIS logs in with dbt-trino's own credentials, so every method dbt supports works, except OAuth, which needs a browser; a review runs unattended, so it needs a service account |
 | Is there a non-production schema THEMIS may create tables in? | `--execute` builds both revisions of a change into schemas of its own and drops them after. Without one it reviews rules-only, which is still the bulk of it |
 | How does the dagster-dbt repository provide its dbt profile, and which dbt version? | Dagster setups often generate the profile at run time; THEMIS needs a profile with a dev target on disk, or `DBT_PROFILES_DIR` pointing at one |
+| Do the Dagster snapshots set `target_schema`, or `schema`? | a legacy `target_schema` fixes where a snapshot is written whatever the target says, so `--execute` refuses to build it rather than have base and head share one table; `schema` (dbt 1.9+) follows the target and is measured normally |
 | Where does production's `target/manifest.json` live? | `--defer-state` reads unchanged upstream models where production already built them instead of rebuilding them |
 | What can be installed: a PyPI mirror, Ollama and a model on the GPU host, Postgres? | SQLite is enough to start; the model is optional (`--no-llm`); everything else is on PyPI |
 
@@ -241,4 +242,7 @@ changes page, <kbd>t</kbd> switches light and dark.
 | a Hive incremental model using `delete+insert` | builds once, fails every run after: Hive refuses row-level deletes | the demo is written for partition overwrite, CI runs it twice, and F5008 flags a filter that overwrites part of a partition |
 | `password: "{{ env_var('...') }}"` in the profile | THEMIS's own client sent the template text as the password | rendered as dbt renders it; an unset variable is named |
 | a login other than a password (JWT, Kerberos, certificate) | THEMIS could not log in, every query failed quietly, and a review read as "nothing moved" | logs in through dbt-trino's own credentials; a failed login stops measurement and marks the review incomplete |
+| a changed dbt snapshot | reported as not analysed; a model reading one had no edge to it | reviewed as history (F9001–F9007, F8007); a reader is keyed per version unless it takes one |
+| a snapshot's legacy `target_schema`, or a `generate_schema_name` that ignores the target | base and head would have written the same table, in a schema never dropped | dbt is asked where every node would go before anything is built; outside the run's schemas, the build is refused and the nodes named |
+| an Iceberg timestamp copied into a Hive table | Trino refuses: Iceberg keeps microseconds, this Hive catalog milliseconds | the demo narrows it to `timestamp(3)`; worth knowing when the SCD data lands |
 | a comment written at the reviewer | an AI reviewer quoting it would be quoting honestly, and the self-check would pass it | reported as F7004, and the model that carries it is kept away from every seat that could refute a finding |

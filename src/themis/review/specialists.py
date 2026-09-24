@@ -185,6 +185,34 @@ Note that several of these produce no visible change today and fail only later. 
 still counts as confirmed — say so in the rationale.""",
 )
 
+HISTORY = Specialist(
+    name="history",
+    families=frozenset({"F9"}),
+    needs=frozenset({Section.CONFIG, Section.GRAIN, Section.BLAST_RADIUS}),
+    question="""You judge whether a flagged change corrupts the history a dbt snapshot keeps.
+
+A snapshot's table is the only copy of its past. It is written a run at a time and never
+rebuilt, so an edit applies to every version already stored as well as to the ones to
+come — and a snapshot built from nothing in a test looks fine, because it has no history
+yet.
+
+- `unique_key` is how stored versions are matched to the query. A key that does not
+  identify one query row makes Trino's MERGE fail; a changed key leaves stored versions
+  unmatched, so each key gains a second current version.
+- `strategy`, `updated_at` and `check_cols` decide when a new version is written. A
+  change splits the table into two histories that mean different things. A value stamped
+  at build time makes every run version every row.
+- `hard_deletes` decides what a missing row means. With deletions tracked, a filter added
+  to the query records every excluded row as deleted.
+- Moving the snapshot starts an empty table; the old history stays behind.
+- A model reading a snapshot without taking one version per key counts each key once per
+  version — correct today, wrong after the first change at the source.
+
+Say which of these the change does and whether the configuration shown really does it.
+A consequence that only appears once history exists still counts as confirmed; say so
+rather than refuting because nothing is wrong yet.""",
+)
+
 CONTRACTS = Specialist(
     name="contracts",
     families=frozenset({"F6"}),
@@ -279,6 +307,7 @@ ALL_SPECIALISTS: tuple[Specialist, ...] = (
     FILTERS,
     MONEY,
     INCREMENTAL,
+    HISTORY,
     CONTRACTS,
     ENGINE,
     GOVERNANCE,

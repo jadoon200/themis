@@ -2,8 +2,10 @@
 # (sentinel 5432, argus 5433, pharos 5434, horus 5435). Trino on 8085.
 #
 # Everything here is free, open source, and has an arm64 image, so it runs natively on
-# Apple Silicon. Trino is capped at 4 GB: its JVM takes 80% of the container's memory,
-# which is plenty for the demo project and leaves a laptop usable.
+# Apple Silicon. Trino is capped at 4 GB, which is plenty for the demo project and leaves a
+# laptop usable — with its heap at 60% of that, not the image's 80%. At 80% the rest of the
+# JVM (code cache, metaspace, threads, buffers) had 800 MB, grew past it over a day of
+# corpus runs, and the kernel killed the container mid-check (OOMKilled, exit 137).
 services:
   db:
     image: postgres:16-alpine
@@ -41,8 +43,11 @@ services:
       - "8085:8080"
     volumes:
       - ./docker/trino/catalog:/etc/trino/catalog:ro
+      - ./docker/trino/jvm.config:/etc/trino/jvm.config:ro
       - themis-trino-warehouse:/warehouse
     mem_limit: 4g
+    # And if it is killed anyway, it comes back; the warehouse is on the volume.
+    restart: on-failure
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:8080/v1/info | grep -q '\"starting\":false'"]
       interval: 5s

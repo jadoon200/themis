@@ -64,6 +64,14 @@ it clean. Stage 3 pairs the base and head rows on the derived grain and counts w
 column by column. The projects this is for declare no keys, so it pairs only on a key it has
 *counted* unique in both builds; an inferred key is never trusted to pair rows.
 
+**Snapshots are reviewed as history.** A dbt snapshot is the one table whose past cannot be
+rebuilt, so an edit to its key, its change detection or its handling of deletions applies
+to every version already written — and merges green, because a snapshot built in a test has
+no history to get wrong. THEMIS reads those edits from configuration, keys a snapshot by
+version rather than by row, and flags a model that reads every version where it meant the
+current one. Stage 3 also refuses to build anything dbt would write outside its own
+schemas, which a legacy snapshot `target_schema` would.
+
 **What reviewers decide changes the next review — visibly, and only in the order.** Mark a
 finding dismissed and the next run that raises it says so on the finding, ranks it lower,
 and shows the specialist how the same rule was ruled on before. Nothing is deleted, no
@@ -238,7 +246,7 @@ To check that every part actually runs — not a stand-in for it — with Postgr
 python scripts/component_check.py
 ```
 
-78 checks from a throwaway worktree: the CLI, five scenario reviews, exit codes, reports,
+81 checks from a throwaway worktree: the CLI, seven scenario reviews, exit codes, reports,
 execution, persistence, `ask`, the API and a worker, the pages, Trino, and the corpus.
 `--quick` skips the model, Trino and the corpus.
 
@@ -256,11 +264,11 @@ which has hidden a defect Trino shows (docs/EVAL.md, "Measured on the engine of 
 
 A proof of concept. See `docs/ROADMAP.md` for what is built and what is next, and
 `docs/EVAL.md` for the measurements, including where THEMIS does worse than it looks
-like it should. On the 50-case corpus: **100% recall, all 32 rules firing, every
-behaviour-preserving control silent** — and CI fails if any of that stops being true.
+like it should. On the 63-case corpus, built on Trino: **100% recall, all 42 rules firing,
+every behaviour-preserving control silent** — and CI fails if any of that stops being true.
 Three of the deliberately safe changes are still flagged (recall-first, by design),
-which puts precision at 86% and the false-positive rate at 27%; those two figures move
-with how many safe cases the corpus holds, so the three-of-eleven is the one to read.
+which puts precision at 90% and the false-positive rate at 23%; those two figures move
+with how many safe cases the corpus holds, so the three-of-thirteen is the one to read.
 
 That CI gate is recent. Until September 2026 the corpus job ran against a project it had
 not built, measured 9 of 29 rules, and passed — `docs/EVAL.md` records what else a review

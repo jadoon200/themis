@@ -23,6 +23,7 @@ from themis.snapshot import (
     ColumnSchema,
     DeclaredTest,
     Exposure,
+    HistoryConfig,
     MacroNode,
     ModelNode,
     ProjectSnapshot,
@@ -98,6 +99,32 @@ def _with_seed_key(model: ModelNode, project_dir: Path) -> ModelNode:
     return model.model_copy(update={"seed_key": key.columns})
 
 
+# The node types that are built from SQL, or loaded from a file, and can be read by a
+# ref(). A snapshot is one: it was left out once, and a change to one was then reported
+# as touching nothing, while every model reading it lost the edge to it.
+_BUILT_TYPES = ("model", "seed", "snapshot")
+_BUILT_PREFIXES = tuple(f"{kind}." for kind in _BUILT_TYPES)
+
+
+def _history_config(config: dict[str, Any]) -> HistoryConfig:
+    """A snapshot's settings, in both the current and the legacy spelling."""
+    hard_deletes = config.get("hard_deletes")
+    if not hard_deletes:
+        # Before dbt 1.9 the only choice was a boolean.
+        hard_deletes = "invalidate" if config.get("invalidate_hard_deletes") else "ignore"
+    check_cols = config.get("check_cols")
+    renamed = config.get("snapshot_meta_column_names") or {}
+    return HistoryConfig(
+        strategy=(str(config["strategy"]).lower() if config.get("strategy") else None),
+        updated_at=(str(config["updated_at"]) if config.get("updated_at") else None),
+        check_cols=("all",) if check_cols == "all" else _as_tuple(check_cols),
+        hard_deletes=str(hard_deletes).lower(),
+        fixed_schema=config.get("target_schema") or None,
+        fixed_database=config.get("target_database") or None,
+        meta_names={str(k): str(v) for k, v in renamed.items() if v},
+    )
+
+
 def _model_from_node(
     unique_id: str, node: dict[str, Any], *, mask: Callable[[str], str] | None = None
 ) -> ModelNode:
@@ -139,12 +166,13 @@ def _model_from_node(
         pre_hooks=_hook_texts(config.get("pre-hook") or config.get("pre_hook")),
         post_hooks=_hook_texts(config.get("post-hook") or config.get("post_hook")),
         depends_on_models=tuple(
-            n for n in depends_on.get("nodes", []) if str(n).startswith(("model.", "seed."))
+            n for n in depends_on.get("nodes", []) if str(n).startswith(_BUILT_PREFIXES)
         ),
         depends_on_macros=tuple(depends_on.get("macros", []) or ()),
         depends_on_sources=tuple(
             n for n in depends_on.get("nodes", []) if str(n).startswith("source.")
         ),
+        history=(_history_config(config) if node.get("resource_type") == "snapshot" else None),
     )
 
 
@@ -204,7 +232,7 @@ def load_manifest(
     models = {
         node["name"]: _model_from_node(uid, node, mask=mask)
         for uid, node in nodes.items()
-        if node.get("resource_type") in ("model", "seed")
+        if node.get("resource_type") in _BUILT_TYPES
     }
     if project_dir is not None:
         models = {name: _with_seed_key(model, project_dir) for name, model in models.items()}

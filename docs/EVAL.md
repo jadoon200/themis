@@ -1639,6 +1639,106 @@ Starburst-specific connector setting, or a project at the scale and macro densit
 one at work. The file metastore and local file system stand in for those; the SQL surface,
 table properties and write semantics are Trino's own.
 
+## Snapshots on Iceberg
+
+Slowly-changing data at work is dbt snapshots, run by Dagster into Iceberg. Until now a
+changed snapshot was reported as not analysed (X0003), and a model reading one had no edge
+back to it — dependencies were filtered to models and seeds, so a mart on a snapshot looked
+like a root. The demo project now has two snapshots on Iceberg (contracts under
+`timestamp`, accounts under `check`) and a mart taking the current version of each contract.
+
+### What was measured before any rule was written
+
+Each on the demo, in a scratch copy, on Trino 483 with Iceberg:
+
+| edit | what happened |
+|---|---|
+| `unique_key` coarsened to a column five accounts share | builds; the next snapshot run fails: `MERGE_TARGET_ROW_MULTIPLE_MATCHES` |
+| the same, on DuckDB, which does not refuse | 20 accounts become 420 rows over three runs, 320 of them current |
+| `updated_at` replaced by `current_timestamp` | 40 rows, 80 after the second run, 120 after the third — every run versions every row |
+| a `check` snapshot pointed at the Hive catalog | fails on its first run: `Unsupported Hive type: timestamp(3) with time zone` |
+| a Hive mart copying the snapshot's `dbt_valid_from` | refused: Iceberg keeps microseconds, the Hive catalog milliseconds |
+
+The last is not a THEMIS finding, and it is worth knowing before the SCD data lands: a
+timestamp crossing from Iceberg into a Hive table has to be narrowed to `timestamp(3)`.
+
+### Two grains, and which one a reader gets
+
+A snapshot's query is keyed by its `unique_key`; its table keeps a row per version, so it
+is keyed by the key plus `dbt_valid_from`. A model that takes one version — `where
+dbt_valid_to is null`, an as-of join, filtered in a CTE or after it — gets the key back; one
+that does not keeps the version in its key. With nothing declared (the project at work
+declares no tests, and staging reads `source()`), the query's grain cannot be derived and
+the table's key rests on the snapshot's own config, as an incremental model's does. A key
+the query is provably *not* unique on is no grain at all, so nothing downstream inherits it.
+
+### The corpus cases
+
+Most of what goes wrong with a snapshot cannot be measured on a build: a build in an empty
+schema writes one version of everything, and the damage is to history that already exists —
+the production table. Those are LATENT, scored on detection. The ones a build does show are
+measured on the second snapshot run, which Stage 3 now runs for snapshots as it does for
+incremental models.
+
+| case | kind | rule | measured |
+|---|---|---|---|
+| key coarsened | defect | F9001, F9002 | second run fails (MERGE) |
+| `updated_at` stamped at build time | defect | F9004 | 40 → 80 rows |
+| `updated_at` moved to `contract_start` | defect | F9003 | every version's dates move |
+| filter added while deletions are tracked | defect | F9005 | the filtered contracts are gone |
+| snapshot's catalog removed, landing in Hive | defect | F8007 | first run fails |
+| re-keyed, strategy changed, `check_cols` narrowed, deletions ignored, moved, current-version filter removed | latent | F9002, F9003, F9003, F9005, F9006, F9007 | nothing, by construction |
+| `check_cols` widened, a comment reworded | control | — | silent, as they should be |
+
+13 of 13: every defect reported, every latent case caught, both controls silent.
+
+Two things the cases found in THEMIS rather than in the demo. The safety net attributed
+movement to models whose compiled SQL changed, and a snapshot told to date versions by
+another column compiles to the same SQL — so the mart beneath it was reported as moving for
+no reason, beside the finding that gave the reason. Write configuration now makes a model an
+origin. And F5003 called a snapshot's key change "incremental unique_key changed"; it now
+leaves that to F9002.
+
+### Nothing is written outside the run's schemas
+
+Stage 3 redirects a build by overriding the profile's schema, and dbt's default schema macro
+keeps every node beneath it. A legacy snapshot `target_schema` does not — it bypasses the
+macro — and nor does a project `generate_schema_name` that uses the custom schema as
+written, which is a common house style. Either would have base and head writing one table,
+each measuring the other's rows, in a schema THEMIS never drops. Each build now asks dbt
+where every selected node would go (`dbt ls` with the build's own profile) and refuses,
+naming them, before anything is written. The component check commits a legacy
+`target_schema` and asserts the refusal and that the schema was never created.
+
+It is not free: one more dbt parse per build, about 17 seconds a review on a CI runner, which
+with twelve more cases took the corpus job from 18 minutes to 42. It stays unconditional.
+Skipping it where the schema macro is provably dbt's default would save the time, and would
+turn a guard that fails closed into one that trusts an argument; at work, where a build takes
+minutes, the parse is noise.
+
+What this does not show: history that exists. Every snapshot case starts from an empty
+table, so a re-key or a strategy change is judged from configuration, not from what it does
+to a year of versions. That measurement — build the base, run it over time, apply the head
+to the same table — is the next thing snapshots need, and the office's own history is where
+it would mean something.
+
+### The whole corpus, after
+
+| | Trino, when it became the engine | now |
+|---|---|---|
+| cases | 50 | 63 |
+| rule coverage | 33 / 33 | **42 / 42** |
+| recall | 100% | **100%** |
+| precision | 88% | 90% |
+| false-positive rate | 27% (3 of 11) | 23% (3 of 13) |
+| latent defects caught | 14 / 14 | **20 / 20** |
+| unruled defects caught (safety net) | 4 / 4 | 4 / 4 |
+| gate | pass | **pass** |
+
+Precision and the false-positive rate both improved because the corpus grew — five more
+defects caught, two more silent controls — not because anything got better at the three
+benign cases, which are flagged exactly as before. Read the three, not the percentages.
+
 ## Known limitations
 
 Kept current. Several entries here were closed and are gone rather than left standing —
@@ -1658,19 +1758,14 @@ to discount the rest of it.
   the measured duplication it would have caught is.
 - **A seed data change is reviewed only with `--execute`.** There is no SQL in it for a rule
   to read. Without execution the report names the seed and what it feeds, and says so.
-- **The Trino demo build is only idempotent under `--full-refresh`.** All eighteen
-  models build on Trino from cold, which is what CI does — a fresh service container
-  every run. A *second* incremental run of the same table fails: the memory connector
-  cannot `DELETE`, and `delete+insert` needs to. That is a property of the connector
-  chosen to avoid needing an object store, not of dbt-trino or of THEMIS, but it means
-  the Trino claim holds for a cold warehouse and has to say so.
-- **Trino coverage is single-catalog.** The demo project builds on Trino as well as
-  DuckDB, so the rules read Trino-compiled SQL. But Trino's memory connector is one
-  catalog, so the federated-join case is exercised on DuckDB's attached catalog rather
-  than on Trino itself.
-- **DuckDB is not Trino.** The demo project stays inside the dialects' intersection, so
-  Trino-specific behaviour (decimal overflow at precision 38, connector MERGE support,
-  federated pushdown) is reasoned about and never executed.
+- **The warehouse is a stand-in for the one at work.** Trino 483 with a file metastore and
+  a local file system: the SQL surface, Hive's write semantics, MERGE on Iceberg and the
+  cross-catalog join are Trino's own and are executed. A real metastore, an object store,
+  Starburst's connector settings and decimal overflow at precision 38 are not.
+- **Snapshot history is judged, not measured.** Every snapshot case builds from an empty
+  table, so a re-key, a strategy change or a narrowed `check_cols` is read from
+  configuration and scored as latent. What it does to history that exists has not been
+  measured anywhere.
 - **The corpus is fitted**, though generated mutations offset this in part. The
   generator only applies transformations someone wrote down; it reaches cases nobody
   chose, which is the point, but not cases nobody could imagine.
