@@ -25,15 +25,17 @@
 - **Tested-vs-testless measurement.** `themis eval --variant tested` merges declared
   keys into the demo project and reruns the corpus, which is how the cost of deriving
   grain rather than reading it is finally a number rather than an expectation.
-- **Stage 2 — Rules.** 32 rules across eight families: grain and fan-out, filters and
+- **Stage 2 — Rules.** 42 rules across nine families: grain and fan-out, filters and
   NULL semantics, money precision, periods, incremental and materialization, contracts
-  and lineage, governance, and Trino engine behaviour. Plus `X0001`, the safety net
+  and lineage, governance, Trino engine behaviour, and snapshots — the history they
+  keep. Plus `X0001`, the safety net
   that reports a measured change no rule accounts for. Skipped checks are reported
   rather than hidden.
 - **Stage 3 — Execute.** Both revisions built and diffed on real data, with
   `--defer-state` to resolve unchanged upstreams to an existing build instead of
   rebuilding the ancestor closure twice. Each run builds into schemas of its own and
-  drops them afterwards, and dbt's own record of which models built decides what is
+  drops them afterwards — having first asked dbt where every node would go, and
+  refused if anything would land outside them — and dbt's own record of which models built decides what is
   measured — a relation merely existing is never taken as this run's result. A head that
   no longer builds is a finding in its own right (`X0002`).
 - **The revision asked for.** The head is compiled and built from the commit `--head`
@@ -150,11 +152,19 @@ dbt's manifest), that the demo's incremental model could not run twice on Hive (
 for partition overwrite), and a defect with no rule (F5008). See EVAL, "Measured on the
 engine of record".
 
-**Snapshots on Iceberg.** Next. Slowly changing data will come from dbt snapshots run by
-Dagster into Iceberg. THEMIS reports a changed snapshot as not analysed (X0003) — visible,
-and not enough: a snapshot's `unique_key`, `strategy`, `updated_at` or `check_cols`
-decides how history is written, and a wrong edit corrupts history for good. Needs a
-snapshot in the demo project, rules for those edits, and corpus cases measured on Iceberg.
+**Snapshots on Iceberg.** Built. Snapshots load as nodes with their history settings and
+are reviewed as the one table whose past cannot be rebuilt: F9001–F9007 for the key, the
+change detection, deletions, a move, and a reader taking every version; F8007 for a
+snapshot on Hive. Two grains — the query's key, the table's key plus `dbt_valid_from` —
+and a reader taking one version gets the key back. Thirteen corpus cases on Iceberg,
+five measured, six latent, two controls; 13 of 13. Execution refuses any build that
+would write outside its own schemas, which a legacy `target_schema` does. See EVAL,
+"Snapshots on Iceberg".
+
+**History that exists.** Next for snapshots. Every case starts from an empty table, so a
+re-key or a strategy change is judged from configuration. Measuring it means building
+the base, advancing its source over several runs, then applying the head to the same
+table — worth doing against the office's own history rather than a demo's.
 
 **M2 — grounding depth.** Built. Column-level lineage, the grain lattice, macro and
 YAML routing, missing-test suggestions derived from the grain, rule families F2 through
