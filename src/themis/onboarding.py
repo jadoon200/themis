@@ -73,6 +73,14 @@ def _check_python() -> Check:
 
 
 def _check_dbt() -> Check:
+    """Which dbt is installed, read from the package — not from `dbt --version`.
+
+    `dbt --version` asks pypi.org for the latest release to say whether an update exists.
+    That is a request leaving the network for the sake of a version string the installed
+    package already knows.
+    """
+    from importlib import metadata
+
     from themis.acquire.dbt_runner import DbtError, dbt_executable
 
     try:
@@ -80,16 +88,10 @@ def _check_dbt() -> Check:
     except DbtError:
         return Check("dbt", "fail", "dbt is not installed here", "uv pip install dbt-core")
     try:
-        output = subprocess.run(
-            [executable, "--version"], capture_output=True, text=True, timeout=60, check=False
-        ).stdout
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        return Check("dbt", "fail", f"dbt did not run: {exc}", None)
-    version = next(
-        (line.strip().lstrip("- ").strip() for line in output.splitlines() if "installed" in line),
-        "",
-    )
-    return Check("dbt", "ok", version or executable)
+        version = metadata.version("dbt-core")
+    except metadata.PackageNotFoundError:
+        return Check("dbt", "fail", f"{executable} is not from an installed dbt-core", None)
+    return Check("dbt", "ok", f"dbt-core {version}")
 
 
 def _check_project(project: Path) -> Check:
@@ -218,6 +220,38 @@ def _check_connection(project: Path, settings: Settings, target: str) -> Check:
         detail[:200],
         f"(cd {project} && dbt debug --target {target}) and fix what it names",
     )
+
+
+def _check_measurement(project: Path, settings: Settings, target: str) -> Check:
+    """Whether THEMIS itself can log in and read, the way Stage 3 will measure.
+
+    Not the same as dbt reaching the warehouse. dbt and THEMIS are different code, and a
+    login that works for one can fail for the other — a method the client did not support,
+    an `env_var()` set in dbt's shell and not in THEMIS's. That failure used to be silent:
+    every model read as absent, and absent on both sides reads as "nothing moved".
+    """
+    name = "measurement login"
+    if not project.exists() or not (project / "dbt_project.yml").exists():
+        return Check(name, "skip", "no dbt project to read a profile from")
+    if target not in settings.execute_allowed_targets:
+        return Check(name, "skip", f"{target!r} is not in the allowlist, so THEMIS will not log in")
+    from themis.execute.profiles import ProfileError, read_profile
+    from themis.execute.warehouse import WarehouseUnavailable, check_warehouse
+
+    try:
+        profile = read_profile(project, target=target)
+        detail = check_warehouse(profile, project)
+    except (ProfileError, WarehouseUnavailable) as exc:
+        return Check(
+            name,
+            "fail",
+            str(exc)[:240],
+            "set the variables the profile names in this shell, and use a login that runs "
+            "unattended (ldap, jwt, certificate or kerberos); without it --execute is skipped",
+        )
+    except Exception as exc:  # a doctor that raises tells nobody anything
+        return Check(name, "fail", f"{type(exc).__name__}: {exc}"[:240], None)
+    return Check(name, "ok", detail)
 
 
 def _check_git(project: Path) -> Check:
@@ -375,6 +409,7 @@ def run_checks(project: Path, settings: Settings, *, target: str) -> list[Check]
     checks += [
         _check_allowlist(settings, target),
         _check_connection(project, settings, target),
+        _check_measurement(project, settings, target),
         _check_git(project),
         _check_manifest(project),
     ]

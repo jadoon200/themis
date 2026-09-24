@@ -44,6 +44,10 @@ class DbtResult:
     manifest_path: Path | None = None
 
 
+# Both spellings dbt honours; either alone is enough, and setting both costs nothing.
+NO_TELEMETRY = {"DBT_SEND_ANONYMOUS_USAGE_STATS": "False", "DO_NOT_TRACK": "1"}
+
+
 def dbt_executable() -> str:
     """Locate the dbt that matches the installed dbt-core.
 
@@ -115,6 +119,10 @@ def run_dbt(
     if target_path is not None:
         args += ["--target-path", str(artefacts)]
     env = {**os.environ, **(env_overrides or {})}
+    # dbt reports anonymous usage to dbt Labs unless told not to. THEMIS runs inside a
+    # network where nothing is meant to leave, so every dbt it starts is told not to —
+    # regardless of what the shell says, because a review is not the place to opt in.
+    env.update(NO_TELEMETRY)
     log.debug("dbt.run", command=" ".join(command), project=str(project_dir), target=target)
     try:
         proc = subprocess.run(

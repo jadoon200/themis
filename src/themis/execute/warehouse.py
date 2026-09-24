@@ -37,6 +37,112 @@ _NUMERIC_TYPES = (
 )
 
 
+class WarehouseUnavailable(RuntimeError):
+    """THEMIS cannot reach, or cannot log in to, the warehouse it measures on.
+
+    Kept apart from "this table does not exist" on purpose. A table missing on both sides
+    is an empty delta, and an empty delta reads as *nothing moved*: a login that fails on
+    every query would otherwise turn a whole review into "measured, unchanged" while dbt,
+    logging in its own way, built everything fine. A warehouse THEMIS cannot read stops
+    the measurement, and the review says it is incomplete.
+    """
+
+
+# Logins that need a person at a browser. A review runs unattended.
+_INTERACTIVE_LOGINS = frozenset({"oauth", "oauth_console"})
+
+# Trino errors that mean "you may not read this", not "this is not here". Access control
+# also hides tables from information_schema, so a denied read can look like an absent one.
+_NOT_READABLE = frozenset({"PERMISSION_DENIED", "CATALOG_NOT_FOUND"})
+
+
+def trino_connect(profile: dict[str, Any]) -> Any:
+    """A Trino connection made the way dbt-trino makes one, from the same profile.
+
+    Built from dbt-trino's own credential classes rather than a re-implementation, so
+    every login dbt supports — ldap, jwt, certificate, kerberos, gssapi — works here with
+    the same fields and the same meaning, and cannot drift from what dbt did when it built
+    the tables. The profile is rendered first (`{{ env_var(...) }}`), in memory only.
+    """
+    import trino
+
+    from themis.execute.profiles import ProfileError, render_profile
+
+    try:
+        rendered = render_profile(profile)
+    except ProfileError as exc:
+        raise WarehouseUnavailable(str(exc)) from exc
+
+    method = str(rendered.get("method") or "none").lower()
+    if method in _INTERACTIVE_LOGINS:
+        raise WarehouseUnavailable(
+            f"the profile logs in with {method!r}, which needs a person at a browser, and a "
+            "review runs unattended. Use a service account with ldap, jwt, certificate or "
+            "kerberos for the target THEMIS uses."
+        )
+
+    from dbt.adapters.trino.connections import TrinoCredentialsFactory
+
+    fields = {key: value for key, value in rendered.items() if key != "type"}
+    try:
+        credentials = TrinoCredentialsFactory.from_dict(
+            TrinoCredentialsFactory.translate_aliases(fields)
+        )
+        auth = credentials.trino_auth()
+    except ImportError as exc:
+        raise WarehouseUnavailable(
+            f"the {method!r} login needs a package that is not installed ({exc.name}): "
+            "uv pip install requests-kerberos (kerberos) or requests-gssapi (gssapi)"
+        ) from exc
+    except Exception as exc:
+        raise WarehouseUnavailable(f"the profile does not describe a Trino login: {exc}") from exc
+
+    # The same arguments dbt-trino's own connection.open() passes.
+    user = getattr(credentials, "impersonation_user", None) or credentials.user
+    connect: Any = trino.dbapi.connect
+    return connect(
+        host=credentials.host,
+        port=int(credentials.port),
+        user=user,
+        client_tags=getattr(credentials, "client_tags", None),
+        roles=getattr(credentials, "roles", None),
+        catalog=credentials.database,
+        schema=credentials.schema,
+        http_scheme=credentials.http_scheme.value,
+        http_headers=getattr(credentials, "http_headers", None),
+        session_properties=getattr(credentials, "session_properties", None) or None,
+        auth=auth,
+        max_attempts=getattr(credentials, "retries", None) or 3,
+        verify=credentials.cert if credentials.cert is not None else True,
+        source="themis",
+    )
+
+
+def check_warehouse(profile: dict[str, Any], project_dir: Path) -> str:
+    """Connect and read one row the way measurement will, or raise WarehouseUnavailable.
+
+    `dbt debug` proves dbt can log in. This proves THEMIS can — they are different code
+    and can use different credentials — and it runs before minutes of building, not after.
+    """
+    adapter = str(profile.get("type", "")).lower()
+    if adapter == "trino":
+        conn = trino_connect(profile)
+        try:
+            cursor = conn.cursor()
+            cursor.execute("select current_user")
+            (who,) = cursor.fetchone()
+        except Exception as exc:
+            raise WarehouseUnavailable(f"could not query the warehouse: {exc}") from exc
+        finally:
+            conn.close()
+        return f"logged in to Trino as {who}"
+    client = client_for_profile(profile, project_dir)
+    if client is None:
+        raise WarehouseUnavailable(f"no warehouse client for the {adapter!r} adapter")
+    client.close()
+    return f"opened the {adapter} database"
+
+
 @dataclass(frozen=True)
 class Relation:
     """Where a model physically is: catalog, schema, table.
@@ -420,17 +526,22 @@ class TrinoClient:
     def __init__(
         self,
         *,
-        host: str,
-        port: int,
-        user: str,
         catalog: str,
+        host: str = "",
+        port: int = 8080,
+        user: str = "themis",
         http_scheme: str = "http",
         password: str | None = None,
+        connection: Any | None = None,
     ) -> None:
         import trino
 
-        auth = trino.auth.BasicAuthentication(user, password) if password else None
         self._catalog = catalog
+        if connection is not None:
+            # Made by trino_connect, from the profile, with whatever login it names.
+            self._conn = connection
+            return
+        auth = trino.auth.BasicAuthentication(user, password) if password else None
         # The driver ships no annotations, so its DB-API entry point reads as untyped.
         # Narrowed here rather than by relaxing the check for this module, which would
         # also hide genuinely untyped calls elsewhere in the file.
@@ -445,16 +556,24 @@ class TrinoClient:
         )
 
     def _query(self, sql: str) -> list[tuple[Any, ...]]:
+        import trino
+
         try:
             cursor = self._conn.cursor()
             cursor.execute(sql)
             return [tuple(row) for row in cursor.fetchall()]
-        except Exception as exc:
-            # A missing table is a normal outcome — a model may not exist on one side
-            # of the diff. Measurement failure degrades to "unknown", never to a wrong
-            # number presented as measured.
+        except trino.exceptions.TrinoUserError as exc:
+            if getattr(exc, "error_name", None) in _NOT_READABLE:
+                raise WarehouseUnavailable(f"not allowed to read: {exc.message}") from exc
+            # A query the table cannot answer — a model missing on one side of the diff,
+            # a column of a type the aggregate refuses. That degrades to "unknown" for
+            # this model, never to a wrong number presented as measured.
             log.debug("warehouse.query_failed", sql=sql[:120], error=str(exc)[:200])
             return []
+        except Exception as exc:
+            # Unreachable, refused the login, or failed inside: not a fact about any
+            # table, and never to be read as one.
+            raise WarehouseUnavailable(f"could not query the warehouse: {exc}") from exc
 
     @staticmethod
     def _quote(identifier: str) -> str:
@@ -651,20 +770,7 @@ def _drop_trino_schemas(
     ``DROP SCHEMA ... CASCADE`` is not supported by every connector, so the relations
     are dropped first and the schema after — which works on all of them.
     """
-    import trino
-
-    password = profile.get("password")
-    connect: Any = trino.dbapi.connect
-    conn = connect(
-        host=str(profile.get("host", "")),
-        port=int(profile.get("port", 8080)),
-        user=str(profile.get("user", "themis")),
-        catalog=catalog,
-        http_scheme=str(profile.get("http_scheme", "http")),
-        auth=trino.auth.BasicAuthentication(str(profile.get("user")), password)
-        if password
-        else None,
-    )
+    conn = trino_connect(profile)
 
     def run(sql: str) -> list[tuple[Any, ...]]:
         cursor = conn.cursor()
@@ -703,18 +809,11 @@ def client_for_profile(profile: dict[str, Any], project_dir: Path) -> WarehouseC
 
     if adapter == "trino":
         catalog = str(profile.get("database") or profile.get("catalog") or "")
-        host = str(profile.get("host", ""))
-        if not (catalog and host):
-            log.warning("warehouse.trino_profile_incomplete", host=host, catalog=catalog)
-            return None
-        return TrinoClient(
-            host=host,
-            port=int(profile.get("port", 8080)),
-            user=str(profile.get("user", "themis")),
-            catalog=catalog,
-            http_scheme=str(profile.get("http_scheme", "http")),
-            password=profile.get("password"),
-        )
+        if not catalog:
+            raise WarehouseUnavailable("the Trino profile names no catalog")
+        # Raises WarehouseUnavailable, naming why, rather than handing back half a client
+        # that would fail later — mid-review, and quietly.
+        return TrinoClient(catalog=catalog, connection=trino_connect(profile))
 
     if adapter != "duckdb":
         log.warning(

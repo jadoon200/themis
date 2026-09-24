@@ -438,3 +438,22 @@ def test_where_dbt_built_each_model_is_read_from_the_manifest(tmp_path: Path) ->
         "ref_data": ("iceberg", "themis_head_x_main", "ref_data"),
     }
     assert built_relations(tmp_path / "missing") == {}
+
+
+def test_a_model_built_on_both_sides_and_readable_on_neither_is_not_unchanged() -> None:
+    """Absent on both sides reads as "nothing moved". If dbt built it and it cannot be read
+    where dbt said — a location resolved differently, access control hiding it — it has
+    not been measured, and the review has to say so rather than call it unchanged."""
+    built = BuildOutcome(statuses={"mart": "success"})
+    result = _measure(
+        _Warehouse({}),
+        models=("mart",),
+        base_schema="b",
+        head_schema="h",
+        max_rows=1_000_000,
+        head_build=built,
+        base_build=built,
+        grain_candidates={},
+    )
+    assert "mart" not in result.deltas
+    assert "could not be read" in result.unmeasured["mart"]
