@@ -168,6 +168,32 @@ def show_file(repo: Path, revision: str, path: str) -> str:
     return _git(repo, "show", f"{validate_revision(revision)}:{path}")
 
 
+def first_parent_changes(
+    repo: Path, revision: str, path: str, *, limit: int
+) -> list[tuple[str, str, str]]:
+    """(commit, first parent, subject) for the last changes on a revision's first-parent
+    history that touched `path`, newest first. The root commit, having no parent, is left
+    out. The revision is validated like any other: it must never be read as an option."""
+    validate_revision(revision)
+    output = _git(
+        repo,
+        "log",
+        "--first-parent",
+        f"-n{max(limit, 0)}",
+        "--format=%H%x1f%P%x1f%s",
+        revision,
+        "--",
+        path,
+    )
+    changes: list[tuple[str, str, str]] = []
+    for line in output.splitlines():
+        commit, parents, subject = [*line.split("\x1f"), "", ""][:3]
+        first = parents.split()[0] if parents.split() else ""
+        if first:
+            changes.append((commit, first, subject))
+    return changes
+
+
 def repo_root(start: Path) -> Path:
     """The git repository containing a path."""
     return Path(_git(start, "rev-parse", "--show-toplevel").strip())

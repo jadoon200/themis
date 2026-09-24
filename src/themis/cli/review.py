@@ -313,3 +313,108 @@ def execute(
         + (f" ({', '.join(material)})" if material else "")
     )
     raise typer.Exit(code=0)
+
+
+@app.command()
+def backtest(
+    project: ProjectOpt = Path("demo_project"),
+    last: Annotated[
+        int, typer.Option("--last", help="How many merged changes to replay, newest first.")
+    ] = 20,
+    ref: Annotated[
+        str, typer.Option("--ref", help="Branch whose first-parent history to replay.")
+    ] = "HEAD",
+    target: Annotated[
+        str, typer.Option("--target", help="dbt target to compile (and build) against.")
+    ] = "dev",
+    execute: Annotated[
+        bool,
+        typer.Option(
+            "--execute/--no-execute",
+            help="Also build both revisions of every change and measure. Slow; off by default.",
+        ),
+    ] = False,
+    subjects: Annotated[
+        bool,
+        typer.Option(
+            "--subjects/--no-subjects",
+            help="Show commit subjects. Off by default: at work a subject can name a client.",
+        ),
+    ] = False,
+    json_out: Annotated[
+        Path | None, typer.Option("--json", help="Write every row and the summary as JSON.")
+    ] = None,
+    verbose: VerboseOpt = False,
+) -> None:
+    """What THEMIS would have said about the changes that already merged.
+
+    Replays the last N changes to the dbt project on a branch's first-parent history, each
+    reviewed against its first parent — rules only unless --execute — and prints counts:
+    findings by severity, which rules fired, what could not be reviewed. Nothing is
+    written anywhere, and nothing printed names a model or a column, so the summary can
+    be shared. The first thing to run on a project THEMIS has never seen.
+    """
+    import json
+
+    from themis.backtest import backtest as run_backtest
+    from themis.backtest import changes_to_replay, summarise
+
+    configure_logging(verbose=verbose)
+    settings = load_settings()
+    changes = changes_to_replay(project, last=last, ref=ref)
+    if not changes:
+        typer.echo(f"No change to {project} on the first-parent history of {ref}.", err=True)
+        raise typer.Exit(code=2)
+
+    rows = run_backtest(project, changes, settings=settings, target=target, execute=execute)
+
+    typer.echo(f"{'commit':<11} {'models':>6} {'crit':>4} {'high':>4} {'med':>4} {'low':>4}  rules")
+    for row in rows:
+        subject = f"  {row.change.subject[:60]}" if subjects else ""
+        if row.error is not None:
+            typer.echo(f"{row.change.commit[:10]:<11} could not be reviewed: {row.error[:90]}")
+            continue
+        s = row.severities
+        typer.echo(
+            f"{row.change.commit[:10]:<11} {row.models:>6} {s['critical']:>4} {s['high']:>4} "
+            f"{s['medium']:>4} {s['low']:>4}  {', '.join(row.rules) or '-'}"
+            + (f"  [{row.skipped} skipped]" if row.skipped else "")
+            + subject
+        )
+
+    summary = summarise(rows)
+    typer.echo("")
+    typer.echo(
+        f"{summary['reviewed']} of {summary['changes']} changes reviewed; "
+        f"{summary['with_findings']} with at least one finding; "
+        f"median {summary['findings_median']} finding(s), worst {summary['findings_max']}; "
+        f"median {summary['seconds_median']}s each"
+    )
+    if summary["could_not_review"]:
+        typer.echo(f"{summary['could_not_review']} could not be reviewed — see the rows above.")
+    if summary["incomplete"]:
+        typer.echo(f"{summary['incomplete']} reviewed with checks skipped or grounding degraded.")
+    top = ", ".join(f"{rule} x{count}" for rule, count in list(summary["rules"].items())[:8])
+    typer.echo(f"rules that fired most: {top or 'none'}")
+
+    if json_out is not None:
+        payload = {
+            "summary": summary,
+            "rows": [
+                {
+                    "commit": row.change.commit,
+                    "parent": row.change.parent,
+                    **({"subject": row.change.subject} if subjects else {}),
+                    "models": row.models,
+                    "severities": row.severities,
+                    "rules": list(row.rules),
+                    "skipped": row.skipped,
+                    "incomplete": list(row.incomplete),
+                    "seconds": round(row.seconds, 1),
+                    "error": row.error,
+                }
+                for row in rows
+            ],
+        }
+        json_out.write_text(json.dumps(payload, indent=2))
+        typer.echo(f"wrote {json_out}")
