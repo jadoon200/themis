@@ -12,6 +12,7 @@ from pathlib import Path
 
 from themis import conventions, vocabulary
 from themis.acquire.snapshot_builder import AcquireResult, acquire
+from themis.analyze import history as snapshot_history
 from themis.analyze import impact
 from themis.analyze.grain import infer_grains
 from themis.analyze.impact import Narrowing
@@ -945,10 +946,10 @@ def review(
         # the build, so no two builds agree on it and nothing would pair.
         candidates = {
             name: (
-                grain.model_copy(update={"columns": node.unique_key})
+                grain.model_copy(update={"columns": key})
                 if (node := acquired.after.models.get(name)) is not None
                 and node.is_snapshot
-                and node.unique_key
+                and (key := snapshot_history.key_columns(node, dialect=settings.dialect))
                 and grain.columns
                 else grain
             )
@@ -1005,6 +1006,12 @@ def review(
             skipped += [
                 SkippedRule(rule_id="X0006", model_name=model, reason=reason)
                 for model, reason in execution.unmeasured.items()
+            ]
+            # Left out because dbt writes it — or something it reads — to one fixed table
+            # whatever the target. The rest of the change is still measured.
+            skipped += [
+                SkippedRule(rule_id="X0007", model_name=model, reason=reason)
+                for model, reason in execution.not_built.items()
             ]
             # A warehouse that cannot modify rows was measured on full-refresh tables
             # only. The numbers are real; the incremental path was never exercised, and

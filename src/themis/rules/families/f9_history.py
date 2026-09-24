@@ -45,8 +45,9 @@ def _relation(node: ModelNode) -> str:
 
 
 def _covered(grain: Grain, node: ModelNode) -> bool:
-    """The query is provably unique on the snapshot's key."""
-    return grain.is_proven and {c.lower() for c in grain.columns} <= set(_key(node))
+    """The query is provably unique on the columns the snapshot's key is made of."""
+    columns = {c.lower() for c in history.key_columns(node)}
+    return grain.is_proven and bool(columns) and {c.lower() for c in grain.columns} <= columns
 
 
 def _finding(

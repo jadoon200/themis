@@ -268,12 +268,13 @@ def build_scenarios(tmp: Path) -> dict[str, str]:
         commit("snapshot_filter", mutation("snapshot_filter_records_deletions"))
 
         # The legacy spelling: a fixed target_schema, which bypasses the schema macro, so
-        # base and head would both write iceberg.snapshots. Refused before anything runs.
+        # base and head would both write iceberg.scd_fixed. The change reaches nothing else,
+        # so nothing can be built — and nothing may be written there.
         def legacy_snapshot_location(project: Path) -> None:
             path = project / "snapshots" / "snap_accounts.sql"
             text = path.read_text()
             assert "    schema='history'," in text
-            path.write_text(text.replace("    schema='history',", "    target_schema='snapshots',"))
+            path.write_text(text.replace("    schema='history',", "    target_schema='scd_fixed',"))
 
         commit("snapshot_legacy_location", legacy_snapshot_location)
 
@@ -320,6 +321,12 @@ def check_analysis(scratch_env: dict[str, str]) -> None:
         # On Trino, where the project is built: marts in Hive, reference data in Iceberg
         # under the custom schema dbt gives it.
         cursor = trino.dbapi.connect(host="127.0.0.1", port=8085, user="themis").cursor()
+        manifest = json.loads((PROJECT / "target" / "manifest.json").read_text())
+        relations = {
+            node["name"]: node["relation_name"].replace('"', "")
+            for node in manifest["nodes"].values()
+            if node.get("relation_name")
+        }
 
         def scalar(sql: str) -> tuple:
             cursor.execute(sql)
@@ -339,21 +346,9 @@ def check_analysis(scratch_env: dict[str, str]) -> None:
                     t == "unique" for t in column.get("tests", []) or column.get("data_tests", [])
                 ):
                     columns = [column["name"]]
-            relation = next(
-                (
-                    f"{c}.{sch}.{name}"
-                    for c, sch in (
-                        ("hive", "main"),
-                        ("iceberg", "main_main"),
-                        ("iceberg", "main_history"),
-                    )
-                    if scalar(
-                        f"select count(*) from {c}.information_schema.tables "
-                        f"where table_schema='{sch}' and table_name='{name}'"
-                    )[0]
-                ),
-                None,
-            )
+            # Where dbt put it, from the manifest compiled at the start — a snapshot with a
+            # fixed target_schema lives wherever that says, not under the target's schema.
+            relation = relations.get(name)
             if relation is None or not columns:
                 failed += 1
                 continue
@@ -689,11 +684,11 @@ def check_snapshots(shas: dict[str, str], tmp: Path, env: dict[str, str]) -> Non
     r, doc = review_json(shas["snapshot_legacy_location"], tmp, "--no-llm", "--execute", env=env)
     reasons = " ".join(i.get("reason", "") for i in doc.get("incomplete", []))
     record(
-        "a legacy target_schema is refused before anything is written",
+        "a snapshot moved to a fixed target_schema is not built, and nothing is written there",
         not doc.get("executed")
-        and "outside this run's schemas" in reasons
+        and "whatever the target says" in reasons
         and "F9006" in rules_in(doc)
-        and not trino_schema_exists("iceberg", "snapshots"),
+        and not trino_schema_exists("iceberg", "scd_fixed"),
         f"exit {r.returncode}, executed={doc.get('executed')}, {reasons[:300]}",
     )
 

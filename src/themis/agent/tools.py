@@ -533,6 +533,7 @@ def _rule(workspace: Workspace, args: dict[str, Any]) -> ToolResult:
         "X0002": "the head revision no longer builds",
         "X0003": "a changed SQL file no manifest knows as a model, seed, snapshot or macro",
         "X0004": "a measured change to a period that had already been reported",
+        "X0007": "a model not measured because dbt writes it, or what it reads, to one fixed table",
     }
     if wanted in safety:
         return ToolResult(text=f"{wanted}: {safety[wanted]}", data={"rule_id": wanted})

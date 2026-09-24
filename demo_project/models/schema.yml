@@ -80,6 +80,9 @@ models:
       Contract terms in force now, from the contract snapshot. One row per contract_id,
       because only the current version has no dbt_valid_to.
 
+  - name: dim_fx_rates_current
+    description: FX rates in force now, from the rate snapshot. One row per currency and month.
+
 snapshots:
   - name: snap_contracts
     description: >
@@ -90,3 +93,8 @@ snapshots:
     description: >
       Every version of the chart of accounts, in Iceberg. The source has no last-modified
       time, so a version is written whenever a checked column differs.
+
+  - name: snap_fx_rates
+    description: >
+      Every published version of each monthly FX rate, in a fixed Iceberg schema — the
+      legacy target_schema spelling — read by dim_fx_rates_current through ref().

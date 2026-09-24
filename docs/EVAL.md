@@ -1706,9 +1706,25 @@ keeps every node beneath it. A legacy snapshot `target_schema` does not — it b
 macro — and nor does a project `generate_schema_name` that uses the custom schema as
 written, which is a common house style. Either would have base and head writing one table,
 each measuring the other's rows, in a schema THEMIS never drops. Each build now asks dbt
-where every selected node would go (`dbt ls` with the build's own profile) and refuses,
-naming them, before anything is written. The component check commits a legacy
-`target_schema` and asserts the refusal and that the schema was never created.
+where every selected node would go (`dbt ls` with the build's own profile) before anything
+is written, and never builds one that lands outside the run's schemas.
+
+Refusing was the first answer, and it was the wrong one for the project it is for. At
+work some snapshots have a fixed `target_schema` and other models `ref()` them, so a
+refusal would have left every change below a snapshot unmeasured. Now a fixed node the
+change does not reach is read where it is — base and head read the same table, as with
+a deferred upstream — after checking it is there. One the change does reach cannot be
+built without overwriting its one table, so it and everything reading it are left out
+and reported as X0007, and the rest of the change is measured. The demo now has that
+shape: `snap_fx_rates` in `iceberg.snapshots` whatever the target, keyed by a
+concatenation, and `dim_fx_rates_current` reading it through `ref()`. A filter added to
+the mart is measured by reading the snapshot in place; switching deletions off in the
+snapshot is caught by F9005 with nothing built. The component check moves a snapshot to a
+fixed `target_schema` and asserts that nothing is written there.
+
+The concatenated key found one more thing: F9001 and the grain compared the key as text,
+so `currency_code || '|' || cast(rate_date as varchar)` covered no column and a key that
+identifies a row read as one that does not. Keys are read as the columns they are made of.
 
 It is not free: one more dbt parse per build, about 17 seconds a review on a CI runner, which
 with twelve more cases took the corpus job from 18 minutes to 42. It stays unconditional.
@@ -1734,6 +1750,8 @@ it would mean something.
 | latent defects caught | 14 / 14 | **20 / 20** |
 | unruled defects caught (safety net) | 4 / 4 | 4 / 4 |
 | gate | pass | **pass** |
+
+With the fixed-schema snapshot and its two cases: 65 cases, 42/42 rules, recall 100%, precision 90%, latent 21/21, gate pass.
 
 Precision and the false-positive rate both improved because the corpus grew — five more
 defects caught, two more silent controls — not because anything got better at the three
@@ -1762,6 +1780,10 @@ to discount the rest of it.
   a local file system: the SQL surface, Hive's write semantics, MERGE on Iceberg and the
   cross-catalog join are Trino's own and are executed. A real metastore, an object store,
   Starburst's connector settings and decimal overflow at precision 38 are not.
+- **A fixed-location node the change reaches is not measured.** A snapshot with a
+  legacy `target_schema` cannot be built anywhere but its one table, so a change to it —
+  or to anything above it — leaves it and its readers to the rules (X0007). Moving such
+  snapshots to `schema` (dbt 1.9+) makes them measurable.
 - **Snapshot history is judged, not measured.** Every snapshot case builds from an empty
   table, so a re-key, a strategy change or a narrowed `check_cols` is read from
   configuration and scored as latent. What it does to history that exists has not been

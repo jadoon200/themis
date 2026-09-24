@@ -182,6 +182,10 @@ _ACCOUNT_SUMMARY = "models/marts/fct_account_period_summary.sql"
 _SNAP_CONTRACTS = "snapshots/snap_contracts.sql"
 _SNAP_ACCOUNTS = "snapshots/snap_accounts.sql"
 _CONTRACT_TERMS = "models/marts/dim_contract_terms.sql"
+# A snapshot in the legacy spelling, with a fixed target_schema, and a mart that refs it —
+# the shape of the project at work.
+_SNAP_FX = "snapshots/snap_fx_rates.sql"
+_FX_CURRENT = "models/marts/dim_fx_rates_current.sql"
 # The demo's DuckDB target has no second catalog, so a snapshot's `database` resolves to
 # the one database there is and a snapshot cannot be put anywhere else.
 _NO_HIVE_ON_DUCKDB = "the DuckDB target has one database, so there is no Hive catalog to move to"
@@ -948,6 +952,30 @@ _ALL_INJECTED: tuple[Mutation, ...] = (
         relative_path=_SNAP_ACCOUNTS,
         find="    schema='history',",
         replace="    schema='scd',",
+    ),
+    Mutation(
+        id="fixed_snapshot_reader_filtered",
+        kind=Kind.DEFECT,
+        expects_family="F2",
+        description=(
+            "Yen dropped from the current FX rates, in a mart reading a snapshot whose "
+            "target_schema is fixed: measured by reading the snapshot where it is"
+        ),
+        relative_path=_FX_CURRENT,
+        find="where dbt_valid_to is null\n",
+        replace="where dbt_valid_to is null\n    and currency_code <> 'JPY'\n",
+    ),
+    Mutation(
+        id="fixed_snapshot_deletions_ignored",
+        kind=Kind.LATENT,
+        expects_family="F9",
+        description=(
+            "The FX snapshot stops recording deletions, in the legacy spelling; its "
+            "target_schema is fixed, so a review cannot build it and the rules carry it"
+        ),
+        relative_path=_SNAP_FX,
+        find="    invalidate_hard_deletes=True",
+        replace="    invalidate_hard_deletes=False",
     ),
     Mutation(
         id="snapshot_current_filter_removed",

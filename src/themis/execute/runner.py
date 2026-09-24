@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import secrets
 import tempfile
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -72,6 +73,9 @@ class BuildOutcome:
     # Where dbt put each model, from the manifest this build wrote: catalog, schema and
     # identifier as dbt resolved them, custom schemas and aliases included.
     relations: dict[str, Relation] = field(default_factory=dict)
+    # Models this build left out on purpose, and why: dbt writes them to a fixed location
+    # (or they read one that is), so building them here would overwrite that table.
+    not_built: dict[str, str] = field(default_factory=dict)
 
     def relation(self, model: str, schema: str) -> Relation:
         """Where to measure a model: where dbt says it built it, else the run's schema."""
@@ -126,6 +130,9 @@ class ExecutionResult:
     # put them. Kept out of the deltas: absent on both sides reads as "nothing moved", and
     # a model nobody could read has not been measured at all.
     unmeasured: dict[str, str] = field(default_factory=dict)
+    # Models deliberately not built on one side or both, with the reason (see
+    # BuildOutcome.not_built). Reported as checks that did not run, never as unchanged.
+    not_built: dict[str, str] = field(default_factory=dict)
 
     @property
     def incremental_not_run(self) -> tuple[str, ...]:
@@ -145,23 +152,34 @@ class ExecutionResult:
         return tuple(sorted(n for n, d in self.deltas.items() if d.is_material))
 
 
-class WritesOutsideRun(RuntimeError):
-    """A build would write somewhere other than the schemas this run owns."""
+class BuildRefused(RuntimeError):
+    """Nothing is built, for a reason a person has to act on."""
 
 
-def outside_run_schema(listing: str, schema: str) -> list[str]:
-    """Nodes a `dbt ls --output json` listing would write outside the run's schema.
+@dataclass(frozen=True)
+class PlannedNode:
+    """One node of a build's selection, where dbt says it would be written."""
+
+    unique_id: str
+    name: str
+    relation: Relation
+    parents: tuple[str, ...] = ()
+    # Written outside this run's schema whatever the target says.
+    fixed: bool = False
+
+
+def locate_nodes(listing: str, schema: str) -> dict[str, PlannedNode]:
+    """Where each node of a `dbt ls --output json` listing would be written.
 
     Everything a build writes has to land in a schema named for the run, because those
     are the only ones it drops afterwards and the only ones no other run shares. dbt's
-    default schema macro guarantees it (`<run schema>_<custom schema>`), and two things
-    do not: a legacy snapshot `target_schema`, which bypasses the macro, and a project
-    whose own `generate_schema_name` returns the custom schema as written. Either would
-    have base and head write one table — each measuring the other's rows — in a schema
-    THEMIS would then leave behind.
+    default schema macro guarantees it (`<run schema>_<custom schema>`). Two things do
+    not: a snapshot's legacy `target_schema`, which bypasses the macro, and a project
+    whose own `generate_schema_name` returns the custom schema as written. A node placed
+    either way is `fixed`: it lands in the same table whichever target builds it.
     """
     prefix = schema.lower()
-    outside: list[str] = []
+    nodes: dict[str, PlannedNode] = {}
     for line in listing.splitlines():
         line = line.strip()
         if not line.startswith("{"):
@@ -175,13 +193,77 @@ def outside_run_schema(listing: str, schema: str) -> list[str]:
         config = node.get("config") or {}
         if isinstance(config, dict) and config.get("materialized") == "ephemeral":
             continue  # never written
+        unique_id = str(node["unique_id"])
         written = str(node.get("schema") or "")
-        if written.lower() == prefix or written.lower().startswith(prefix + "_"):
-            continue
         catalog = node.get("database")
-        where = f"{catalog}.{written}" if catalog else written
-        outside.append(f"{node['unique_id']} -> {where}")
-    return outside
+        depends = node.get("depends_on") or {}
+        nodes[unique_id] = PlannedNode(
+            unique_id=unique_id,
+            name=str(node.get("name") or unique_id.split(".")[-1]),
+            relation=Relation(
+                str(catalog) if catalog else None,
+                written,
+                str(node.get("alias") or node.get("name") or unique_id.split(".")[-1]),
+            ),
+            parents=tuple(str(p) for p in (depends.get("nodes") or []) if isinstance(p, str)),
+            fixed=not (written.lower() == prefix or written.lower().startswith(prefix + "_")),
+        )
+    return nodes
+
+
+@dataclass(frozen=True)
+class LocationPlan:
+    """What a build leaves out because of where dbt would write it."""
+
+    # Fixed-location nodes the change does not reach: read where they already are, as a
+    # deferred upstream is. Base and head read the same table, so they agree on it.
+    read_in_place: tuple[PlannedNode, ...] = ()
+    # Measured models that cannot be built here, by name, with the reason.
+    not_built: dict[str, str] = field(default_factory=dict)
+
+
+def plan_locations(nodes: dict[str, PlannedNode], measured: set[str]) -> LocationPlan:
+    """Decide what to build, what to read in place, and what cannot be measured.
+
+    A fixed node the change reaches — itself changed, or downstream of what changed —
+    cannot be built without overwriting its one table, so it is left out, and so is
+    everything in the selection reading it: built from the untouched table, a model
+    below it would measure as though the change had never happened.
+    """
+    fixed = [node for node in nodes.values() if node.fixed]
+    blocked = {node.unique_id for node in fixed if node.name in measured}
+    reasons = {
+        uid: (
+            f"not built: dbt writes it to {nodes[uid].relation.describe()} whatever the "
+            "target says — a legacy target_schema, or a schema macro that ignores the "
+            "target — and building it there would overwrite that table; its rules still ran"
+        )
+        for uid in blocked
+    }
+    # Downstream within the selection, to a fixed point.
+    grown = True
+    while grown:
+        grown = False
+        for node in nodes.values():
+            if node.unique_id in reasons:
+                continue
+            upstream = next((p for p in node.parents if p in reasons), None)
+            if upstream is None:
+                continue
+            reasons[node.unique_id] = (
+                f"not built: it reads {nodes[upstream].name}, which could not be built "
+                "here, so a measurement would not include this change"
+            )
+            grown = True
+    return LocationPlan(
+        read_in_place=tuple(
+            sorted(
+                (node for node in fixed if node.unique_id not in reasons),
+                key=lambda node: node.name,
+            )
+        ),
+        not_built={nodes[uid].name: reason for uid, reason in reasons.items()},
+    )
 
 
 def _build(
@@ -196,6 +278,7 @@ def _build(
     label: str,
     incremental_models: tuple[str, ...] = (),
     defer_state: Path | None = None,
+    table_exists: Callable[[Relation], bool] | None = None,
 ) -> BuildOutcome:
     """Build a selection into a schema, and record which models it actually produced.
 
@@ -257,10 +340,13 @@ def _build(
     defer_args: list[str] = []
     if defer_state is not None:
         defer_args = ["--defer", "--favor-state", "--state", str(defer_state)]
-        selection = [arg for model in models for arg in ("--select", model)]
-    else:
-        selection = [arg for model in models for arg in ("--select", f"+{model}")]
-    selection += ["--exclude-resource-type", "test", "--exclude-resource-type", "unit_test"]
+
+    def select(names: tuple[str, ...] | list[str]) -> list[str]:
+        prefix = "" if defer_state is not None else "+"
+        return [arg for name in names for arg in ("--select", f"{prefix}{name}")]
+
+    no_tests = ["--exclude-resource-type", "test", "--exclude-resource-type", "unit_test"]
+    selection = [*select(models), *no_tests]
 
     def run(args: list[str]) -> tuple[bool, str, dict[str, str]]:
         (target_dir / "run_results.json").unlink(missing_ok=True)
@@ -290,26 +376,49 @@ def _build(
             "json",
             "--output-keys",
             "unique_id",
+            "name",
+            "alias",
             "database",
             "schema",
             "config",
+            "depends_on",
         ]
     )
     if not listed:
-        raise WritesOutsideRun(
+        raise BuildRefused(
             "could not confirm where the build would write, so nothing was built: "
             + (extract_dbt_error(listing) or "dbt ls failed")[:300]
         )
-    outside = outside_run_schema(listing, schema)
-    if outside:
-        raise WritesOutsideRun(
-            f"{len(outside)} node(s) would be written outside this run's schemas, where "
-            "base and head would share one table and nothing would drop it — "
-            + "; ".join(outside[:5])
-            + ". A snapshot's legacy target_schema, or a generate_schema_name that "
-            "ignores the target schema, does this; set `schema` instead, or keep the "
-            "custom-schema override to production targets."
+    plan = plan_locations(locate_nodes(listing, schema), set(models))
+    if table_exists is not None:
+        missing = [node for node in plan.read_in_place if not table_exists(node.relation)]
+        if missing:
+            raise BuildRefused(
+                f"{', '.join(n.name for n in missing[:5])} "
+                f"{'is' if len(missing) == 1 else 'are'} written to a fixed location "
+                f"({', '.join(n.relation.describe() for n in missing[:5])}) whatever the "
+                "target says, so this run reads rather than builds it — and it is not "
+                f"there to read. Build it once with the {target} target, or pass --defer-state."
+            )
+    buildable = [model for model in models if model not in plan.not_built]
+    if not buildable:
+        raise BuildRefused(
+            "nothing this change reaches can be built outside its own fixed location: "
+            + "; ".join(f"{name} — {why}" for name, why in sorted(plan.not_built.items())[:3])
         )
+    left_out = sorted({node.name for node in plan.read_in_place} | set(plan.not_built))
+    selection = [
+        *select(buildable),
+        *(arg for name in left_out for arg in ("--exclude", name)),
+        *no_tests,
+    ]
+    if plan.read_in_place:
+        log.info(
+            "execute.read_in_place",
+            label=label,
+            nodes=[node.relation.describe() for node in plan.read_in_place][:10],
+        )
+    incremental_models = tuple(m for m in incremental_models if m not in plan.not_built)
 
     ok, stdout, statuses = run(["build", "--full-refresh", *selection, *defer_args])
     relations = {
@@ -321,7 +430,7 @@ def _build(
         # Pass one already built their upstreams, and rebuilding the whole closure
         # again doubles the cost of every run for no additional signal.
         second = [arg for model in incremental_models for arg in ("--select", model)]
-        second += ["--exclude-resource-type", "test", "--exclude-resource-type", "unit_test"]
+        second += no_tests
         ok, stdout, second_statuses = run(["build", *second, *defer_args])
         if not ok and cannot_modify_rows(stdout):
             # The warehouse cannot delete or merge rows at all — Trino's memory
@@ -331,7 +440,10 @@ def _build(
             # reported as a check that could not run. Not conflated with a model that
             # failed to build, which is a finding about the change (X0002).
             return BuildOutcome(
-                statuses=statuses, incremental_not_run=incremental_models, relations=relations
+                statuses=statuses,
+                incremental_not_run=incremental_models,
+                relations=relations,
+                not_built=plan.not_built,
             )
         if not ok and not second_statuses:
             # The second pass failed before recording anything, so the first pass's
@@ -341,12 +453,14 @@ def _build(
         statuses = {**statuses, **second_statuses}
 
     if ok:
-        return BuildOutcome(statuses=statuses, relations=relations)
+        return BuildOutcome(statuses=statuses, relations=relations, not_built=plan.not_built)
     # A partial build is still worth measuring — the models that did build give real
     # evidence, and the failure itself is a finding.
     message = extract_dbt_error(stdout) or "dbt build failed"
     log.warning("execute.build_failed", label=label, error=message[:300])
-    return BuildOutcome(error=message, statuses=statuses, relations=relations)
+    return BuildOutcome(
+        error=message, statuses=statuses, relations=relations, not_built=plan.not_built
+    )
 
 
 def execute(
@@ -444,6 +558,22 @@ def execute(
     # the other build, or the measurement after, did not happen.
     finished: list[BuildOutcome] = []
 
+    def table_exists(relation: Relation) -> bool:
+        """Whether a table a build will read in place is there. Unknown counts as yes:
+        dbt will then say what is missing, which is better than refusing on a guess."""
+        try:
+            client = client_for_profile(profile, anchor)
+        except WarehouseUnavailable:
+            return True
+        if client is None:
+            return True
+        try:
+            return client.shape(relation).exists
+        except WarehouseUnavailable:
+            return True
+        finally:
+            client.close()
+
     def build(tree: Path, schema: str, label: str, root: Path) -> BuildOutcome:
         outcome = _build(
             tree,
@@ -457,6 +587,7 @@ def execute(
             label=label,
             incremental_models=incremental_models,
             defer_state=defer_state,
+            table_exists=table_exists,
         )
         finished.append(outcome)
         return outcome
@@ -472,7 +603,7 @@ def execute(
                         head_build = build(tree / relative, head_schema, "head", root)
                 with git.worktree_at(repo, base_sha) as tree:
                     base_build = build(tree / relative, base_schema, "base", root)
-        except WritesOutsideRun as exc:
+        except BuildRefused as exc:
             return ExecutionResult(skipped_reason=str(exc))
 
         try:
@@ -596,7 +727,12 @@ def _measure(
     baselines: dict[str, Grain] = {}
     unmeasured: dict[str, str] = {}
 
+    not_built: dict[str, str] = {}
     for model in models:
+        left_out = head_build.not_built.get(model) or base_build.not_built.get(model)
+        if left_out:
+            not_built[model] = left_out
+            continue
         head_failure = head_build.failure(model)
         base_failure = base_build.failure(model)
         if head_failure or base_failure:
@@ -673,4 +809,5 @@ def _measure(
         head_build=head_build,
         base_build=base_build,
         unmeasured=unmeasured,
+        not_built=not_built,
     )
