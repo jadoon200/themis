@@ -35,7 +35,7 @@
   `--defer-state` to resolve unchanged upstreams to an existing build instead of
   rebuilding the ancestor closure twice. Each run builds into schemas of its own and
   drops them afterwards — having first asked dbt where every node would go, and
-  refused if anything would land outside them — and dbt's own record of which models built decides what is
+  built nothing that would land outside them — and dbt's own record of which models built decides what is
   measured — a relation merely existing is never taken as this run's result. A head that
   no longer builds is a finding in its own right (`X0002`).
 - **The revision asked for.** The head is compiled and built from the commit `--head`
@@ -156,10 +156,11 @@ engine of record".
 are reviewed as the one table whose past cannot be rebuilt: F9001–F9007 for the key, the
 change detection, deletions, a move, and a reader taking every version; F8007 for a
 snapshot on Hive. Two grains — the query's key, the table's key plus `dbt_valid_from` —
-and a reader taking one version gets the key back. Thirteen corpus cases on Iceberg,
-five measured, six latent, two controls; 13 of 13. Execution refuses any build that
-would write outside its own schemas, which a legacy `target_schema` does. See EVAL,
-"Snapshots on Iceberg".
+and a reader taking one version gets the key back; a key concatenated from columns is
+read as those columns. Fifteen corpus cases on Iceberg, six measured, seven latent, two
+controls. A node dbt writes to a fixed schema — a legacy `target_schema` — is never
+built: read where it is when the change does not reach it, reported as not measured
+(X0007) with everything reading it when it does. See EVAL, "Snapshots on Iceberg".
 
 **History that exists.** Next for snapshots. Every case starts from an empty table, so a
 re-key or a strategy change is judged from configuration. Measuring it means building
