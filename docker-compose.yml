@@ -3,9 +3,10 @@
 #
 # Everything here is free, open source, and has an arm64 image, so it runs natively on
 # Apple Silicon. Trino is capped at 4 GB, which is plenty for the demo project and leaves a
-# laptop usable — with its heap at 60% of that, not the image's 80%. At 80% the rest of the
-# JVM (code cache, metaspace, threads, buffers) had 800 MB, grew past it over a day of
-# corpus runs, and the kernel killed the container mid-check (OOMKilled, exit 137).
+# laptop usable — with its heap at 40% of that, not the image's 80%. Everything else the JVM
+# holds (code cache, metaspace, 300 threads, native buffers) grows over hours of runs, and the
+# kernel killed the container twice before this: at 80% after a day, at 60% after four
+# hours (exit 137, mid-corpus). The demo's queries need a fraction of 1.6 GB of heap.
 services:
   db:
     image: postgres:16-alpine
@@ -46,6 +47,11 @@ services:
       - ./docker/trino/jvm.config:/etc/trino/jvm.config:ro
       - themis-trino-warehouse:/warehouse
     mem_limit: 4g
+    # glibc gives each busy thread its own malloc arena, and a JVM with hundreds of threads
+    # fragments them into memory it never returns — the usual cause of a JVM container
+    # growing without its heap growing.
+    environment:
+      MALLOC_ARENA_MAX: "2"
     # And if it is killed anyway, it comes back; the warehouse is on the volume.
     restart: on-failure
     healthcheck:
