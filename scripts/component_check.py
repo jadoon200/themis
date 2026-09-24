@@ -217,7 +217,10 @@ def build_scenarios(tmp: Path) -> dict[str, str]:
                     text.replace(
                         anchor,
                         anchor.rstrip("\n")
-                        + ",\n        current_timestamp as processed_at,"
+                        # Cast, because Hive cannot store `timestamp with time
+                        # zone` — "Unsupported Hive type" — so this is how an audit
+                        # column on a Hive table at work is written.
+                        + ",\n        cast(current_timestamp as timestamp(3)) as processed_at,"
                         + "\n        '{{ run_started_at }}' as loaded_at,"
                         + "\n        '{{ invocation_id }}' as batch_id\n",
                     )
@@ -266,12 +269,18 @@ def check_analysis(scratch_env: dict[str, str]) -> None:
     ok = r.returncode == 0
     held = failed = 0
     if ok:
-        import duckdb
+        import trino
         import yaml
 
         doc = yaml.safe_load(r.stdout)
-        conn = duckdb.connect(str(PROJECT / "themis_demo.duckdb"), read_only=True)
-        conn.execute(f"attach '{PROJECT / 'reference.duckdb'}' as reference (read_only)")
+        # On Trino, where the project is built: marts in Hive, reference data in Iceberg
+        # under the custom schema dbt gives it.
+        cursor = trino.dbapi.connect(host="127.0.0.1", port=8085, user="themis").cursor()
+
+        def scalar(sql: str) -> tuple:
+            cursor.execute(sql)
+            return tuple(cursor.fetchone())
+
         for model in doc.get("models", []):
             name = model["name"]
             columns: list[str] = []
@@ -286,25 +295,24 @@ def check_analysis(scratch_env: dict[str, str]) -> None:
                     columns = [column["name"]]
             relation = next(
                 (
-                    f"{c}.{s}.{name}"
-                    for c, s in (("themis_demo", "main"), ("reference", "main_main"))
-                    if conn.execute(
-                        "select count(*) from information_schema.tables "
-                        f"where table_catalog='{c}' and table_schema='{s}' and table_name='{name}'"
-                    ).fetchone()[0]
+                    f"{c}.{sch}.{name}"
+                    for c, sch in (("hive", "main"), ("iceberg", "main_main"))
+                    if scalar(
+                        f"select count(*) from {c}.information_schema.tables "
+                        f"where table_schema='{sch}' and table_name='{name}'"
+                    )[0]
                 ),
                 None,
             )
             if relation is None or not columns:
                 failed += 1
                 continue
-            key = ", ".join(columns)
-            rows, distinct = conn.execute(
-                f"select count(*), count(distinct ({key})) from {relation}"
-            ).fetchone()
+            key = ", ".join(f"cast({c} as varchar)" for c in columns)
+            rows, distinct = scalar(
+                f"select count(*), count(distinct concat_ws(chr(31), {key})) from {relation}"
+            )
             held += int(rows == distinct)
             failed += int(rows != distinct)
-        conn.close()
     record(
         "suggested tests hold on the built tables",
         ok and held > 0 and failed == 0,
@@ -1444,6 +1452,27 @@ def main() -> int:
         print("The working tree has uncommitted changes; the corpus checks measure committed code.")
     if not (PROJECT / "target" / "manifest.json").exists():
         print("demo_project has no manifest — run `make demo-build` first.")
+        return 2
+    # Recompiled, whatever is on disk. A manifest written by `dbt build --select m` has
+    # compiled SQL for m alone, and the checks that read it — lineage, the agent, the
+    # production-manifest review — would fail on that and look like regressions.
+    compiled = subprocess.run(
+        [
+            str(Path(sys.executable).parent / "dbt"),
+            "compile",
+            "--profiles-dir",
+            ".",
+            "--project-dir",
+            ".",
+        ],
+        cwd=PROJECT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if compiled.returncode != 0:
+        print("demo_project does not compile — is Trino up (`make up`) and the demo built?")
+        print(compiled.stdout[-1500:])
         return 2
 
     ollama = port_open(11434)
