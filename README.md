@@ -246,7 +246,7 @@ To check that every part actually runs — not a stand-in for it — with Postgr
 python scripts/component_check.py
 ```
 
-78 checks from a throwaway worktree: the CLI, five scenario reviews, exit codes, reports,
+81 checks from a throwaway worktree: the CLI, seven scenario reviews, exit codes, reports,
 execution, persistence, `ask`, the API and a worker, the pages, Trino, and the corpus.
 `--quick` skips the model, Trino and the corpus.
 
