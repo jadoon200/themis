@@ -179,6 +179,12 @@ _JOINED_ACCOUNTS = (
     "        on converted.contract_id = contracts.contract_id\n"
 )
 _ACCOUNT_SUMMARY = "models/marts/fct_account_period_summary.sql"
+_SNAP_CONTRACTS = "snapshots/snap_contracts.sql"
+_SNAP_ACCOUNTS = "snapshots/snap_accounts.sql"
+_CONTRACT_TERMS = "models/marts/dim_contract_terms.sql"
+# The demo's DuckDB target has no second catalog, so a snapshot's `database` resolves to
+# the one database there is and a snapshot cannot be put anywhere else.
+_NO_HIVE_ON_DUCKDB = "the DuckDB target has one database, so there is no Hive catalog to move to"
 _REVENUE_FILTER = (
     "    where {{ external_revenue_filter('accounts.account_type', 'accounts.is_intercompany') }}"
 )
@@ -804,6 +810,154 @@ _ALL_INJECTED: tuple[Mutation, ...] = (
             "        else -1 * {{ minor_to_major(amount_expr) }}"
         ),
     ),
+    # --- F9: snapshots, and the history they keep -----------------------------------------
+    #
+    # A build in an empty schema writes one version of everything, so most of what can go
+    # wrong with a snapshot cannot be measured here: it damages history that already
+    # exists, which is the production table. Those are LATENT and scored on detection.
+    # The ones that do show — a MERGE that refuses, a version per row per run, rows the
+    # query stops returning — are measured, on Iceberg, on the second snapshot run.
+    Mutation(
+        id="snapshot_key_not_unique",
+        kind=Kind.DEFECT,
+        expects_family="F9",
+        description=(
+            "Account snapshot keyed by entity, which five accounts share: the next run's "
+            "MERGE matches one stored version to several rows and refuses"
+        ),
+        relative_path=_SNAP_ACCOUNTS,
+        find="    unique_key='account_id',",
+        replace="    unique_key='entity_code',",
+        build_fails=(
+            "the snapshot's second run: Trino's MERGE refuses when one stored version "
+            "matches more than one query row"
+        ),
+    ),
+    Mutation(
+        id="snapshot_updated_at_stamped",
+        kind=Kind.DEFECT,
+        expects_family="F9",
+        description=(
+            "Contract snapshot's updated_at replaced by the load time, so every run writes a "
+            "new version of every contract"
+        ),
+        relative_path=_SNAP_CONTRACTS,
+        find="    term_months,\n    updated_at\nfrom",
+        replace="    term_months,\n    cast(current_timestamp as timestamp(6)) as updated_at\nfrom",
+    ),
+    Mutation(
+        id="snapshot_updated_at_changed",
+        kind=Kind.DEFECT,
+        expects_family="F9",
+        description=(
+            "Contract snapshot dates its versions by contract_start, which does not move when "
+            "terms are amended"
+        ),
+        relative_path=_SNAP_CONTRACTS,
+        find="    updated_at='updated_at',",
+        replace="    updated_at='contract_start',",
+    ),
+    Mutation(
+        id="snapshot_filter_records_deletions",
+        kind=Kind.DEFECT,
+        expects_family="F9",
+        description=(
+            "Point-in-time contracts filtered out of a snapshot that invalidates hard "
+            "deletes: every one is recorded as deleted on the next run"
+        ),
+        relative_path=_SNAP_CONTRACTS,
+        find="from {{ ref('stg_contracts') }}\n",
+        replace="from {{ ref('stg_contracts') }}\nwhere recognition_method = 'ratable'\n",
+    ),
+    Mutation(
+        id="snapshot_on_hive",
+        kind=Kind.DEFECT,
+        expects_family="F8",
+        description=(
+            "Account snapshot's catalog removed, so it lands in the Hive default — which "
+            "cannot store its time-zoned version columns, or merge"
+        ),
+        relative_path=_SNAP_ACCOUNTS,
+        find="    database=('iceberg' if target.type == 'trino' else target.database),\n",
+        replace="",
+        build_fails="Hive has no timestamp with time zone, which a `check` snapshot writes",
+        not_measurable_on={"duckdb": _NO_HIVE_ON_DUCKDB},
+    ),
+    Mutation(
+        id="snapshot_rekeyed",
+        kind=Kind.LATENT,
+        expects_family="F9",
+        description=(
+            "Contract snapshot re-keyed to (contract_id, customer_id): stored versions are "
+            "matched by a key they were not written under"
+        ),
+        relative_path=_SNAP_CONTRACTS,
+        find="    unique_key='contract_id',",
+        replace="    unique_key=['contract_id', 'customer_id'],",
+    ),
+    Mutation(
+        id="snapshot_strategy_changed",
+        kind=Kind.LATENT,
+        expects_family="F9",
+        description=(
+            "Contract snapshot switched from timestamp to check: versions before and after "
+            "the change date from different things"
+        ),
+        relative_path=_SNAP_CONTRACTS,
+        find="    strategy='timestamp',\n    updated_at='updated_at',",
+        replace=(
+            "    strategy='check',\n"
+            "    check_cols=['recognition_method', 'term_months', 'contract_end'],"
+        ),
+    ),
+    Mutation(
+        id="snapshot_check_cols_narrowed",
+        kind=Kind.LATENT,
+        expects_family="F9",
+        description=(
+            "Entity dropped from the account snapshot's checked columns: an account moving "
+            "entity is no longer recorded"
+        ),
+        relative_path=_SNAP_ACCOUNTS,
+        find="    check_cols=['account_name', 'account_type', 'entity_code', 'is_intercompany'],",
+        replace="    check_cols=['account_name', 'account_type', 'is_intercompany'],",
+    ),
+    Mutation(
+        id="snapshot_hard_deletes_ignored",
+        kind=Kind.LATENT,
+        expects_family="F9",
+        description=(
+            "Contract snapshot stops recording deletions: a cancelled contract stays current "
+            "for ever"
+        ),
+        relative_path=_SNAP_CONTRACTS,
+        find="    hard_deletes='invalidate'",
+        replace="    hard_deletes='ignore'",
+    ),
+    Mutation(
+        id="snapshot_moved",
+        kind=Kind.LATENT,
+        expects_family="F9",
+        description=(
+            "Account snapshot moved to another schema: the next run starts an empty table and "
+            "the history stays behind"
+        ),
+        relative_path=_SNAP_ACCOUNTS,
+        find="    schema='history',",
+        replace="    schema='scd',",
+    ),
+    Mutation(
+        id="snapshot_current_filter_removed",
+        kind=Kind.LATENT,
+        expects_family="F9",
+        description=(
+            "Current-version filter dropped from the contract terms mart: one row per version "
+            "from the first amendment on"
+        ),
+        relative_path=_CONTRACT_TERMS,
+        find="from {{ ref('snap_contracts') }}\nwhere dbt_valid_to is null\n",
+        replace="from {{ ref('snap_contracts') }}\n",
+    ),
 )
 
 
@@ -1029,6 +1183,30 @@ rates as (select * from fx),""",
         relative_path=_STG_ENTRIES,
         find="select * from typed",
         replace="select * from typed  -- one row per ledger entry",
+    ),
+    Mutation(
+        id="control_snapshot_check_cols_widened",
+        kind=Kind.CONTROL,
+        expects_family="",
+        description=(
+            "Account code added to the account snapshot's checked columns — records changes "
+            "it used to miss, loses none"
+        ),
+        relative_path=_SNAP_ACCOUNTS,
+        find="    check_cols=['account_name', 'account_type', 'entity_code', 'is_intercompany'],",
+        replace=(
+            "    check_cols=['account_code', 'account_name', 'account_type', 'entity_code',"
+            " 'is_intercompany'],"
+        ),
+    ),
+    Mutation(
+        id="control_snapshot_comment",
+        kind=Kind.CONTROL,
+        expects_family="",
+        description="A snapshot's comment reworded",
+        relative_path=_SNAP_CONTRACTS,
+        find="-- Contract terms as they stood at each point in time",
+        replace="-- Every version of each contract's terms",
     ),
 )
 
