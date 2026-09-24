@@ -116,6 +116,7 @@ class Settings(BaseSettings):
     sensitive_column_hints: tuple[str, ...] = vocabulary.SENSITIVE_HINTS
     governed_tags: tuple[str, ...] = vocabulary.GOVERNED_TAGS
     published_folders: tuple[str, ...] = vocabulary.PUBLISHED_FOLDERS
+    hive_catalogs: tuple[str, ...] = vocabulary.HIVE_CATALOGS
     # Units. A project that spells its transaction-currency amounts differently sets these;
     # a reporting-currency name always wins, so `revenue_usd` is never called suspect.
     currency_column_hints: tuple[str, ...] = vocabulary.CURRENCY_HINTS

@@ -33,6 +33,8 @@ from themis.execute.profiles import ProfileError, read_profile, write_profile_fo
 from themis.execute.warehouse import (
     Relation,
     WarehouseClient,
+    WarehouseUnavailable,
+    check_warehouse,
     client_for_profile,
     drop_run_schemas,
 )
@@ -119,6 +121,10 @@ class ExecutionResult:
     head_build: BuildOutcome = field(default_factory=BuildOutcome)
     base_build: BuildOutcome = field(default_factory=BuildOutcome)
     skipped_reason: str | None = None
+    # Models dbt reported as built on both sides that could not be read where it said it
+    # put them. Kept out of the deltas: absent on both sides reads as "nothing moved", and
+    # a model nobody could read has not been measured at all.
+    unmeasured: dict[str, str] = field(default_factory=dict)
 
     @property
     def incremental_not_run(self) -> tuple[str, ...]:
@@ -337,6 +343,17 @@ def execute(
         return ExecutionResult(skipped_reason=f"could not read dbt profile: {exc}")
 
     anchor = (data_anchor or project_dir).resolve()
+
+    # Log in the way measurement will before building anything. A login that fails after
+    # both builds costs minutes; one that failed silently used to cost the review.
+    if str(profile.get("type", "")).lower() == "trino":
+        try:
+            check_warehouse(profile, anchor)
+        except WarehouseUnavailable as exc:
+            return ExecutionResult(
+                skipped_reason=f"cannot measure on this warehouse, so nothing was built: {exc}"
+            )
+
     repo = git.repo_root(project_dir)
     base_sha = git.resolve_revision(repo, base)
     head_in_place = git.is_working_tree(repo, head, project_dir)
@@ -379,7 +396,12 @@ def execute(
             with git.worktree_at(repo, base_sha) as tree:
                 base_build = build(tree / relative, base_schema, "base", root)
 
-        client = client_for_profile(profile, anchor)
+        try:
+            client = client_for_profile(profile, anchor)
+        except WarehouseUnavailable as exc:
+            return ExecutionResult(
+                skipped_reason=f"built both revisions but could not measure them: {exc}"
+            )
         if client is None:
             return ExecutionResult(
                 skipped_reason=(
@@ -401,6 +423,10 @@ def execute(
                 keyed_diff=settings.execute_keyed_diff,
                 keyed_ignore=settings.execute_keyed_ignore_columns,
                 volatile_columns=volatile_columns or {},
+            )
+        except WarehouseUnavailable as exc:
+            return ExecutionResult(
+                skipped_reason=f"lost the warehouse while measuring, so nothing counts: {exc}"
             )
         finally:
             client.close()
@@ -489,6 +515,7 @@ def _measure(
     deltas: dict[str, ExecutionDelta] = {}
     grains: dict[str, Grain] = {}
     baselines: dict[str, Grain] = {}
+    unmeasured: dict[str, str] = {}
 
     for model in models:
         head_failure = head_build.failure(model)
@@ -508,7 +535,7 @@ def _measure(
 
         base_at = base_build.relation(model, base_schema)
         head_at = head_build.relation(model, head_schema)
-        deltas[model] = diff_tables(
+        delta = diff_tables(
             client,
             model,
             base=base_at,
@@ -516,6 +543,16 @@ def _measure(
             max_rows=max_rows,
             vocabulary=vocab,
         )
+        if delta.rows_before is None and delta.rows_after is None:
+            # dbt says it built this on both sides, and it is on neither where dbt says.
+            # Whatever the reason — a location dbt resolved differently, access control
+            # hiding the table — it has not been measured, and must not read as unchanged.
+            unmeasured[model] = (
+                f"dbt built it at {head_at.describe()} and {base_at.describe()}, "
+                "but it could not be read at either"
+            )
+            continue
+        deltas[model] = delta
         candidate = grain_candidates.get(model)
         measured = measure_grain(client, model, relation=head_at, candidate=candidate)
         if measured is not None:
@@ -556,4 +593,5 @@ def _measure(
         built=models,
         head_build=head_build,
         base_build=base_build,
+        unmeasured=unmeasured,
     )

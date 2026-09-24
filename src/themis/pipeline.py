@@ -976,6 +976,11 @@ def review(
             # does not tell a reviewer that what moved was a period already reported.
             findings.extend(restated_period_findings(execution, acquired.after, vocab))
             grains = {**grains, **execution.measured_grains}
+            # Built, and unreadable where dbt said it put them: not measured, and said so.
+            skipped += [
+                SkippedRule(rule_id="X0006", model_name=model, reason=reason)
+                for model, reason in execution.unmeasured.items()
+            ]
             # A warehouse that cannot modify rows was measured on full-refresh tables
             # only. The numbers are real; the incremental path was never exercised, and
             # an incremental model's bugs live exactly there.

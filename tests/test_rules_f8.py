@@ -95,3 +95,91 @@ def test_a_division_that_was_already_there_is_not_reported_again() -> None:
 
     sql = "select amount_minor / 100 as a from t"
     assert IntegerDivisionRule().check(_money_ctx(sql, sql + " where x > 0")) == []
+
+
+# --- F8006: an incremental strategy that deletes rows, on a table that cannot -------------------
+
+
+def _incremental(
+    strategy: str,
+    *,
+    catalog: str = "hive",
+    properties: dict[str, str] | None = None,
+) -> ModelNode:
+    return ModelNode(
+        name="m",
+        unique_id="model.t.m",
+        file_path="models/m.sql",
+        materialization="incremental",
+        incremental_strategy=strategy,
+        relation_name=f'"{catalog}"."main"."m"',
+        properties=properties if properties is not None else {"partitioned_by": "ARRAY['p']"},
+    )
+
+
+def _hive_ctx(before: ModelNode | None, after: ModelNode, vocabulary: object = None) -> RuleContext:
+    from themis.vocabulary import DEFAULT
+
+    snapshot = ProjectSnapshot(revision="r", backend=Backend.MANIFEST)
+    return RuleContext(
+        model_name="m",
+        before=before,
+        after=after,
+        before_snapshot=snapshot,
+        after_snapshot=snapshot,
+        grains={},
+        vocabulary=vocabulary or DEFAULT,  # type: ignore[arg-type]
+    )
+
+
+def test_a_new_hive_model_that_deletes_rows_is_flagged_before_it_ever_runs_twice() -> None:
+    """No revision before it, so F5002 has nothing to compare, and one build succeeds."""
+    from themis.rules.families.f8_engine import RowLevelIncrementalOnHiveRule
+
+    (finding,) = RowLevelIncrementalOnHiveRule().check(
+        _hive_ctx(None, _incremental("delete+insert"))
+    )
+    assert finding.rule_id == "F8006"
+    assert "second run" in finding.title
+    assert "transactional" in finding.consequence
+
+
+def test_switching_a_hive_model_to_merge_is_flagged() -> None:
+    from themis.rules.families.f8_engine import RowLevelIncrementalOnHiveRule
+
+    (finding,) = RowLevelIncrementalOnHiveRule().check(
+        _hive_ctx(_incremental("append"), _incremental("merge"))
+    )
+    assert "merge" in finding.title
+
+
+def test_the_working_hive_shape_and_iceberg_are_silent() -> None:
+    """Append with partition overwrite is how Hive works; Iceberg can delete and merge."""
+    from themis.rules.families.f8_engine import RowLevelIncrementalOnHiveRule
+
+    rule = RowLevelIncrementalOnHiveRule()
+    assert rule.check(_hive_ctx(None, _incremental("append"))) == []
+    iceberg = _incremental("merge", catalog="iceberg", properties={"partitioning": "ARRAY['p']"})
+    assert rule.check(_hive_ctx(None, iceberg)) == []
+
+
+def test_a_model_already_broken_this_way_is_not_blamed_on_the_change() -> None:
+    from themis.rules.families.f8_engine import RowLevelIncrementalOnHiveRule
+
+    broken = _incremental("delete+insert")
+    assert RowLevelIncrementalOnHiveRule().check(_hive_ctx(broken, broken)) == []
+
+
+def test_a_hive_catalog_with_another_name_is_recognised_when_configured() -> None:
+    """At work the Hive catalog may be called anything; THEMIS_HIVE_CATALOGS names it."""
+    from dataclasses import replace
+
+    from themis.rules.families.f8_engine import RowLevelIncrementalOnHiveRule
+    from themis.vocabulary import DEFAULT
+
+    unpartitioned = _incremental("delete+insert", catalog="datalake", properties={})
+    rule = RowLevelIncrementalOnHiveRule()
+    assert rule.check(_hive_ctx(None, unpartitioned)) == []
+    configured = replace(DEFAULT, hive_catalogs=("datalake",))
+    (finding,) = rule.check(_hive_ctx(None, unpartitioned, configured))
+    assert "datalake" in (finding.evidence.note or "")

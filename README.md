@@ -149,7 +149,7 @@ recorded with its author and never edited, and an assistant that answers questio
 the change — the same agent, streaming each tool it calls, every claim quoted. Server-rendered,
 no JavaScript dependencies, nothing fetched from another origin, and a content-security
 policy that forbids inline script and style. Dark and light themes; the organisation's
-name and logo come from settings. Setting it up behind sign-in: docs/WORK_SETUP.md §9.
+name and logo come from settings. Setting it up behind sign-in: docs/WORK_SETUP.md §10.
 
 Findings land on the diff, not only in the log — and in a form a gate or a dashboard
 can read, including the measured deltas, the derived grain, and the checks that could

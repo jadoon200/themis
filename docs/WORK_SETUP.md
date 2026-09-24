@@ -5,7 +5,24 @@ Written for the first run on a project nobody here has seen — a work dbt proje
 columns on most models. Every step below exists because the naive version of it failed.
 
 Nothing here sends anything off the machine. The model runs locally through Ollama; the
-warehouse is only ever reached through a target you allow.
+warehouse is only ever reached through a target you allow. For whoever approves software,
+[APPROVAL.md](APPROVAL.md) is the one-page answer to what it installs, reads, writes and
+sends.
+
+## 0. Before the first day
+
+Five answers decide how the first week goes. Ask a colleague before arriving:
+
+| question | why it matters |
+|---|---|
+| How does Trino log in — LDAP (password over HTTPS), JWT, Kerberos, certificate, OAuth? | THEMIS logs in with dbt-trino's own credentials, so every method dbt supports works, except OAuth, which needs a browser; a review runs unattended, so it needs a service account |
+| Is there a non-production schema THEMIS may create tables in? | `--execute` builds both revisions of a change into schemas of its own and drops them after. Without one it reviews rules-only, which is still the bulk of it |
+| How does the dagster-dbt repository provide its dbt profile, and which dbt version? | Dagster setups often generate the profile at run time; THEMIS needs a profile with a dev target on disk, or `DBT_PROFILES_DIR` pointing at one |
+| Where does production's `target/manifest.json` live? | `--defer-state` reads unchanged upstream models where production already built them instead of rebuilding them |
+| What can be installed: a PyPI mirror, Ollama and a model on the GPU host, Postgres? | SQLite is enough to start; the model is optional (`--no-llm`); everything else is on PyPI |
+
+The code comes in through whatever route is approved, and nothing from the office goes
+back to the public repository — not a finding, not a profile, not a model name.
 
 ## 1. Install
 
@@ -14,12 +31,8 @@ conda create -y -n themis python=3.12 pip && conda activate themis
 pip install uv && uv pip install -r requirements.txt && uv pip install -e .
 ```
 
-`uv`, not `pip` — pip spends ten minutes backtracking on dbt-core. For Starburst/Trino add
-the adapter, which is not in the base dependencies:
-
-```bash
-uv pip install "dbt-trino>=1.10,<1.11"
-```
+`uv`, not `pip` — pip spends ten minutes backtracking on dbt-core. dbt-trino is part of
+the base dependencies. A Kerberos login needs one more package, `requests-kerberos`.
 
 The local model, about 5 GB. Optional — every review runs without it (`--no-llm`):
 
@@ -47,9 +60,17 @@ themis doctor --project /path/to/dbt/project --target <your-dev-target>
 ```
 
 Checks Python, dbt, the adapter your target uses, where the profile is (the project,
-`DBT_PROFILES_DIR` or `~/.dbt`, in dbt's order), the allowlist, git, the compiled manifest,
-the local model and its context window, the database and its migrations, conventions and
-the redaction salt — and prints the command that fixes each. Fix every `FAIL`.
+`DBT_PROFILES_DIR` or `~/.dbt`, in dbt's order), the allowlist, that **dbt** can reach the
+warehouse, that **THEMIS itself** can log in and read the way measurement will, git, the
+compiled manifest, the local model and its context window, the database and its
+migrations, conventions and the redaction salt — and prints the command that fixes each.
+Fix every `FAIL`.
+
+The two logins are checked separately because they are different code. `{{ env_var(...) }}`
+in the profile is resolved the way dbt resolves it, and a variable that is not set in this
+shell is named rather than sent to the warehouse as a password. If THEMIS cannot log in, a
+review with `--execute` says so and is marked incomplete; it never reports that nothing
+moved.
 
 ## 4. Measure the project before trusting anything on it
 
@@ -63,7 +84,24 @@ far macros reach, how much grain and lineage resolve, and how often the vocabula
 This is the file that is safe to share, and the one that says whether THEMIS's assumptions
 hold here.
 
-## 5. The first review
+## 5. Replay what already merged
+
+```bash
+themis backtest --project /path/to/dbt/project --target <your-dev-target> --last 20 \
+  --json backtest.json
+```
+
+The last twenty changes to the project on the main branch, each reviewed against its first
+parent — rules only, nothing built, nothing written. It prints findings by severity and
+which rules fired, per change and in total: how often THEMIS would have spoken up, and how
+loudly, on changes whose outcome is already known. Counts and commit hashes only; add
+`--subjects` to see commit subjects, which is not something to take home. A change that
+could not be reviewed is listed as such, never as clean.
+
+Read the busiest rules against what actually happened to those changes. That, not the
+corpus, is the false-positive rate that matters here.
+
+## 6. The first review
 
 Pick a merged pull request whose outcome you already know:
 
@@ -75,7 +113,7 @@ themis review --project /path/to/dbt/project --base <base-sha> --head <head-sha>
 Then with the model (drop `--no-llm`), then with `--execute` against a non-production
 schema you can write to. Compare what it said with what the human review found.
 
-## 6. Ask
+## 7. Ask
 
 ```bash
 themis agent --project /path/to/dbt/project "Which regulatory models read fct_trades?"
@@ -86,7 +124,7 @@ themis agent --project /path/to/dbt/project --base <base-sha> --head <head-sha> 
 The agent answers only from THEMIS's tools, and every claim quotes a tool result verbatim
 or the answer is refused. `--json` shows every tool it called and every quote it relied on.
 
-## 7. Teach it the project
+## 8. Teach it the project
 
 - **Conventions** — what the team already knows, in `themis_conventions.yml`, versioned with
   the models: `themis conventions --project ...` checks them. Context for the specialists,
@@ -97,7 +135,7 @@ or the answer is refused. `--json` shows every tool it called and every quote it
   findings. They rank repeated findings, are shown to specialists as precedent, and label
   the captured model calls (`themis dataset --judged-only`).
 
-## 8. Serve the tools to an IDE assistant (optional)
+## 9. Serve the tools to an IDE assistant (optional)
 
 ```bash
 uv pip install 'themis[mcp]'
@@ -130,7 +168,7 @@ uv pip compile <(echo 'mcp>=2.2,<3') -o resolved.txt   # exactly what would be i
 uvx pip-audit -r resolved.txt                          # against the OSV database
 ```
 
-## 9. The pages: one link for everyone outside Jenkins
+## 10. The pages: one link for everyone outside Jenkins
 
 Jenkins runs the review; the pages are where a reviewer, a lead or a manager reads it —
 the overview across pull requests, one pull request's findings with what building both
@@ -199,4 +237,8 @@ changes page, <kbd>t</kbd> switches light and dark.
 | a dbt version other than this project's | unknown — the answer was a reading of dbt's changelog | verified against real 1.8, 1.9, 1.10 and 1.12 manifests, field for field; an unverified schema version warns rather than failing |
 | every staging model reading `{{ source(...) }}` | untested — the demo project has no source at all | a real compiled source-rooted project is in the test suite |
 | a refactor touching fifty models | hundreds of findings, each a model call, an hour of reviewing | bounded by `THEMIS_LLM_MAX_FINDINGS_REVIEWED` (60), spent worst-first and counted |
+| models with `+schema:`, an alias, or a catalog of their own | measured where a guess put them — absent on both sides, reported as nothing moved | each build reads where dbt put every model from its own manifest |
+| a Hive incremental model using `delete+insert` | builds once, fails every run after: Hive refuses row-level deletes | the demo is written for partition overwrite, CI runs it twice, and F5008 flags a filter that overwrites part of a partition |
+| `password: "{{ env_var('...') }}"` in the profile | THEMIS's own client sent the template text as the password | rendered as dbt renders it; an unset variable is named |
+| a login other than a password (JWT, Kerberos, certificate) | THEMIS could not log in, every query failed quietly, and a review read as "nothing moved" | logs in through dbt-trino's own credentials; a failed login stops measurement and marks the review incomplete |
 | a comment written at the reviewer | an AI reviewer quoting it would be quoting honestly, and the self-check would pass it | reported as F7004, and the model that carries it is kept away from every seat that could refute a finding |

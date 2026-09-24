@@ -24,6 +24,7 @@ from themis.analyze.parse import (
 )
 from themis.models import Confidence, Evidence, Finding, Severity
 from themis.rules.base import Rule, RuleContext
+from themis.snapshot import ModelNode
 
 FAMILY = "F8"
 
@@ -429,10 +430,93 @@ class IntegerDivisionRule(Rule):
         ]
 
 
+_ROW_LEVEL_STRATEGIES = frozenset({"delete+insert", "merge"})
+
+
+def _model_catalog(node: ModelNode) -> str | None:
+    """The catalog a model is written to, from the relation dbt resolved for it."""
+    if not node.relation_name:
+        return None
+    first = node.relation_name.split(".")[0].strip().strip('"')
+    return first or None
+
+
+def _writes_rows_to_hive(node: ModelNode | None, ctx: RuleContext) -> bool:
+    """An incremental model on a Hive table whose strategy has to delete or merge rows."""
+    if node is None or node.materialization != "incremental":
+        return False
+    if (node.incremental_strategy or "").lower() not in _ROW_LEVEL_STRATEGIES:
+        return False
+    # Hive is known by its catalog, or by its own spelling of the partition spec —
+    # Iceberg says `partitioning` and can delete rows; Hive says `partitioned_by`.
+    hive_property = any(
+        key.strip().lower().replace("_", "") == "partitionedby" for key in node.properties
+    )
+    return ctx.vocabulary.is_hive_catalog(_model_catalog(node)) or hive_property
+
+
+@dataclass
+class RowLevelIncrementalOnHiveRule(Rule):
+    """An incremental strategy that deletes or merges rows, on a table that cannot.
+
+    Hive refuses row-level DELETE and MERGE on tables that are not transactional, and
+    dbt-built tables are not. The first run is a CREATE TABLE AS and succeeds, so the
+    change merges green; every run after fails — "Modifying Hive table rows is only
+    supported for transactional tables". Measured on the demo project. F5002 notices a
+    strategy that *changed*, and only with a revision before it; this is about where the
+    table is, so it also catches a new model written this way, which no build of one
+    revision would.
+    """
+
+    rule_id: str = field(init=False, default="F8006")
+    family: str = field(init=False, default=FAMILY)
+    severity: Severity = field(init=False, default=Severity.HIGH)
+    requires_compiled_sql: bool = field(init=False, default=False)
+
+    def check(self, ctx: RuleContext) -> list[Finding]:
+        if not _writes_rows_to_hive(ctx.after, ctx):
+            return []
+        if _writes_rows_to_hive(ctx.before, ctx):
+            return []  # already this way: the model breaks today, not because of this change
+        after = ctx.after
+        assert after is not None
+        strategy = after.incremental_strategy
+        catalog = _model_catalog(after) or "a Hive catalog"
+        return [
+            Finding(
+                rule_id=self.rule_id,
+                family=self.family,
+                title=f"`{strategy}` on a Hive table: the second run will fail",
+                severity=self.severity,
+                confidence=Confidence.LIKELY,
+                evidence=Evidence(
+                    model_name=ctx.model_name,
+                    file_path=after.file_path,
+                    note=f"incremental_strategy='{strategy}', written to {catalog}",
+                ),
+                consequence=(
+                    "The first run creates the table and succeeds. Every incremental run "
+                    "after it has to delete or merge rows, which Hive refuses on a table "
+                    "that is not transactional, so the model fails from its second run on "
+                    "and nothing downstream of it refreshes."
+                ),
+                suggestion=(
+                    "On Hive, overwrite partitions: incremental_strategy='append', the "
+                    "session setting hive.insert_existing_partitions_behavior='OVERWRITE' "
+                    "in a pre-hook, the partition column last, and an incremental filter "
+                    "that selects whole partitions. Or put the table in Iceberg, which "
+                    "can delete and merge."
+                ),
+                blast_radius=ctx.blast_radius,
+            )
+        ]
+
+
 RULES: tuple[Rule, ...] = (
     CrossCatalogJoinRule(),
     CartesianJoinRule(),
     PartitionPruningLostRule(),
     UnorderedLimitRule(),
     IntegerDivisionRule(),
+    RowLevelIncrementalOnHiveRule(),
 )

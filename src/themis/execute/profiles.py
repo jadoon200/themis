@@ -18,6 +18,7 @@ The user's own ``profiles.yml`` is never modified.
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -112,6 +113,56 @@ def read_profile(
         )
     resolved: dict[str, Any] = dict(outputs[target])
     return resolved
+
+
+_UNRESOLVED_ENV = re.compile(r"env_var\(\s*['\"]([^'\"]+)['\"]")
+
+
+def render_profile(block: dict[str, Any]) -> dict[str, Any]:
+    """A profile output as dbt itself would see it: `{{ env_var(...) }}` resolved.
+
+    Profiles at work keep secrets out of the file — `password: "{{ env_var('TRINO_PW') }}"`
+    — and dbt renders them when it runs. THEMIS's own warehouse client read the file raw,
+    so it would have logged in with the literal template text. Rendered with dbt's own
+    renderer so defaults and filters (`| as_number`) mean exactly what they mean to dbt.
+
+    In memory only: nothing rendered here is ever written to disk. And a variable that is
+    not set is refused by name — dbt's renderer leaves the template in place instead,
+    which would reach the warehouse as a password and fail as something else entirely.
+    """
+    from dbt.config.renderer import ProfileRenderer
+    from dbt_common.context import set_invocation_context
+
+    set_invocation_context(os.environ)
+    try:
+        rendered: dict[str, Any] = ProfileRenderer({}).render_data(block)
+    except Exception as exc:  # dbt's own message names the expression that failed
+        raise ProfileError(f"could not render the dbt profile: {exc}") from exc
+
+    unresolved = sorted(
+        {
+            name
+            for value in _string_values(rendered)
+            if "{{" in value
+            for name in (_UNRESOLVED_ENV.findall(value) or [value.strip()[:60]])
+        }
+    )
+    if unresolved:
+        raise ProfileError(
+            "the dbt profile needs environment variables that are not set here: "
+            + ", ".join(unresolved)
+        )
+    return rendered
+
+
+def _string_values(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        return [s for item in value.values() for s in _string_values(item)]
+    if isinstance(value, list | tuple):
+        return [s for item in value for s in _string_values(item)]
+    return []
 
 
 def write_anchored_profile(

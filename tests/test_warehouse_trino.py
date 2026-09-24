@@ -156,7 +156,14 @@ def test_a_trino_profile_builds_a_client() -> None:
     from pathlib import Path
 
     client = client_for_profile(
-        {"type": "trino", "host": HOST, "port": PORT, "user": "themis", "database": "memory"},
+        {
+            "type": "trino",
+            "host": HOST,
+            "port": PORT,
+            "user": "themis",
+            "database": "memory",
+            "schema": "default",
+        },
         Path("."),
     )
     assert isinstance(client, TrinoClient)
@@ -164,10 +171,13 @@ def test_a_trino_profile_builds_a_client() -> None:
 
 
 def test_an_incomplete_trino_profile_is_refused() -> None:
-    """Half a connection is worse than none: it would fail later, mid-review."""
+    """Half a connection is worse than none: it would fail later, mid-review, and quietly."""
     from pathlib import Path
 
-    assert client_for_profile({"type": "trino", "host": HOST}, Path(".")) is None
+    from themis.execute.warehouse import WarehouseUnavailable
+
+    with pytest.raises(WarehouseUnavailable):
+        client_for_profile({"type": "trino", "host": HOST}, Path("."))
 
 
 def test_a_runs_schemas_are_dropped_and_nobody_elses() -> None:
@@ -191,7 +201,14 @@ def test_a_runs_schemas_are_dropped_and_nobody_elses() -> None:
         cur.fetchall()
 
     dropped = drop_run_schemas(
-        {"type": "trino", "host": HOST, "port": PORT, "user": "themis", "database": "memory"},
+        {
+            "type": "trino",
+            "host": HOST,
+            "port": PORT,
+            "user": "themis",
+            "database": "memory",
+            "schema": "default",
+        },
         project_dir=Path("."),
         prefixes=("themis_head_c0ffee",),
     )
