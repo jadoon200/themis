@@ -6,8 +6,9 @@ typer>=0.12
 rich>=13.7
 httpx>=0.27
 pyyaml>=6.0
-# dbt + the local zero-cost warehouse
+# dbt, on Trino (the engine of record) and DuckDB (the offline fallback)
 dbt-core>=1.8
+dbt-trino>=1.10,<1.11
 dbt-duckdb>=1.8
 duckdb>=1.0
 trino>=0.330

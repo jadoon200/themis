@@ -18,12 +18,25 @@ from dataclasses import dataclass, field
 
 from themis.models import Confidence, Evidence, Finding, Severity
 from themis.rules.base import Rule, RuleContext
+from themis.snapshot import ModelNode, ProjectSnapshot
 
 FAMILY = "F5"
 
 # `is_incremental()` survives into compiled SQL only as its expansion, so the guard is
 # detected from the raw model source instead.
 _IS_INCREMENTAL = re.compile(r"is_incremental\s*\(\s*\)")
+
+# The body of an `{% if is_incremental() %}` block: the filter an incremental run applies.
+_INCREMENTAL_BLOCK = re.compile(
+    r"\{%-?\s*if\s+is_incremental\s*\(\s*\)\s*-?%\}(.*?)\{%-?\s*endif\s*-?%\}",
+    re.IGNORECASE | re.DOTALL,
+)
+# A column on the left of a comparison: `period_month >=`, `src.posting_date between`.
+_FILTERED_COLUMN = re.compile(
+    r"\b([A-Za-z_][A-Za-z0-9_]*)\s*(?:>=|<=|<>|!=|=|>|<|\bbetween\b|\bin\b)",
+    re.IGNORECASE,
+)
+_NOT_A_COLUMN = frozenset({"select", "where", "and", "or", "not", "then", "else", "when", "case"})
 
 # Interval literals in a lookback window: `interval '3' day`, `interval 3 day`.
 _INTERVAL = re.compile(r"interval\s+'?(\d+)'?\s*(day|hour|month|week|year)s?", re.IGNORECASE)
@@ -449,6 +462,99 @@ class PartitionOverwriteRemovedRule(Rule):
         ]
 
 
+def _partition_columns(spec: str | None) -> frozenset[str]:
+    """Column names in a partition spec: `ARRAY['period_month']`, `ARRAY['a', 'b']`."""
+    if not spec:
+        return frozenset()
+    quoted = re.findall(r"'([^']+)'", spec)
+    return frozenset(name.strip().lower() for name in quoted if name.strip())
+
+
+def _incremental_filter_columns(raw_sql: str) -> frozenset[str]:
+    """The columns an incremental run filters on, from the `is_incremental()` block."""
+    columns: set[str] = set()
+    for block in _INCREMENTAL_BLOCK.findall(raw_sql):
+        for match in _FILTERED_COLUMN.finditer(block):
+            name = match.group(1).lower()
+            if name not in _NOT_A_COLUMN:
+                columns.add(name)
+    return frozenset(columns)
+
+
+def _overwrites_part_of_a_partition(node: ModelNode | None, snapshot: ProjectSnapshot) -> bool:
+    """Writes replace whole partitions, and the filter does not select whole partitions."""
+    if node is None or node.materialization != "incremental":
+        return False
+    if not snapshot.overwrites_partitions(node):
+        return False
+    partitions = _partition_columns(node.partitioned_by)
+    filtered = _incremental_filter_columns(node.raw_sql)
+    return bool(partitions) and bool(filtered) and not (partitions & filtered)
+
+
+@dataclass
+class FilterNarrowerThanPartitionRule(Rule):
+    """An overwriting incremental run selects part of a partition, and deletes the rest.
+
+    On Hive, partition overwrite is how an incremental model works at all — row-level
+    deletes are refused. Every partition the incremental query returns *replaces* the one
+    in the table. So the filter has to select whole partitions: filter on anything but
+    the partition column and each partition it touches is replaced by the subset it
+    selected. Measured on the demo project: 142 rows and 334.6M became 122 rows and
+    291.3M on the second run, with no error. F5005 cannot see it — the lookback moved
+    from months to days, and it only compares a window with itself.
+    """
+
+    rule_id: str = field(init=False, default="F5008")
+    family: str = field(init=False, default=FAMILY)
+    severity: Severity = field(init=False, default=Severity.HIGH)
+    requires_compiled_sql: bool = field(init=False, default=False)
+
+    def check(self, ctx: RuleContext) -> list[Finding]:
+        if ctx.after is None:
+            return []
+        if not _overwrites_part_of_a_partition(ctx.after, ctx.after_snapshot):
+            return []
+        # Only what this change introduced. A model that was already this way is debt,
+        # not something this pull request did.
+        if _overwrites_part_of_a_partition(ctx.before, ctx.before_snapshot):
+            return []
+
+        partitions = sorted(_partition_columns(ctx.after.partitioned_by))
+        filtered = sorted(_incremental_filter_columns(ctx.after.raw_sql))
+        return [
+            Finding(
+                rule_id=self.rule_id,
+                family=self.family,
+                title=(
+                    "Incremental filter does not select whole partitions, but each run "
+                    "overwrites the partitions it selects"
+                ),
+                severity=_severity_for(ctx, self.severity),
+                confidence=Confidence.LIKELY,
+                evidence=Evidence(
+                    model_name=ctx.model_name,
+                    file_path=ctx.after.file_path,
+                    note=(
+                        f"partitioned by {', '.join(partitions)}; the incremental filter is on "
+                        f"{', '.join(filtered)}"
+                    ),
+                ),
+                consequence=(
+                    "Each partition the filter touches is replaced by only the rows the filter "
+                    "selected, and the rest of that partition is deleted. Nothing errors and "
+                    "the job succeeds; the totals for those periods are simply smaller."
+                ),
+                suggestion=(
+                    f"Filter on the partition column ({', '.join(partitions)}) so every "
+                    "selected partition is selected whole — reach back a whole period for "
+                    "late arrivals rather than a number of days."
+                ),
+                blast_radius=ctx.blast_radius,
+            )
+        ]
+
+
 RULES: tuple[Rule, ...] = (
     IncrementalGuardRemovedRule(),
     IncrementalStrategyChangedRule(),
@@ -457,4 +563,5 @@ RULES: tuple[Rule, ...] = (
     LookbackWindowNarrowedRule(),
     PartitioningChangedRule(),
     PartitionOverwriteRemovedRule(),
+    FilterNarrowerThanPartitionRule(),
 )

@@ -23,7 +23,7 @@ import pytest
 import sqlglot
 
 from themis.execute.differ import pair_rows
-from themis.execute.warehouse import DuckDBClient, paired_rows_sql
+from themis.execute.warehouse import DuckDBClient, Relation, paired_rows_sql
 from themis.models import (
     Confidence,
     Evidence,
@@ -74,8 +74,8 @@ def _unique(columns: tuple[str, ...] = ("entry_id", "period")) -> Grain:
 
 def _pair(client: DuckDBClient, **overrides: object) -> tuple[KeyedDiff | None, str | None]:
     arguments: dict[str, object] = dict(
-        base_schema="base",
-        head_schema="head",
+        base=Relation(None, "base", "fct"),
+        head=Relation(None, "head", "fct"),
         head_grain=_unique(),
         base_grain=_unique(),
         max_rows=1_000_000,
@@ -436,8 +436,8 @@ def test_rows_changed_in_an_earlier_period_are_counted_and_the_earliest_named(
     keyed, reason = pair_rows(
         periods,
         "fct",
-        base_schema="base",
-        head_schema="head",
+        base=Relation(None, "base", "fct"),
+        head=Relation(None, "head", "fct"),
         head_grain=_period_grain(),
         base_grain=_period_grain(),
         max_rows=1000,
@@ -467,8 +467,8 @@ def test_a_change_only_in_the_latest_period_is_not_a_restatement(tmp_path: Path)
         keyed, reason = pair_rows(
             client,
             "fct",
-            base_schema="base",
-            head_schema="head",
+            base=Relation(None, "base", "fct"),
+            head=Relation(None, "head", "fct"),
             head_grain=_period_grain(),
             base_grain=_period_grain(),
             max_rows=1000,

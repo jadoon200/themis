@@ -59,6 +59,17 @@ def eval_cmd(
             "falls back to how each mutation was declared.",
         ),
     ] = True,
+    target: Annotated[
+        str,
+        typer.Option(
+            "--target",
+            help=(
+                "dbt target every case builds on. The demo project's 'dev' is Trino, the "
+                "engine of record; 'duckdb' is an offline fallback, where several defects "
+                "Trino shows are invisible."
+            ),
+        ),
+    ] = "dev",
     narrow: Annotated[
         bool,
         typer.Option(
@@ -131,6 +142,7 @@ def eval_cmd(
             narrow_execution=narrow,
             allow_dirty=allow_dirty,
             variant=variant,
+            target=target,
         )
     except DirtyRepositoryError as exc:
         typer.echo(str(exc), err=True)
@@ -384,6 +396,12 @@ def eval_cmd(
                 typer.echo(f"  {outcome.mutation.id}: should change results, but it did not")
             else:
                 typer.echo(f"  {outcome.mutation.id}: should not change results, but it did")
+
+    if report.not_measurable:
+        typer.echo("")
+        typer.echo(f"Says nothing on this engine ({report.engine}), by declaration:")
+        for outcome in report.not_measurable:
+            typer.echo(f"  {outcome.mutation.id}: {outcome.declared_unmeasurable}")
 
     if report.stale:
         typer.echo("")

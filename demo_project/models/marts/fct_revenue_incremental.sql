@@ -1,36 +1,43 @@
 {#
-    Hive and Iceberg understand `partitioned_by`; Trino's memory connector rejects an
-    unknown table property outright, and DuckDB ignores it. Sent only where it means
-    something, so the project still builds on every target it claims to support — the
-    manifest a review reads is compiled against dev, which is where it is present.
+    The shape most tables at work are written in: Hive, partitioned by period, loaded
+    incrementally by overwriting whole partitions.
 
-    `none`, not `{}`: dbt-trino emits a WITH clause whenever properties is a dict, and
-    an empty one compiles to `WITH ()`, which Trino rejects as a syntax error.
+    Hive refuses to delete individual rows ("only supported for transactional tables"),
+    so `delete+insert` and `merge` cannot work here. They fail on the *second* run — the
+    first is a plain CREATE TABLE AS and succeeds — which is exactly how such a model gets
+    merged and breaks the next day. `append` with the partition-overwrite session setting
+    is the working idiom: every partition the query selects replaces the one in the table.
+
+    Two rules follow from that, and both are defects when broken:
+    - the partition column comes last; Hive requires partition keys at the end;
+    - the incremental filter selects whole partitions, never part of one. Selecting only
+      the last few days of a month and overwriting that month deletes the rest of it.
+
+    DuckDB ignores `partitioned_by` and has no partitions to overwrite; the hook emits a
+    no-op there. It builds on DuckDB and is only measured on Trino.
 #}
-{% set partition_properties = none if target.type == 'trino' else {'partitioned_by': "ARRAY['period_month']"} %}
 {{ config(
     materialized='incremental',
-    unique_key='entry_id',
-    incremental_strategy='delete+insert',
+    incremental_strategy='append',
     on_schema_change='fail',
-    properties=partition_properties,
+    properties={'partitioned_by': "ARRAY['period_month']"},
     pre_hook="{{ partition_overwrite_hook() }}",
     tags=['recon']
 ) }}
 
 -- Recognised revenue, built incrementally.
 --
--- The lookback window is deliberate: entries are frequently posted a few days after
--- their value date, so a window that only picks up rows newer than the current maximum
--- would silently miss every late arrival. Narrowing it loses data with no error.
+-- The lookback is deliberate: entries are frequently posted after their period closed,
+-- so reprocessing only the latest period would never pick up a late entry for the one
+-- before it. It is expressed in periods because a period is what gets overwritten.
 
 with source as (
 
     select * from {{ ref('int_revenue_recognized') }}
 
     {% if is_incremental() %}
-    where posting_date >= (
-        select coalesce(max(posting_date), date '1900-01-01') - interval '3' day
+    where period_month >= (
+        select coalesce(max(period_month), date '1900-01-01') - interval '1' month
         from {{ this }}
     )
     {% endif %}
@@ -42,9 +49,9 @@ select
     account_id,
     contract_id,
     posting_date,
-    period_month,
     entity_code,
     currency_code,
     amount_txn_ccy,
-    amount_usd
+    amount_usd,
+    period_month
 from source

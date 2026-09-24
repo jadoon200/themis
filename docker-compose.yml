@@ -1,5 +1,9 @@
 # Local infrastructure. Postgres on 5436 — clear of the sibling projects
-# (sentinel 5432, argus 5433, pharos 5434, horus 5435).
+# (sentinel 5432, argus 5433, pharos 5434, horus 5435). Trino on 8085.
+#
+# Everything here is free, open source, and has an arm64 image, so it runs natively on
+# Apple Silicon. Trino is capped at 4 GB: its JVM takes 80% of the container's memory,
+# which is plenty for the demo project and leaves a laptop usable.
 services:
   db:
     image: postgres:16-alpine
@@ -17,5 +21,34 @@ services:
       timeout: 3s
       retries: 10
 
+  # Trino runs as uid 1000 and cannot create directories on a fresh volume, which is
+  # owned by root. Without this, writes are accepted and land nowhere.
+  trino-init:
+    image: busybox:1.37
+    command: ["sh", "-c", "mkdir -p /warehouse/hive /warehouse/iceberg && chown -R 1000:1000 /warehouse"]
+    volumes:
+      - themis-trino-warehouse:/warehouse
+
+  # The engine of record: Hive for most tables, Iceberg for snapshot history. Pinned,
+  # because a Trino release can change what SQL it accepts, and a review measured on one
+  # version should be reproducible on the same one.
+  trino:
+    image: trinodb/trino:483
+    depends_on:
+      trino-init:
+        condition: service_completed_successfully
+    ports:
+      - "8085:8080"
+    volumes:
+      - ./docker/trino/catalog:/etc/trino/catalog:ro
+      - themis-trino-warehouse:/warehouse
+    mem_limit: 4g
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/v1/info | grep -q '\"starting\":false'"]
+      interval: 5s
+      timeout: 5s
+      retries: 40
+
 volumes:
   themis-pgdata:
+  themis-trino-warehouse:

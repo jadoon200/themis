@@ -20,7 +20,7 @@ from pathlib import Path
 import pytest
 
 from themis.execute.differ import diff_tables, measure_grain
-from themis.execute.warehouse import TrinoClient, client_for_profile
+from themis.execute.warehouse import Relation, TrinoClient, client_for_profile
 from themis.models import Grain, GrainSource
 
 HOST = os.environ.get("THEMIS_TEST_TRINO_HOST", "127.0.0.1")
@@ -82,7 +82,7 @@ def warehouse() -> Iterator[TrinoClient]:
 
 
 def test_shape_reports_rows_and_column_types(warehouse: TrinoClient) -> None:
-    shape = warehouse.shape("themis_t_base", "f")
+    shape = warehouse.shape(Relation(None, "themis_t_base", "f"))
     assert shape.exists
     assert shape.row_count == 2
     assert "decimal" in shape.column_types["amount_usd"].lower()
@@ -91,33 +91,36 @@ def test_shape_reports_rows_and_column_types(warehouse: TrinoClient) -> None:
 def test_a_missing_table_degrades_rather_than_raising(warehouse: TrinoClient) -> None:
     """A model may legitimately not exist on one side of a diff. Measurement failure
     must become "unknown", never a wrong number presented as measured."""
-    assert not warehouse.shape("themis_t_base", "does_not_exist").exists
+    assert not warehouse.shape(Relation(None, "themis_t_base", "does_not_exist")).exists
 
 
 def test_monetary_columns_are_recognised(warehouse: TrinoClient) -> None:
-    shape = warehouse.shape("themis_t_base", "f")
+    shape = warehouse.shape(Relation(None, "themis_t_base", "f"))
     assert "amount_usd" in shape.numeric_columns
 
 
 def test_sums_are_returned_as_numbers(warehouse: TrinoClient) -> None:
     """Trino returns DECIMAL as Decimal; the delta arithmetic needs floats."""
-    sums = warehouse.sums("themis_t_base", "f", ("amount_usd",))
+    sums = warehouse.sums(Relation(None, "themis_t_base", "f"), ("amount_usd",))
     assert sums["amount_usd"] == pytest.approx(300.0)
 
 
 def test_null_rates_are_measured(warehouse: TrinoClient) -> None:
-    rates = warehouse.null_rates("themis_t_base", "f", ("contract_id",))
+    rates = warehouse.null_rates(Relation(None, "themis_t_base", "f"), ("contract_id",))
     assert rates["contract_id"] == pytest.approx(0.5)
 
 
 def test_distinct_count_on_a_single_column(warehouse: TrinoClient) -> None:
-    assert warehouse.distinct_count("themis_t_base", "f", ("entry_id",)) == 2
+    assert warehouse.distinct_count(Relation(None, "themis_t_base", "f"), ("entry_id",)) == 2
 
 
 def test_distinct_count_on_a_composite_key(warehouse: TrinoClient) -> None:
     """Trino has no row-constructor equality inside count(distinct ...), so a composite
     key is concatenated with a separator that cannot occur in a value."""
-    assert warehouse.distinct_count("themis_t_base", "f", ("entry_id", "amount_usd")) == 2
+    assert (
+        warehouse.distinct_count(Relation(None, "themis_t_base", "f"), ("entry_id", "amount_usd"))
+        == 2
+    )
 
 
 def test_a_fan_out_is_measured_end_to_end(warehouse: TrinoClient) -> None:
@@ -125,8 +128,8 @@ def test_a_fan_out_is_measured_end_to_end(warehouse: TrinoClient) -> None:
     delta = diff_tables(
         warehouse,
         "f",
-        base_schema="themis_t_base",
-        head_schema="themis_t_head",
+        base=Relation(None, "themis_t_base", "f"),
+        head=Relation(None, "themis_t_head", "f"),
         max_rows=1_000_000,
     )
     assert delta.rows_before == 2
@@ -140,7 +143,7 @@ def test_grain_is_measured_as_rows_per_key(warehouse: TrinoClient) -> None:
     grain = measure_grain(
         warehouse,
         "f",
-        schema="themis_t_head",
+        relation=Relation(None, "themis_t_head", "f"),
         candidate=Grain(model_name="f", columns=("entry_id",), source=GrainSource.HEURISTIC),
     )
     assert grain is not None
@@ -192,7 +195,7 @@ def test_a_runs_schemas_are_dropped_and_nobody_elses() -> None:
         project_dir=Path("."),
         prefixes=("themis_head_c0ffee",),
     )
-    assert sorted(dropped) == ["themis_head_c0ffee", "themis_head_c0ffee_main"]
+    assert sorted(dropped) == ["memory.themis_head_c0ffee", "memory.themis_head_c0ffee_main"]
 
     cur.execute("select schema_name from memory.information_schema.schemata")
     remaining = {row[0] for row in cur.fetchall()}
@@ -231,8 +234,8 @@ def test_rows_are_paired_on_a_key_on_trino(warehouse: TrinoClient) -> None:
         cur.fetchall()
 
     paired = warehouse.paired_rows(
-        ("themis_t_base", "p"),
-        ("themis_t_head", "p"),
+        Relation(None, "themis_t_base", "p"),
+        Relation(None, "themis_t_head", "p"),
         key=("entry_id",),
         columns=("amount_usd", "recognition"),
         numeric=frozenset({"amount_usd"}),
@@ -261,3 +264,38 @@ def test_the_paired_join_is_hashed_on_trino(warehouse: TrinoClient) -> None:
     plan = "\n".join(str(row[0]) for row in warehouse._query("explain " + counts))
     join = next(line for line in plan.splitlines() if "FullJoin" in line)
     assert "criteria =" in join, join
+
+
+def test_a_model_in_another_catalog_is_found_where_dbt_put_it(warehouse: TrinoClient) -> None:
+    """The bug that would have hidden most of a real project.
+
+    Measurement looked every model up in the connection's catalog, under the run schema
+    and the model's file name. A model dbt put in another catalog — or another schema, or
+    under an alias — was absent on both sides, and "absent on both sides" is an empty
+    delta: nothing moved. The client now reads a relation where dbt says it is, and the
+    existence check asks that catalog's own information schema.
+    """
+    import trino
+
+    conn = trino.dbapi.connect(host=HOST, port=PORT, user="themis", catalog="iceberg")
+    cur = conn.cursor()
+    for statement in (
+        "create schema if not exists iceberg.themis_t_elsewhere",
+        "drop table if exists iceberg.themis_t_elsewhere.g",
+        "create table iceberg.themis_t_elsewhere.g as select 1 as k, 2 as v",
+    ):
+        cur.execute(statement)
+        cur.fetchall()
+    try:
+        # The fixture's client is opened on `memory`; the table is in `iceberg`.
+        shape = warehouse.shape(Relation("iceberg", "themis_t_elsewhere", "g"))
+        assert shape.exists and shape.row_count == 1
+        # Looked up where a guess would look, it is not there — which is the point.
+        assert not warehouse.shape(Relation(None, "themis_t_elsewhere", "g")).exists
+    finally:
+        for statement in (
+            "drop table if exists iceberg.themis_t_elsewhere.g",
+            "drop schema if exists iceberg.themis_t_elsewhere",
+        ):
+            cur.execute(statement)
+            cur.fetchall()

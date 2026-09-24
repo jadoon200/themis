@@ -17,7 +17,7 @@ import pytest
 
 from themis.acquire.dbt_runner import node_statuses
 from themis.execute.runner import BuildOutcome, ExecutionResult, _build, _measure
-from themis.execute.warehouse import TableShape, drop_run_schemas
+from themis.execute.warehouse import Relation, TableShape, drop_run_schemas
 from themis.models import Backend, Confidence, Evidence, ExecutionDelta, Finding, Severity
 from themis.pipeline import attach_execution, build_failure_findings, unexplained_change_findings
 from themis.snapshot import ModelNode, ProjectSnapshot
@@ -30,16 +30,16 @@ class _Warehouse:
         self._tables = tables
         self._sums = sums or {}
 
-    def shape(self, schema: str, table: str) -> TableShape:
-        return self._tables.get((schema, table), TableShape(exists=False))
+    def shape(self, relation: Relation) -> TableShape:
+        return self._tables.get((relation.schema, relation.name), TableShape(exists=False))
 
-    def sums(self, schema: str, table: str, columns: tuple[str, ...]) -> dict[str, float]:
-        return self._sums.get((schema, table), {})
+    def sums(self, relation: Relation, columns: tuple[str, ...]) -> dict[str, float]:
+        return self._sums.get((relation.schema, relation.name), {})
 
-    def null_rates(self, schema: str, table: str, columns: tuple[str, ...]) -> dict[str, float]:
+    def null_rates(self, relation: Relation, columns: tuple[str, ...]) -> dict[str, float]:
         return {}
 
-    def distinct_count(self, schema: str, table: str, columns: tuple[str, ...]) -> int | None:
+    def distinct_count(self, relation: Relation, columns: tuple[str, ...]) -> int | None:
         return None
 
     def close(self) -> None:
@@ -381,3 +381,60 @@ def test_data_tests_never_decide_what_can_be_measured(
     for args in calls:
         excluded = {args[i + 1] for i, a in enumerate(args) if a == "--exclude-resource-type"}
         assert {"test", "unit_test"} <= excluded
+
+
+# --- measured where dbt put it ---------------------------------------------------------------
+
+
+def test_a_model_with_a_custom_schema_is_measured_where_dbt_built_it() -> None:
+    """Most real projects set `+schema:` per folder, and dbt then builds a model into
+    `<run schema>_<custom>`. Looked up under the run schema alone it was absent on both
+    sides — an empty delta, reported as nothing moved, with revenue doubled underneath."""
+    base = BuildOutcome(
+        statuses={"mart": "success"}, relations={"mart": Relation(None, "b_finance", "mart")}
+    )
+    head = BuildOutcome(
+        statuses={"mart": "success"}, relations={"mart": Relation(None, "h_finance", "mart")}
+    )
+    warehouse = _Warehouse({("b_finance", "mart"): _shape(10), ("h_finance", "mart"): _shape(20)})
+    delta = _measure_one(warehouse, head=head, base=base)
+    assert (delta.rows_before, delta.rows_after) == (10, 20)
+    assert delta.is_material
+
+
+def test_without_a_manifest_a_model_is_looked_for_in_the_run_schema() -> None:
+    """The old behaviour, kept only as the fallback when dbt wrote no manifest."""
+    outcome = BuildOutcome(statuses={"mart": "success"})
+    assert outcome.relation("mart", "themis_head_x") == Relation(None, "themis_head_x", "mart")
+
+
+def test_where_dbt_built_each_model_is_read_from_the_manifest(tmp_path: Path) -> None:
+    from themis.acquire.dbt_runner import built_relations
+
+    (tmp_path / "manifest.json").write_text(
+        json.dumps(
+            {
+                "nodes": {
+                    "model.p.fct": {
+                        "name": "fct",
+                        "database": "hive",
+                        "schema": "themis_head_x_finance",
+                        "alias": "fct_revenue_v2",
+                    },
+                    "model.p.ref_data": {
+                        "name": "ref_data",
+                        "database": "iceberg",
+                        "schema": "themis_head_x_main",
+                        "alias": None,
+                    },
+                    "test.p.unique_fct": {"name": "unique_fct", "schema": "x"},
+                }
+            }
+        )
+    )
+    relations = built_relations(tmp_path)
+    assert relations == {
+        "fct": ("hive", "themis_head_x_finance", "fct_revenue_v2"),
+        "ref_data": ("iceberg", "themis_head_x_main", "ref_data"),
+    }
+    assert built_relations(tmp_path / "missing") == {}

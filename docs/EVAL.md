@@ -1575,6 +1575,70 @@ than refused. That is the evidence the roadmap asked for, and it is evidence abo
 project: twenty models with complete lineage. It stays opt-in until a real project says
 otherwise, which is the same reason everything else here waits on the work project.
 
+## Measured on the engine of record
+
+Every number above this section was measured on DuckDB. At work only Trino is used —
+most tables Hive, Iceberg coming for the slowly changing data Dagster snapshots produce —
+so the demo project, the corpus and CI now build on Trino by default (`make up` starts it
+with `hive` and `iceberg` catalogs), and DuckDB is an offline fallback. Moving surfaced
+more than a change of engine, and each item below was measured, not assumed.
+
+### Measurement looked for most models in the wrong place
+
+Stage 3 addressed every model as `<connection catalog>.<run schema>.<file name>`. dbt
+puts a model elsewhere whenever it has a custom schema, an alias or a catalog of its own —
+and a model absent on both sides is an empty delta, which reads as *nothing moved*. Most
+real projects set `+schema:` per folder, so at work most models would have been reported
+measured and unchanged whatever their numbers did. The demo had one custom-schema model,
+and it had never been measured on either engine; nothing said so. Found only because
+moving reference data into Iceberg put a model in a second catalog. Each build now reads
+where dbt put every model from the manifest it wrote.
+
+### The demo's incremental model could not run twice at work
+
+It used `delete+insert` on a key. Hive refuses row-level deletes ("only supported for
+transactional tables"), so the model built once — a first incremental build is a CREATE
+TABLE AS whatever its strategy — and failed on every run after. DuckDB accepted it and
+Trino's memory connector could not tell. It is now written the way Hive requires: append
+with the partition-overwrite session setting, the partition column last, and a lookback
+that reprocesses whole periods. Built twice on Hive: 142 rows and the same total both
+times. CI now runs it a second time, because that is the run that breaks.
+
+### Three defects that exist only where partitions are overwritten
+
+| change | on Hive, second run | on DuckDB |
+|---|---|---|
+| overwrite hook removed | 142 → 189 rows, 334.6M → 445.7M | no partitions: no change |
+| filter on posting dates, overwrite by month | 142 → 122 rows, 334.6M → 291.3M | no change |
+| strategy switched to delete+insert | builds once, fails every run after | works |
+
+The second had no rule at all: F5005 compares a lookback with itself and stays silent when
+one moves from months to days. It is F5008 now. Integer division, latent on DuckDB where
+`5/2` is 2.5, is a measured defect on Trino, where it is 2 and nine models move.
+
+### The corpus on Trino
+
+| | DuckDB, last run | Trino |
+|---|---|---|
+| rule coverage | 32 / 32 | **33 / 33** (F5008 is new) |
+| recall | 100% | **100%** |
+| precision | 86% | **88%** |
+| false-positive rate | 27% (3 of 11) | 27% (3 of 11) |
+| latent defects caught | 12 / 12 | **14 / 14** |
+| unruled defects caught (safety net) | 4 / 4 | 4 / 4 |
+| gate | pass | **pass** |
+
+Precision rose; the false-positive rate is unchanged, and it is the same three benign cases
+in the same way, so it describes recall-first rather than the engine. Nothing the corpus
+catches was lost, and three defects that could not be measured before now are. Cases whose truth depends on the engine declare it (`kind_on`,
+`build_fails_on`, `not_measurable_on`, keyed by adapter), and a run prints the ones that
+say nothing on its engine rather than dropping them.
+
+What this still does not show: a Hive table on a real metastore and object store, a
+Starburst-specific connector setting, or a project at the scale and macro density of the
+one at work. The file metastore and local file system stand in for those; the SQL surface,
+table properties and write semantics are Trino's own.
+
 ## Known limitations
 
 Kept current. Several entries here were closed and are gone rather than left standing —

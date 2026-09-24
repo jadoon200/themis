@@ -19,7 +19,7 @@ from themis.execute.profiles import (
     read_profile,
     write_profile_for_schema,
 )
-from themis.execute.warehouse import TableShape
+from themis.execute.warehouse import Relation, TableShape
 from themis.models import Grain, GrainSource
 
 
@@ -30,17 +30,17 @@ class FakeWarehouse:
         self._tables = tables
         self._values = values or {}
 
-    def shape(self, schema: str, table: str) -> TableShape:
-        return self._tables.get((schema, table), TableShape(exists=False))
+    def shape(self, relation: Relation) -> TableShape:
+        return self._tables.get((relation.schema, relation.name), TableShape(exists=False))
 
-    def sums(self, schema: str, table: str, columns: tuple[str, ...]) -> dict[str, float]:
-        return self._values.get(("sums", schema, table), {})
+    def sums(self, relation: Relation, columns: tuple[str, ...]) -> dict[str, float]:
+        return self._values.get(("sums", relation.schema, relation.name), {})
 
-    def null_rates(self, schema: str, table: str, columns: tuple[str, ...]) -> dict[str, float]:
-        return self._values.get(("nulls", schema, table), {})
+    def null_rates(self, relation: Relation, columns: tuple[str, ...]) -> dict[str, float]:
+        return self._values.get(("nulls", relation.schema, relation.name), {})
 
-    def distinct_count(self, schema: str, table: str, columns: tuple[str, ...]) -> int | None:
-        return self._values.get(("distinct", schema, table))
+    def distinct_count(self, relation: Relation, columns: tuple[str, ...]) -> int | None:
+        return self._values.get(("distinct", relation.schema, relation.name))
 
     def close(self) -> None:
         return None
@@ -55,7 +55,13 @@ def _candidate(*columns: str) -> Grain:
 
 
 def _diff(client: FakeWarehouse, model: str = "m"):
-    return diff_tables(client, model, base_schema="b", head_schema="h", max_rows=1_000_000)
+    return diff_tables(
+        client,
+        model,
+        base=Relation(None, "b", model),
+        head=Relation(None, "h", model),
+        max_rows=1_000_000,
+    )
 
 
 def test_row_count_growth_is_measured() -> None:
@@ -135,7 +141,9 @@ def test_oversized_tables_skip_aggregates_but_keep_row_counts() -> None:
             ("h", "m"): _shape(10_000_001, amount_usd="DECIMAL"),
         }
     )
-    delta = diff_tables(client, "m", base_schema="b", head_schema="h", max_rows=1000)
+    delta = diff_tables(
+        client, "m", base=Relation(None, "b", "m"), head=Relation(None, "h", "m"), max_rows=1000
+    )
     assert delta.row_delta == 1
     assert delta.sum_deltas == {}
 
@@ -151,7 +159,7 @@ def test_measured_grain_reports_the_exact_multiplier() -> None:
     grain = measure_grain(
         client,
         "m",
-        schema="h",
+        relation=Relation(None, "h", "m"),
         candidate=Grain(model_name="m", columns=("entry_id",), source=GrainSource.HEURISTIC),
     )
     assert grain is not None
@@ -167,7 +175,7 @@ def test_measurement_confirms_a_genuinely_unique_key() -> None:
     grain = measure_grain(
         client,
         "m",
-        schema="h",
+        relation=Relation(None, "h", "m"),
         candidate=Grain(model_name="m", columns=("entry_id",), source=GrainSource.HEURISTIC),
     )
     assert grain is not None
@@ -182,7 +190,7 @@ def test_a_derived_key_absent_from_the_table_is_not_measured() -> None:
         measure_grain(
             client,
             "m",
-            schema="h",
+            relation=Relation(None, "h", "m"),
             candidate=Grain(model_name="m", columns=("entry_id",), source=GrainSource.HEURISTIC),
         )
         is None
@@ -195,7 +203,7 @@ def test_unknown_grain_is_not_measured() -> None:
         measure_grain(
             client,
             "m",
-            schema="h",
+            relation=Relation(None, "h", "m"),
             candidate=Grain(model_name="m", columns=(), source=GrainSource.UNKNOWN),
         )
         is None
@@ -344,3 +352,99 @@ def test_deferral_selects_only_the_measured_models(monkeypatch: pytest.MonkeyPat
     # over the state relation, so two runs of the same code could measure differently.
     assert "--favor-state" in with_state
     assert "--state" in with_state
+
+
+# --- a warehouse that cannot modify rows ---------------------------------------------------
+
+_TRINO_NO_DELETE = (
+    "1 of 1 ERROR creating sql incremental model themis_head_x.fct_revenue_incremental\n"
+    "Database Error in model fct_revenue_incremental\n"
+    '  TrinoUserError(type=USER_ERROR, name=NOT_SUPPORTED, message="This connector does '
+    'not support modifying table rows", query_id=20260923_141950_00153_m3iks)\n'
+)
+
+
+def test_only_the_engines_own_words_count_as_cannot_modify_rows() -> None:
+    """Matched narrowly on purpose: anything broader swallows a real build failure."""
+    from themis.execute.runner import cannot_modify_rows
+
+    assert cannot_modify_rows(_TRINO_NO_DELETE)
+    assert not cannot_modify_rows("Database Error: column amount_usd does not exist")
+    assert not cannot_modify_rows("NOT_SUPPORTED: this connector does not support views")
+
+
+def _capture_builds(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    *,
+    second_pass_stdout: str,
+    second_pass_ok: bool,
+) -> object:
+    """Run one _build with a fake dbt: pass one succeeds, pass two answers as given."""
+    from themis.config import Settings
+    from themis.execute import runner
+
+    calls: list[list[str]] = []
+
+    class _Result:
+        def __init__(self, ok: bool, stdout: str) -> None:
+            self.ok = ok
+            self.stdout = stdout
+
+    def _fake_run_dbt(project_dir: Path, args: list[str], **kwargs: object) -> _Result:
+        calls.append(args)
+        if len(calls) == 1:
+            return _Result(True, "")
+        return _Result(second_pass_ok, second_pass_stdout)
+
+    def _fake_statuses(target_dir: Path) -> dict[str, str]:
+        # Pass one built both models; pass two wrote nothing, as a failed run does.
+        return {"mart": "success", "inc": "success"} if len(calls) == 1 else {}
+
+    monkeypatch.setattr(runner, "run_dbt", _fake_run_dbt)
+    monkeypatch.setattr(runner, "node_statuses", _fake_statuses)
+    monkeypatch.setattr(runner, "write_profile_for_schema", lambda *a, **k: tmp_path / "profiles")
+    return runner._build(
+        tmp_path / "project",
+        models=("mart", "inc"),
+        schema="themis_head_x",
+        target="trino",
+        settings=Settings(),
+        profiles_root=tmp_path,
+        anchor_dir=tmp_path / "project",
+        label="head",
+        incremental_models=("inc",),
+    )
+
+
+def test_a_warehouse_that_cannot_modify_rows_keeps_the_full_refresh_measurement(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Trino's memory connector cannot DELETE, so the incremental pass cannot run.
+
+    The full-refresh tables pass one wrote are real and worth measuring. Treating this
+    as a failed build instead made every case on that engine unscorable — the corpus
+    could not be run on the engine THEMIS actually targets.
+    """
+    outcome = _capture_builds(
+        monkeypatch, tmp_path, second_pass_stdout=_TRINO_NO_DELETE, second_pass_ok=False
+    )
+    assert outcome.error is None
+    assert outcome.failure("mart") is None and outcome.failure("inc") is None
+    # And it is said out loud: the incremental path was never exercised.
+    assert outcome.incremental_not_run == ("inc",)
+
+
+def test_any_other_second_pass_failure_is_still_a_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The narrow match must not become a way for a real incremental bug to pass."""
+    outcome = _capture_builds(
+        monkeypatch,
+        tmp_path,
+        second_pass_stdout="Database Error in model inc: column merge_key does not exist",
+        second_pass_ok=False,
+    )
+    assert outcome.error is not None
+    assert outcome.incremental_not_run == ()
+    assert outcome.failure("inc") is not None

@@ -7,7 +7,7 @@ say less.
 
 from __future__ import annotations
 
-from themis.execute.warehouse import WarehouseClient
+from themis.execute.warehouse import Relation, WarehouseClient
 from themis.logging import get_logger
 from themis.models import ExecutionDelta, Grain, GrainSource, KeyedDiff
 from themis.vocabulary import DEFAULT as DEFAULT_VOCABULARY
@@ -20,14 +20,14 @@ def diff_tables(
     client: WarehouseClient,
     model: str,
     *,
-    base_schema: str,
-    head_schema: str,
+    base: Relation,
+    head: Relation,
     max_rows: int,
     vocabulary: Vocabulary = DEFAULT_VOCABULARY,
 ) -> ExecutionDelta:
     """Compare one model built two ways."""
-    before = client.shape(base_schema, model)
-    after = client.shape(head_schema, model)
+    before = client.shape(base)
+    after = client.shape(head)
 
     if not before.exists and not after.exists:
         return ExecutionDelta(model_name=model)
@@ -60,10 +60,10 @@ def diff_tables(
     numeric = set(after.numeric_columns)
     money = tuple(c for c in shared if c in numeric and vocabulary.is_monetary(c))
 
-    sums_before = client.sums(base_schema, model, money)
-    sums_after = client.sums(head_schema, model, money)
-    nulls_before = client.null_rates(base_schema, model, shared)
-    nulls_after = client.null_rates(head_schema, model, shared)
+    sums_before = client.sums(base, money)
+    sums_after = client.sums(head, money)
+    nulls_before = client.null_rates(base, shared)
+    nulls_after = client.null_rates(head, shared)
 
     return delta.model_copy(
         update={
@@ -87,7 +87,7 @@ def measure_grain(
     client: WarehouseClient,
     model: str,
     *,
-    schema: str,
+    relation: Relation,
     candidate: Grain | None,
 ) -> Grain | None:
     """Settle a model's grain by counting instead of inferring.
@@ -100,13 +100,13 @@ def measure_grain(
     if candidate is None or not candidate.columns:
         return None
 
-    shape = client.shape(schema, model)
+    shape = client.shape(relation)
     if not shape.exists or shape.row_count == 0:
         return None
     if not set(candidate.columns) <= set(shape.column_types):
         return None  # the derived key does not exist in the built table
 
-    distinct = client.distinct_count(schema, model, candidate.columns)
+    distinct = client.distinct_count(relation, candidate.columns)
     if distinct is None or distinct == 0:
         return None
 
@@ -129,8 +129,8 @@ def pair_rows(
     client: WarehouseClient,
     model: str,
     *,
-    base_schema: str,
-    head_schema: str,
+    base: Relation,
+    head: Relation,
     head_grain: Grain | None,
     base_grain: Grain | None,
     max_rows: int,
@@ -155,8 +155,8 @@ def pair_rows(
                 "so rows cannot be paired"
             )
 
-    before = client.shape(base_schema, model)
-    after = client.shape(head_schema, model)
+    before = client.shape(base)
+    after = client.shape(head)
     if not (before.exists and after.exists):
         return None, "the model is missing from one build"
     if max(before.row_count, after.row_count) > max_rows:
@@ -166,8 +166,8 @@ def pair_rows(
     # Pairing joins on plain equality, which cannot match a NULL key — and a null-safe join
     # is one Trino cannot hash (see paired_rows_sql). A key with NULLs does not identify its
     # rows anyway, so the comparison is refused and says why.
-    for schema, side in ((base_schema, "base"), (head_schema, "head")):
-        rates = client.null_rates(schema, model, key)
+    for relation, side in ((base, "base"), (head, "head")):
+        rates = client.null_rates(relation, key)
         if set(rates) != set(key):
             return None, f"could not confirm ({', '.join(key)}) has no NULLs in the {side} build"
         if any(rate > 0 for rate in rates.values()):
@@ -214,8 +214,8 @@ def pair_rows(
     period = next((column for column in key if vocabulary.is_period_column(column)), None)
 
     paired = client.paired_rows(
-        (base_schema, model),
-        (head_schema, model),
+        base,
+        head,
         key=key,
         columns=comparable,
         numeric=numeric,

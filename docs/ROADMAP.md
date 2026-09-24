@@ -143,6 +143,19 @@ real project says otherwise.
 
 ## Next
 
+**Trino as the engine of record.** Built. The demo project, the corpus and CI build on
+Trino — Hive tables for models, Iceberg for reference data — because that is the only
+engine at work. It found that Stage 3 measured models where a guess put them (fixed: from
+dbt's manifest), that the demo's incremental model could not run twice on Hive (rewritten
+for partition overwrite), and a defect with no rule (F5008). See EVAL, "Measured on the
+engine of record".
+
+**Snapshots on Iceberg.** Next. Slowly changing data will come from dbt snapshots run by
+Dagster into Iceberg. THEMIS reports a changed snapshot as not analysed (X0003) — visible,
+and not enough: a snapshot's `unique_key`, `strategy`, `updated_at` or `check_cols`
+decides how history is written, and a wrong edit corrupts history for good. Needs a
+snapshot in the demo project, rules for those edits, and corpus cases measured on Iceberg.
+
 **M2 — grounding depth.** Built. Column-level lineage, the grain lattice, macro and
 YAML routing, missing-test suggestions derived from the grain, rule families F2 through
 F8, and the dual-manifest backend (`--prod-manifest`), measured on the demo project. The

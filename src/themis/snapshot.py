@@ -94,9 +94,14 @@ class ModelNode(BaseModel):
 
     @property
     def partitioned_by(self) -> str | None:
-        """The partition specification, however the adapter spells the key."""
+        """The partition specification, however the connector spells the key.
+
+        Hive calls it `partitioned_by` and Iceberg `partitioning`; a rule that knew only
+        one would go blind on the other the day a model moved between them.
+        """
         for key, value in self.properties.items():
-            if key.strip().lower().replace("_", "") in ("partitionedby", "partitionby"):
+            normalised = key.strip().lower().replace("_", "")
+            if normalised in ("partitionedby", "partitionby", "partitioning"):
                 return value
         return None
 

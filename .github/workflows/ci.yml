@@ -33,18 +33,6 @@ jobs:
           --health-interval 5s
           --health-timeout 3s
           --health-retries 10
-      # Trino is the engine this tool targets. Without one in CI the warehouse client
-      # for it is only ever exercised by hand, which is how the DuckDB-only assumption
-      # went unnoticed for so long.
-      trino:
-        image: trinodb/trino:latest
-        ports:
-          - 8085:8080
-        options: >-
-          --health-cmd "curl -sf http://localhost:8080/v1/info || exit 1"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 20
     env:
       THEMIS_TEST_POSTGRES_URL: postgresql+psycopg://themis:themis@127.0.0.1:5436/themis
       THEMIS_TEST_TRINO_HOST: 127.0.0.1
@@ -55,6 +43,11 @@ jobs:
       THEMIS_REQUIRE_MCP: "1"
     steps:
       - uses: actions/checkout@v5
+
+      - name: Start Trino (Hive and Iceberg catalogs)
+        # The repository's own compose service, not a bare image: the catalogs are files
+        # in the checkout, and a service container starts before the checkout exists.
+        run: docker compose up -d --wait trino
 
       - uses: actions/setup-python@v6
         with:
@@ -98,9 +91,14 @@ jobs:
     # The demo project is what every end-to-end claim rests on. If it stops building,
     # the review pipeline has nothing to run against and the eval numbers are stale.
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
+
+      - name: Start Trino (Hive and Iceberg catalogs)
+        # The repository's own compose service, not a bare image: the catalogs are files
+        # in the checkout, and a service container starts before the checkout exists.
+        run: docker compose up -d --wait trino
 
       - uses: actions/setup-python@v6
         with:
@@ -112,11 +110,26 @@ jobs:
           uv pip install --system -r requirements.txt
           uv pip install --system -e . --no-deps
 
-      - name: Build the demo project on DuckDB
+      - name: Build the demo project on Trino (Hive marts, Iceberg reference data)
         working-directory: demo_project
         run: |
-          dbt seed --profiles-dir . --project-dir . --target dev
-          dbt build --profiles-dir . --project-dir . --target dev
+          dbt seed --profiles-dir . --project-dir .
+          dbt build --profiles-dir . --project-dir .
+
+      - name: Run the incremental model again
+        # The run that breaks. The first build of an incremental model is a CREATE TABLE
+        # AS and succeeds whatever its strategy; on Hive, `delete+insert` fails only on
+        # the second, which is exactly how such a model merges green.
+        working-directory: demo_project
+        run: dbt build --profiles-dir . --project-dir . --select fct_revenue_incremental
+
+      - name: Build on the offline fallback
+        # DuckDB is not what anything is measured on, but `--target duckdb` is the way to
+        # work without a container, and it should not rot.
+        working-directory: demo_project
+        run: |
+          dbt seed --profiles-dir . --project-dir . --target duckdb
+          dbt build --profiles-dir . --project-dir . --target duckdb
 
       - name: Grain derivation runs and reports coverage
         run: themis grain --project demo_project --explain
@@ -134,6 +147,11 @@ jobs:
         with:
           # The harness builds worktrees at the base revision and needs its history.
           fetch-depth: 0
+
+      - name: Start Trino (Hive and Iceberg catalogs)
+        # The repository's own compose service, not a bare image: the catalogs are files
+        # in the checkout, and a service container starts before the checkout exists.
+        run: docker compose up -d --wait trino
 
       - uses: actions/setup-python@v6
         with:
@@ -156,7 +174,9 @@ jobs:
         # exist, every compile aborts, and twenty of twenty-nine rules skip on every
         # mutation. This job reported 9/29 rule coverage and passed for ten days that way.
         working-directory: demo_project
-        run: dbt build --profiles-dir . --project-dir . --target dev
+        run: |
+          dbt seed --profiles-dir . --project-dir .
+          dbt build --profiles-dir . --project-dir .
 
       - name: Run the mutation corpus
         # Fails on the gate: an unscorable case, a missed defect, a flagged control, or a
@@ -169,18 +189,13 @@ jobs:
     # must be gone afterwards. The `check` job only ever exercised the Trino client.
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    services:
-      trino:
-        image: trinodb/trino:latest
-        ports:
-          - 8085:8080
-        options: >-
-          --health-cmd "curl -sf http://localhost:8080/v1/info || exit 1"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 20
     steps:
       - uses: actions/checkout@v5
+
+      - name: Start Trino (Hive and Iceberg catalogs)
+        # The repository's own compose service, not a bare image: the catalogs are files
+        # in the checkout, and a service container starts before the checkout exists.
+        run: docker compose up -d --wait trino
 
       - uses: actions/setup-python@v6
         with:
@@ -189,7 +204,7 @@ jobs:
       - name: Install
         run: |
           python -m pip install --upgrade pip uv
-          uv pip install --system -r requirements.txt "dbt-trino>=1.10,<1.11"
+          uv pip install --system -r requirements.txt
           uv pip install --system -e . --no-deps
 
       - name: Review a fan-out on Trino

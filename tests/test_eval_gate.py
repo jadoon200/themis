@@ -173,3 +173,75 @@ def test_a_defect_caught_only_by_another_family_fails() -> None:
     outcome.families_fired = ("X",)
     failures = EvalReport([outcome]).gate_failures(full_corpus=False)
     assert any("incidentally" in f for f in failures)
+
+
+# --- a corpus measured on more than one engine ----------------------------------------------
+
+
+def _engine_outcome(mutation: Mutation, **kwargs: object) -> MutationOutcome:
+    base: dict[str, object] = {
+        "applied": True,
+        "changed_results": False,
+        "detected": False,
+        "families_fired": (),
+        "expected_family_fired": False,
+        "finding_count": 0,
+    }
+    return MutationOutcome(mutation=mutation, **{**base, **kwargs})  # type: ignore[arg-type]
+
+
+def _engine_mutation(**kwargs: object) -> Mutation:
+    base: dict[str, object] = {
+        "id": "m",
+        "kind": Kind.DEFECT,
+        "expects_family": "F1",
+        "description": "d",
+        "relative_path": "models/x.sql",
+        "find": "a",
+        "replace": "b",
+    }
+    return Mutation(**{**base, **kwargs})  # type: ignore[arg-type]
+
+
+def test_a_case_can_be_a_defect_on_one_engine_and_latent_on_another() -> None:
+    """`select 5/2` is 2 on Trino and 2.5 on DuckDB, so the same edit truncates every
+    amount on one warehouse and changes nothing on the other."""
+    m = _engine_mutation(kind=Kind.LATENT, kind_on={"trino": Kind.DEFECT})
+    assert m.kind_for("dev") is Kind.LATENT
+    assert m.kind_for("trino") is Kind.DEFECT
+
+
+def test_whether_the_head_builds_can_depend_on_the_engine() -> None:
+    m = _engine_mutation(
+        build_fails="DuckDB has no approx_distinct", build_fails_on={"trino": None}
+    )
+    assert m.build_fails_for("dev") == "DuckDB has no approx_distinct"
+    assert m.build_fails_for("trino") is None
+
+
+def test_a_case_declared_to_say_nothing_here_is_printed_rather_than_gated() -> None:
+    """The alternative — dropping it quietly — is how an engine-specific blind spot hides."""
+    m = _engine_mutation(not_measurable_on={"trino": "this connector cannot modify rows"})
+    report = EvalReport(
+        outcomes=[_engine_outcome(m, declared_unmeasurable=m.not_measurable_on["trino"])]
+    )
+    assert report.not_measurable and not report.usable
+    assert report.gate_failures(full_corpus=False) == []
+
+
+def test_rule_coverage_is_gated_only_where_every_case_can_be_measured() -> None:
+    """A rule can go unexercised on an engine because a case says nothing there. Failing
+    on that would teach nobody anything; the coverage line still reports it."""
+    measurable = EvalReport(outcomes=[_engine_outcome(_engine_mutation(), detected=True)])
+    assert any("never fired" in f for f in measurable.gate_failures(full_corpus=True))
+
+    partly = EvalReport(
+        outcomes=[
+            _engine_outcome(_engine_mutation(), detected=True),
+            _engine_outcome(
+                _engine_mutation(id="skipped", not_measurable_on={"trino": "no second catalog"}),
+                declared_unmeasurable="no second catalog",
+            ),
+        ]
+    )
+    assert not any("never fired" in f for f in partly.gate_failures(full_corpus=True))
