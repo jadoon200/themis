@@ -377,7 +377,8 @@ def test_data_tests_never_decide_what_can_be_measured(
         label="head",
         incremental_models=("inc",),
     )
-    assert len(calls) == 2
+    # Where it would write, then the two passes — and none of the three selects a test.
+    assert [args[0] for args in calls] == ["ls", "build", "build"]
     for args in calls:
         excluded = {args[i + 1] for i, a in enumerate(args) if a == "--exclude-resource-type"}
         assert {"test", "unit_test"} <= excluded
@@ -457,3 +458,88 @@ def test_a_model_built_on_both_sides_and_readable_on_neither_is_not_unchanged() 
     )
     assert "mart" not in result.deltas
     assert "could not be read" in result.unmeasured["mart"]
+
+
+# --- nothing written outside the run's schemas -----------------------------------------------
+
+
+def _listing(*nodes: tuple[str, str, str, str]) -> str:
+    return "\n".join(
+        [
+            "12:00:00  Running with dbt=1.12.3",
+            *(
+                json.dumps(
+                    {
+                        "unique_id": uid,
+                        "database": db,
+                        "schema": schema,
+                        "config": {"materialized": materialized},
+                    }
+                )
+                for uid, db, schema, materialized in nodes
+            ),
+        ]
+    )
+
+
+def test_every_node_under_the_run_schema_is_allowed() -> None:
+    from themis.execute.runner import outside_run_schema
+
+    listing = _listing(
+        ("model.p.mart", "hive", "themis_head_ab12", "table"),
+        ("model.p.ref", "iceberg", "themis_head_ab12_main", "table"),
+        ("snapshot.p.snap", "iceberg", "themis_head_ab12_history", "snapshot"),
+    )
+    assert outside_run_schema(listing, "themis_head_ab12") == []
+
+
+def test_a_legacy_snapshot_target_schema_is_caught_before_anything_is_written() -> None:
+    """`target_schema` bypasses the schema macro: base and head would share one table."""
+    from themis.execute.runner import outside_run_schema
+
+    listing = _listing(
+        ("model.p.mart", "hive", "themis_head_ab12", "table"),
+        ("snapshot.p.snap", "iceberg", "snapshots", "snapshot"),
+        # Never written, so wherever it resolves does not matter.
+        ("model.p.inline", "hive", "elsewhere", "ephemeral"),
+        # A prefix is not a run schema: `themis_head_ab123` belongs to another run.
+        ("model.p.other", "hive", "themis_head_ab123", "table"),
+    )
+    assert outside_run_schema(listing, "themis_head_ab12") == [
+        "snapshot.p.snap -> iceberg.snapshots",
+        "model.p.other -> hive.themis_head_ab123",
+    ]
+
+
+def test_the_build_refuses_rather_than_writing_outside(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from themis.config import Settings
+    from themis.execute import runner
+
+    listing = _listing(("snapshot.p.snap", "iceberg", "snapshots", "snapshot"))
+    commands: list[str] = []
+
+    class _Result:
+        def __init__(self, stdout: str) -> None:
+            self.ok = True
+            self.stdout = stdout
+
+    def fake_run_dbt(project_dir: Path, args: list[str], **kwargs: object) -> _Result:
+        commands.append(args[0])
+        return _Result(listing if args[0] == "ls" else "")
+
+    monkeypatch.setattr(runner, "run_dbt", fake_run_dbt)
+    monkeypatch.setattr(runner, "write_profile_for_schema", lambda *a, **k: tmp_path / "profiles")
+    with pytest.raises(runner.WritesOutsideRun, match=r"iceberg\.snapshots"):
+        runner._build(
+            tmp_path,
+            models=("snap",),
+            schema="themis_head_x",
+            target="dev",
+            settings=Settings(),
+            profiles_root=tmp_path,
+            anchor_dir=tmp_path,
+            label="head",
+        )
+    assert commands == ["ls"]  # and nothing was built

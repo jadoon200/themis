@@ -11,6 +11,7 @@ It is also the only stage that executes anything, so the production guard in
 
 from __future__ import annotations
 
+import json
 import secrets
 import tempfile
 from dataclasses import dataclass, field
@@ -144,6 +145,45 @@ class ExecutionResult:
         return tuple(sorted(n for n, d in self.deltas.items() if d.is_material))
 
 
+class WritesOutsideRun(RuntimeError):
+    """A build would write somewhere other than the schemas this run owns."""
+
+
+def outside_run_schema(listing: str, schema: str) -> list[str]:
+    """Nodes a `dbt ls --output json` listing would write outside the run's schema.
+
+    Everything a build writes has to land in a schema named for the run, because those
+    are the only ones it drops afterwards and the only ones no other run shares. dbt's
+    default schema macro guarantees it (`<run schema>_<custom schema>`), and two things
+    do not: a legacy snapshot `target_schema`, which bypasses the macro, and a project
+    whose own `generate_schema_name` returns the custom schema as written. Either would
+    have base and head write one table — each measuring the other's rows — in a schema
+    THEMIS would then leave behind.
+    """
+    prefix = schema.lower()
+    outside: list[str] = []
+    for line in listing.splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            node = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(node, dict) or "unique_id" not in node:
+            continue
+        config = node.get("config") or {}
+        if isinstance(config, dict) and config.get("materialized") == "ephemeral":
+            continue  # never written
+        written = str(node.get("schema") or "")
+        if written.lower() == prefix or written.lower().startswith(prefix + "_"):
+            continue
+        catalog = node.get("database")
+        where = f"{catalog}.{written}" if catalog else written
+        outside.append(f"{node['unique_id']} -> {where}")
+    return outside
+
+
 def _build(
     project_dir: Path,
     *,
@@ -234,6 +274,42 @@ def _build(
             target_path=target_dir,
         )
         return result.ok, result.stdout, node_statuses(target_dir)
+
+    # Where every node in the selection would be written, resolved by dbt itself with
+    # this build's profile — before anything is written at all.
+    listed, listing, _ = run(
+        [
+            "ls",
+            *selection,
+            *defer_args,
+            "--resource-type",
+            "model",
+            "seed",
+            "snapshot",
+            "--output",
+            "json",
+            "--output-keys",
+            "unique_id",
+            "database",
+            "schema",
+            "config",
+        ]
+    )
+    if not listed:
+        raise WritesOutsideRun(
+            "could not confirm where the build would write, so nothing was built: "
+            + (extract_dbt_error(listing) or "dbt ls failed")[:300]
+        )
+    outside = outside_run_schema(listing, schema)
+    if outside:
+        raise WritesOutsideRun(
+            f"{len(outside)} node(s) would be written outside this run's schemas, where "
+            "base and head would share one table and nothing would drop it — "
+            + "; ".join(outside[:5])
+            + ". A snapshot's legacy target_schema, or a generate_schema_name that "
+            "ignores the target schema, does this; set `schema` instead, or keep the "
+            "custom-schema override to production targets."
+        )
 
     ok, stdout, statuses = run(["build", "--full-refresh", *selection, *defer_args])
     relations = {
@@ -386,15 +462,18 @@ def execute(
         return outcome
 
     try:
-        with tempfile.TemporaryDirectory(prefix="themis-exec-") as tmp:
-            root = Path(tmp)
-            if head_sha is None:
-                head_build = build(project_dir, head_schema, "head", root)
-            else:
-                with git.worktree_at(repo, head_sha) as tree:
-                    head_build = build(tree / relative, head_schema, "head", root)
-            with git.worktree_at(repo, base_sha) as tree:
-                base_build = build(tree / relative, base_schema, "base", root)
+        try:
+            with tempfile.TemporaryDirectory(prefix="themis-exec-") as tmp:
+                root = Path(tmp)
+                if head_sha is None:
+                    head_build = build(project_dir, head_schema, "head", root)
+                else:
+                    with git.worktree_at(repo, head_sha) as tree:
+                        head_build = build(tree / relative, head_schema, "head", root)
+                with git.worktree_at(repo, base_sha) as tree:
+                    base_build = build(tree / relative, base_schema, "base", root)
+        except WritesOutsideRun as exc:
+            return ExecutionResult(skipped_reason=str(exc))
 
         try:
             client = client_for_profile(profile, anchor)
