@@ -13,8 +13,7 @@ Scenarios are built as commits in a throwaway worktree on top of HEAD, so the sc
 no local branches and never touches the caller's checkout:
 
     make demo-build                                   # the project, built
-    make up                                           # Postgres on 5436   (optional)
-    docker run -d -p 8085:8080 trinodb/trino:latest   # Trino              (optional)
+    make up                                           # Postgres 5436, Trino 8085
     ollama serve                                      # the model          (optional)
     python scripts/component_check.py [--quick]
 
@@ -93,6 +92,37 @@ def port_open(port: int) -> bool:
     with socket.socket() as sock:
         sock.settimeout(1)
         return sock.connect_ex(("127.0.0.1", port)) == 0
+
+
+def run_schemas() -> list[str]:
+    """Every schema a Stage 3 run left behind, on either engine.
+
+    Execution builds on Trino now, and this used to look in the DuckDB files alone — so
+    "no run schemas left" passed whatever Trino was holding. A snapshot adds a second
+    catalog to that: its run schema is in Iceberg, beside the models' in Hive.
+    """
+    found = duckdb_run_schemas()
+    if port_open(8085):
+        import trino
+
+        cursor = trino.dbapi.connect(host="127.0.0.1", port=8085, user="themis").cursor()
+        for catalog in ("hive", "iceberg"):
+            cursor.execute(
+                f"select schema_name from {catalog}.information_schema.schemata "
+                "where schema_name like 'themis_base_%' or schema_name like 'themis_head_%'"
+            )
+            found += [f"{catalog}.{row[0]}" for row in cursor.fetchall()]
+    return found
+
+
+def trino_schema_exists(catalog: str, schema: str) -> bool:
+    import trino
+
+    cursor = trino.dbapi.connect(host="127.0.0.1", port=8085, user="themis").cursor()
+    cursor.execute(
+        f"select count(*) from {catalog}.information_schema.schemata where schema_name = '{schema}'"
+    )
+    return bool(cursor.fetchone()[0])
 
 
 def duckdb_run_schemas() -> list[str]:
@@ -232,6 +262,20 @@ def build_scenarios(tmp: Path) -> dict[str, str]:
             marker = "-- General ledger entries, typed and signed. One row per entry_id."
             assert marker in text
             path.write_text(text.replace(marker, marker + " Source: ERP export."))
+
+        # A snapshot filtered while it records deletions: measured on Iceberg, and the
+        # run's schema there has to be dropped as well as the one in Hive.
+        commit("snapshot_filter", mutation("snapshot_filter_records_deletions"))
+
+        # The legacy spelling: a fixed target_schema, which bypasses the schema macro, so
+        # base and head would both write iceberg.snapshots. Refused before anything runs.
+        def legacy_snapshot_location(project: Path) -> None:
+            path = project / "snapshots" / "snap_accounts.sql"
+            text = path.read_text()
+            assert "    schema='history'," in text
+            path.write_text(text.replace("    schema='history',", "    target_schema='snapshots',"))
+
+        commit("snapshot_legacy_location", legacy_snapshot_location)
 
         commit("audit_base", audit_columns)
         commit("audit_comment", upstream_comment, parent=shas["audit_base"])
@@ -551,7 +595,7 @@ def check_reviews(shas: dict[str, str], tmp: Path, env: dict[str, str]) -> None:
 
 
 def check_execution(shas: dict[str, str], tmp: Path, env: dict[str, str]) -> None:
-    print("\nexecution (Stage 3, DuckDB)")
+    print("\nexecution (Stage 3, Trino)")
     r, doc = review_json(shas["fanout"], tmp, "--no-llm", "--execute", env=env)
     measured = [f for f in doc.get("findings", []) if f["confidence"] == "measured"]
     deltas = {d["model"]: d for d in doc.get("execution_deltas", [])}
@@ -566,8 +610,8 @@ def check_execution(shas: dict[str, str], tmp: Path, env: dict[str, str]) -> Non
         f"exit {r.returncode}, measured={len(measured)}, "
         f"fct_revenue={revenue.get('rows_before')}->{revenue.get('rows_after')}",
     )
-    leftover = duckdb_run_schemas()
-    record("no run schemas left in either DuckDB file", not leftover, f"{leftover}")
+    leftover = run_schemas()
+    record("no run schemas left behind, on Trino or DuckDB", not leftover, f"{leftover}")
 
     r = themis(
         "execute",
@@ -614,8 +658,37 @@ def check_execution(shas: dict[str, str], tmp: Path, env: dict[str, str]) -> Non
         and not doc.get("degraded_reason"),
         f"exit {r.returncode}, degraded={doc.get('degraded_reason')}, {r.stderr[-300:]}",
     )
+    record("no run schemas left after deferral", not run_schemas(), f"{run_schemas()}")
+
+
+def check_snapshots(shas: dict[str, str], tmp: Path, env: dict[str, str]) -> None:
+    print("\nsnapshots (Iceberg)")
+    if not port_open(8085):
+        skip("snapshot reviews with execution", "no Trino on 8085")
+        return
+    r, doc = review_json(shas["snapshot_filter"], tmp, "--no-llm", "--execute", env=env)
+    deltas = {d["model"]: d for d in doc.get("execution_deltas", [])}
+    snap = deltas.get("snap_contracts", {})
     record(
-        "no run schemas left after deferral", not duckdb_run_schemas(), f"{duckdb_run_schemas()}"
+        "a filter on a snapshot that records deletions: F9005, and the rows it drops measured",
+        "F9005" in rules_in(doc)
+        and doc.get("executed")
+        and (snap.get("rows_after") or 0) < (snap.get("rows_before") or 0),
+        f"exit {r.returncode}, rules {sorted(rules_in(doc))}, "
+        f"snap_contracts {snap.get('rows_before')}->{snap.get('rows_after')}",
+    )
+    leftover = run_schemas()
+    record("no run schemas left in Hive or Iceberg", not leftover, f"{leftover}")
+
+    r, doc = review_json(shas["snapshot_legacy_location"], tmp, "--no-llm", "--execute", env=env)
+    reasons = " ".join(i.get("reason", "") for i in doc.get("incomplete", []))
+    record(
+        "a legacy target_schema is refused before anything is written",
+        not doc.get("executed")
+        and "outside this run's schemas" in reasons
+        and "F9006" in rules_in(doc)
+        and not trino_schema_exists("iceberg", "snapshots"),
+        f"exit {r.returncode}, executed={doc.get('executed')}, {reasons[:300]}",
     )
 
 
@@ -1486,6 +1559,7 @@ def main() -> int:
         check_analysis(env)
         check_reviews(shas, tmp, env)
         check_execution(shas, tmp, env)
+        check_snapshots(shas, tmp, env)
         check_persistence_and_models(
             shas, tmp, env, ollama=ollama and not args.quick, quick=args.quick
         )
