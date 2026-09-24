@@ -461,9 +461,13 @@ def test_a_model_built_on_both_sides_and_readable_on_neither_is_not_unchanged() 
 
 
 # --- nothing written outside the run's schemas -----------------------------------------------
+#
+# At work some nodes are written to a fixed schema whatever the target says — snapshots with
+# a legacy target_schema — and other models ref() them. A build must never write there, and
+# must not give up on every change that merely reads one either.
 
 
-def _listing(*nodes: tuple[str, str, str, str]) -> str:
+def _listing(*nodes: tuple[str, str, str, str, tuple[str, ...]]) -> str:
     return "\n".join(
         [
             "12:00:00  Running with dbt=1.12.3",
@@ -471,54 +475,68 @@ def _listing(*nodes: tuple[str, str, str, str]) -> str:
                 json.dumps(
                     {
                         "unique_id": uid,
+                        "name": uid.split(".")[-1],
                         "database": db,
                         "schema": schema,
                         "config": {"materialized": materialized},
+                        "depends_on": {"nodes": list(parents)},
                     }
                 )
-                for uid, db, schema, materialized in nodes
+                for uid, db, schema, materialized, parents in nodes
             ),
         ]
     )
 
 
-def test_every_node_under_the_run_schema_is_allowed() -> None:
-    from themis.execute.runner import outside_run_schema
+# stg -> snap (fixed: iceberg.snapshots) -> mart, and stg -> other.
+_PROJECT = _listing(
+    ("model.p.stg", "hive", "themis_head_ab12", "view", ()),
+    ("snapshot.p.snap", "iceberg", "snapshots", "snapshot", ("model.p.stg",)),
+    ("model.p.mart", "hive", "themis_head_ab12_finance", "table", ("snapshot.p.snap",)),
+    ("model.p.other", "hive", "themis_head_ab12", "table", ("model.p.stg",)),
+    # Never written, so wherever it resolves does not matter.
+    ("model.p.inline", "hive", "elsewhere", "ephemeral", ()),
+)
 
-    listing = _listing(
-        ("model.p.mart", "hive", "themis_head_ab12", "table"),
-        ("model.p.ref", "iceberg", "themis_head_ab12_main", "table"),
-        ("snapshot.p.snap", "iceberg", "themis_head_ab12_history", "snapshot"),
+
+def test_only_what_lands_outside_the_run_schema_is_fixed() -> None:
+    from themis.execute.runner import locate_nodes
+
+    nodes = locate_nodes(_PROJECT, "themis_head_ab12")
+    assert {uid for uid, node in nodes.items() if node.fixed} == {"snapshot.p.snap"}
+    assert "model.p.inline" not in nodes
+    # A prefix is not a run schema: `themis_head_ab123` belongs to another run.
+    other_run = _listing(("model.p.x", "hive", "themis_head_ab123", "table", ()))
+    assert locate_nodes(other_run, "themis_head_ab12")["model.p.x"].fixed
+
+
+def test_a_fixed_node_the_change_does_not_reach_is_read_in_place() -> None:
+    """A change to `mart` reads the snapshot where it is — as a deferred upstream is."""
+    from themis.execute.runner import locate_nodes, plan_locations
+
+    plan = plan_locations(locate_nodes(_PROJECT, "themis_head_ab12"), {"mart"})
+    assert [node.name for node in plan.read_in_place] == ["snap"]
+    assert plan.not_built == {}
+
+
+def test_a_fixed_node_the_change_reaches_is_left_out_with_what_reads_it() -> None:
+    """A change to `stg` reaches the snapshot: building it would overwrite its one table,
+    and a mart built on the untouched table would measure the change as nothing."""
+    from themis.execute.runner import locate_nodes, plan_locations
+
+    plan = plan_locations(
+        locate_nodes(_PROJECT, "themis_head_ab12"), {"stg", "snap", "mart", "other"}
     )
-    assert outside_run_schema(listing, "themis_head_ab12") == []
+    assert set(plan.not_built) == {"snap", "mart"}
+    assert "iceberg.snapshots.snap" in plan.not_built["snap"]
+    assert "reads snap" in plan.not_built["mart"]
+    assert plan.read_in_place == ()
 
 
-def test_a_legacy_snapshot_target_schema_is_caught_before_anything_is_written() -> None:
-    """`target_schema` bypasses the schema macro: base and head would share one table."""
-    from themis.execute.runner import outside_run_schema
-
-    listing = _listing(
-        ("model.p.mart", "hive", "themis_head_ab12", "table"),
-        ("snapshot.p.snap", "iceberg", "snapshots", "snapshot"),
-        # Never written, so wherever it resolves does not matter.
-        ("model.p.inline", "hive", "elsewhere", "ephemeral"),
-        # A prefix is not a run schema: `themis_head_ab123` belongs to another run.
-        ("model.p.other", "hive", "themis_head_ab123", "table"),
-    )
-    assert outside_run_schema(listing, "themis_head_ab12") == [
-        "snapshot.p.snap -> iceberg.snapshots",
-        "model.p.other -> hive.themis_head_ab123",
-    ]
-
-
-def test_the_build_refuses_rather_than_writing_outside(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    from themis.config import Settings
+def _fake_dbt(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, listing: str) -> list[list[str]]:
     from themis.execute import runner
 
-    listing = _listing(("snapshot.p.snap", "iceberg", "snapshots", "snapshot"))
-    commands: list[str] = []
+    calls: list[list[str]] = []
 
     class _Result:
         def __init__(self, stdout: str) -> None:
@@ -526,20 +544,87 @@ def test_the_build_refuses_rather_than_writing_outside(
             self.stdout = stdout
 
     def fake_run_dbt(project_dir: Path, args: list[str], **kwargs: object) -> _Result:
-        commands.append(args[0])
+        calls.append(args)
         return _Result(listing if args[0] == "ls" else "")
 
     monkeypatch.setattr(runner, "run_dbt", fake_run_dbt)
     monkeypatch.setattr(runner, "write_profile_for_schema", lambda *a, **k: tmp_path / "profiles")
-    with pytest.raises(runner.WritesOutsideRun, match=r"iceberg\.snapshots"):
-        runner._build(
-            tmp_path,
-            models=("snap",),
-            schema="themis_head_x",
-            target="dev",
-            settings=Settings(),
-            profiles_root=tmp_path,
-            anchor_dir=tmp_path,
-            label="head",
-        )
-    assert commands == ["ls"]  # and nothing was built
+    return calls
+
+
+def _build_head(tmp_path: Path, models: tuple[str, ...], **kwargs: object) -> BuildOutcome:
+    from themis.config import Settings
+
+    return _build(
+        tmp_path,
+        models=models,
+        schema="themis_head_ab12",
+        target="dev",
+        settings=Settings(),
+        profiles_root=tmp_path,
+        anchor_dir=tmp_path,
+        label="head",
+        **kwargs,  # type: ignore[arg-type]
+    )
+
+
+def test_the_build_excludes_what_it_reads_in_place(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    calls = _fake_dbt(monkeypatch, tmp_path, _PROJECT)
+    outcome = _build_head(tmp_path, ("mart",), table_exists=lambda relation: True)
+    build = next(args for args in calls if args[0] == "build")
+    assert build[build.index("--exclude") + 1] == "snap"
+    assert "+mart" in build
+    assert outcome.not_built == {}
+
+
+def test_what_the_change_reaches_is_left_out_and_the_rest_still_built(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    calls = _fake_dbt(monkeypatch, tmp_path, _PROJECT)
+    outcome = _build_head(tmp_path, ("stg", "snap", "mart", "other"))
+    build = next(args for args in calls if args[0] == "build")
+    selected = {build[i + 1] for i, a in enumerate(build) if a == "--select"}
+    assert selected == {"+stg", "+other"}
+    assert set(outcome.not_built) == {"snap", "mart"}
+
+
+def test_a_fixed_table_that_is_not_there_to_read_is_refused(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from themis.execute import runner
+
+    calls = _fake_dbt(monkeypatch, tmp_path, _PROJECT)
+    with pytest.raises(runner.BuildRefused, match=r"iceberg\.snapshots\.snap"):
+        _build_head(tmp_path, ("mart",), table_exists=lambda relation: False)
+    assert [args[0] for args in calls] == ["ls"]  # and nothing was built
+
+
+def test_a_change_that_reaches_only_fixed_nodes_builds_nothing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from themis.execute import runner
+
+    calls = _fake_dbt(monkeypatch, tmp_path, _PROJECT)
+    with pytest.raises(runner.BuildRefused, match="fixed location"):
+        _build_head(tmp_path, ("snap", "mart"))
+    assert [args[0] for args in calls] == ["ls"]
+
+
+def test_a_model_left_out_is_reported_never_measured_as_unchanged() -> None:
+    warehouse = _Warehouse({("b", "other"): _shape(10), ("h", "other"): _shape(10)})
+    reason = "not built: it reads snap, which could not be built here"
+    result = _measure(
+        warehouse,
+        models=("mart", "other"),
+        base_schema="b",
+        head_schema="h",
+        max_rows=1_000_000,
+        head_build=BuildOutcome(statuses={"other": "success"}, not_built={"mart": reason}),
+        base_build=BuildOutcome(statuses={"mart": "success", "other": "success"}),
+        grain_candidates={},
+    )
+    assert "mart" not in result.deltas
+    assert result.not_built == {"mart": reason}
+    assert "other" in result.deltas
