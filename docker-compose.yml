@@ -3,10 +3,11 @@
 #
 # Everything here is free, open source, and has an arm64 image, so it runs natively on
 # Apple Silicon. Trino is capped at 4 GB, which is plenty for the demo project and leaves a
-# laptop usable — with its heap at 40% of that, not the image's 80%. Everything else the JVM
-# holds (code cache, metaspace, 300 threads, native buffers) grows over hours of runs, and the
-# kernel killed the container twice before this: at 80% after a day, at 60% after four
-# hours (exit 137, mid-corpus). The demo's queries need a fraction of 1.6 GB of heap.
+# laptop usable — with its heap at 40% of that, not the image's 80%, and metaspace capped.
+# Trino generates classes for every query shape (46,000 after one corpus run), and with no
+# cap that grows until the kernel kills the container: twice before this, at 80% heap after
+# a day and at 60% after four hours (exit 137, mid-corpus). Measured with these settings:
+# heap 1.7 GB, metaspace 0.24 GB, the rest 0.8 GB — 2.8 GB at peak over a whole corpus.
 services:
   db:
     image: postgres:16-alpine
