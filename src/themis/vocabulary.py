@@ -121,6 +121,12 @@ GOVERNED_TAGS: tuple[str, ...] = ("regulatory", "recon", "control")
 PUBLISHED_FOLDERS: tuple[str, ...] = ("marts/", "reporting/", "published/", "exposed/")
 
 
+# Catalogs whose tables are Hive: no row-level DELETE or MERGE unless a table is
+# transactional, which dbt-built tables are not. The name is the catalog's, so a
+# deployment that calls its Hive catalog something else sets THEMIS_HIVE_CATALOGS.
+HIVE_CATALOGS: tuple[str, ...] = ("hive",)
+
+
 @dataclass(frozen=True)
 class Vocabulary:
     money_hints: tuple[str, ...] = MONEY_HINTS
@@ -132,6 +138,12 @@ class Vocabulary:
     reporting_currency_hints: tuple[str, ...] = REPORTING_CURRENCY_HINTS
     governed_tags: tuple[str, ...] = GOVERNED_TAGS
     published_folders: tuple[str, ...] = PUBLISHED_FOLDERS
+    hive_catalogs: tuple[str, ...] = HIVE_CATALOGS
+
+    def is_hive_catalog(self, catalog: str | None) -> bool:
+        return bool(catalog) and str(catalog).strip('"').lower() in {
+            c.lower() for c in self.hive_catalogs
+        }
 
     def is_monetary(self, column: str) -> bool:
         lowered = column.lower()
@@ -184,6 +196,7 @@ def from_settings(settings: object) -> Vocabulary:
         sensitive_hints=getattr(settings, "sensitive_column_hints", SENSITIVE_HINTS),
         governed_tags=getattr(settings, "governed_tags", GOVERNED_TAGS),
         published_folders=getattr(settings, "published_folders", PUBLISHED_FOLDERS),
+        hive_catalogs=getattr(settings, "hive_catalogs", HIVE_CATALOGS),
         currency_hints=getattr(settings, "currency_column_hints", CURRENCY_HINTS),
         period_hints=getattr(settings, "period_column_hints", PERIOD_HINTS),
         minor_unit_hints=getattr(settings, "minor_unit_hints", MINOR_UNIT_HINTS),
