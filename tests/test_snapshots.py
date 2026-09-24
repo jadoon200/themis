@@ -518,3 +518,17 @@ def test_a_snapshot_key_change_is_not_called_an_incremental_one(project: Project
     snap = project.models["snap_accounts"]
     rekeyed = snap.model_copy(update={"unique_key": ("account_id", "segment")})
     assert IncrementalKeyChangedRule().check(_ctx(project, "snap_accounts", after=rekeyed)) == []
+
+
+def test_a_concatenated_key_is_read_as_its_columns(project: ProjectSnapshot) -> None:
+    """How snapshots were keyed before list keys: an expression, not a column."""
+    snap = project.models["snap_accounts"].model_copy(
+        update={"unique_key": ("account_id || '|' || cast(segment as varchar)",)}
+    )
+    assert history.key_columns(snap) == ("account_id", "segment")
+    keyed = project.model_copy(update={"models": {**project.models, "snap_accounts": snap}})
+    grains = infer_grains(keyed)
+    # The query is unique on account_id, which the expression covers: a real key.
+    assert grains["snap_accounts"].columns == ("account_id", "segment", "dbt_valid_from")
+    assert grains["snap_accounts"].is_proven
+    assert _check("F9001", _ctx(keyed, "snap_accounts", before=snap, after=snap)) == []

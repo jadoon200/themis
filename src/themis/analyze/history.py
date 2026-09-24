@@ -14,12 +14,42 @@ measured.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 from sqlglot import exp
 
-from themis.analyze.parse import select_from, select_joins
+from themis.analyze.parse import ParseError, parse_sql, select_from, select_joins
 from themis.snapshot import ModelNode, ProjectSnapshot
+
+_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def key_columns(node: ModelNode, *, dialect: str = "trino") -> tuple[str, ...]:
+    """The columns a snapshot's unique_key is made of.
+
+    Usually the key is a column or a list of them. Projects written before list keys
+    existed concatenate instead — `currency_code || '|' || cast(rate_date as varchar)` —
+    and compared as text, that expression covers no column at all, so a key that does
+    identify a row read as one that does not. An entry nothing can be read from empties
+    the answer: a key that cannot be read is not a key anything can rely on.
+    """
+    columns: list[str] = []
+    for entry in node.unique_key:
+        text = entry.strip().strip('"')
+        if _IDENTIFIER.match(text):
+            names = [text]
+        else:
+            try:
+                names = [
+                    column.name for column in parse_sql(entry, dialect=dialect).find_all(exp.Column)
+                ]
+            except ParseError:
+                names = []
+        if not names:
+            return ()
+        columns.extend(name for name in names if name not in columns)
+    return tuple(columns)
 
 
 @dataclass(frozen=True)

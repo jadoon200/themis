@@ -458,17 +458,19 @@ def _snapshot_table_grain(
 ) -> Grain:
     """A snapshot's table: one row per version of each key."""
     history = model.history
-    if history is None or not model.unique_key:
+    key_columns = snapshot_history.key_columns(model, dialect=dialect)
+    if history is None or not key_columns:
         return Grain(
             model_name=model.name,
             columns=(),
             source=GrainSource.UNKNOWN,
-            note="a snapshot with no unique_key, so nothing says what a version is of",
+            note="a snapshot with no unique_key a column can be read from, so nothing says "
+            "what a version is of",
         )
-    columns = (*model.unique_key, history.valid_from)
-    key = ", ".join(model.unique_key)
+    columns = (*key_columns, history.valid_from)
+    key = ", ".join(key_columns)
     query = query_grain(model, snapshot, grains, dialect=dialect)
-    if query.is_proven and set(query.columns) <= set(model.unique_key):
+    if query.is_proven and set(query.columns) <= set(key_columns):
         return Grain(
             model_name=model.name,
             columns=columns,
@@ -559,10 +561,10 @@ def _propagate(
     if (
         parent_node is not None
         and parent_node.is_snapshot
-        and parent_node.unique_key
+        and snapshot_history.key_columns(parent_node, dialect=dialect)
         and snapshot_history.restricted_to_one_version(tree, parent_node)
     ):
-        key = parent_node.unique_key
+        key = snapshot_history.key_columns(parent_node, dialect=dialect)
         if not _projection_covers(select, key):
             return None
         return Grain(

@@ -93,9 +93,10 @@ def _one_version(
     node = ctx.after_snapshot.models.get(relation)
     if grain is None or not grain.is_proven or node is None or not node.is_snapshot:
         return grain
-    if not node.unique_key or not snapshot_history.restricted_to_one_version(tree, node):
+    key = snapshot_history.key_columns(node, dialect=ctx.dialect)
+    if not key or not snapshot_history.restricted_to_one_version(tree, node):
         return grain
-    return grain.model_copy(update={"columns": node.unique_key})
+    return grain.model_copy(update={"columns": key})
 
 
 @dataclass
