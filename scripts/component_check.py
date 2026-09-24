@@ -268,7 +268,8 @@ def build_scenarios(tmp: Path) -> dict[str, str]:
         commit("snapshot_filter", mutation("snapshot_filter_records_deletions"))
 
         # The legacy spelling: a fixed target_schema, which bypasses the schema macro, so
-        # base and head would both write iceberg.snapshots. Refused before anything runs.
+        # base and head would both write iceberg.snapshots. The change reaches nothing else,
+        # so nothing can be built — and nothing may be written there.
         def legacy_snapshot_location(project: Path) -> None:
             path = project / "snapshots" / "snap_accounts.sql"
             text = path.read_text()
@@ -689,9 +690,9 @@ def check_snapshots(shas: dict[str, str], tmp: Path, env: dict[str, str]) -> Non
     r, doc = review_json(shas["snapshot_legacy_location"], tmp, "--no-llm", "--execute", env=env)
     reasons = " ".join(i.get("reason", "") for i in doc.get("incomplete", []))
     record(
-        "a legacy target_schema is refused before anything is written",
+        "a snapshot moved to a fixed target_schema is not built, and nothing is written there",
         not doc.get("executed")
-        and "outside this run's schemas" in reasons
+        and "whatever the target says" in reasons
         and "F9006" in rules_in(doc)
         and not trino_schema_exists("iceberg", "snapshots"),
         f"exit {r.returncode}, executed={doc.get('executed')}, {reasons[:300]}",
