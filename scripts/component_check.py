@@ -325,7 +325,9 @@ def check_analysis(scratch_env: dict[str, str]) -> None:
             cursor.execute(sql)
             return tuple(cursor.fetchone())
 
-        for model in doc.get("models", []):
+        # Seeds and snapshots under their own keys, where dbt reads them.
+        entries = [*doc.get("models", []), *doc.get("seeds", []), *doc.get("snapshots", [])]
+        for model in entries:
             name = model["name"]
             columns: list[str] = []
             for test in model.get("tests") or model.get("data_tests") or []:
@@ -340,7 +342,11 @@ def check_analysis(scratch_env: dict[str, str]) -> None:
             relation = next(
                 (
                     f"{c}.{sch}.{name}"
-                    for c, sch in (("hive", "main"), ("iceberg", "main_main"))
+                    for c, sch in (
+                        ("hive", "main"),
+                        ("iceberg", "main_main"),
+                        ("iceberg", "main_history"),
+                    )
                     if scalar(
                         f"select count(*) from {c}.information_schema.tables "
                         f"where table_schema='{sch}' and table_name='{name}'"

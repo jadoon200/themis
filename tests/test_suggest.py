@@ -90,3 +90,34 @@ def test_a_key_the_model_does_not_emit_is_dropped() -> None:
 
 def test_nothing_to_suggest_renders_nothing() -> None:
     assert render_yaml([]) == ""
+
+
+def test_seeds_and_snapshots_are_suggested_where_dbt_reads_them() -> None:
+    """Under `models:` a seed's or a snapshot's test matches nothing and never runs."""
+    import yaml
+
+    def node(name: str, resource_type: str) -> ModelNode:
+        return ModelNode(
+            name=name,
+            unique_id=f"{resource_type}.p.{name}",
+            file_path="",
+            resource_type=resource_type,
+        )
+
+    snapshot = ProjectSnapshot(
+        revision="r",
+        backend=Backend.MANIFEST,
+        models={
+            "m": node("m", "model"),
+            "raw": node("raw", "seed"),
+            "snap": node("snap", "snapshot"),
+        },
+    )
+    grains = {
+        name: Grain(model_name=name, columns=columns, source=GrainSource.STRUCTURAL)
+        for name, columns in (("m", ("a",)), ("raw", ("b",)), ("snap", ("k", "dbt_valid_from")))
+    }
+    doc = yaml.safe_load(render_yaml(suggest_tests(snapshot, grains)))
+    assert [entry["name"] for entry in doc["models"]] == ["m"]
+    assert [entry["name"] for entry in doc["seeds"]] == ["raw"]
+    assert [entry["name"] for entry in doc["snapshots"]] == ["snap"]
