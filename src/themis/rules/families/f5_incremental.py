@@ -184,6 +184,8 @@ class IncrementalKeyChangedRule(Rule):
     def check(self, ctx: RuleContext) -> list[Finding]:
         if ctx.before is None or ctx.after is None:
             return []
+        if ctx.after.is_snapshot:
+            return []  # a snapshot's key decides how history is matched: F9002
         before, after = ctx.before.unique_key, ctx.after.unique_key
         if before == after or (not before and not after):
             return []

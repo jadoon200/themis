@@ -510,3 +510,11 @@ def test_the_history_reviewer_takes_f9() -> None:
 
     specialist = specialist_for("F9")
     assert specialist is not None and specialist.name == "history"
+
+
+def test_a_snapshot_key_change_is_not_called_an_incremental_one(project: ProjectSnapshot) -> None:
+    from themis.rules.families.f5_incremental import IncrementalKeyChangedRule
+
+    snap = project.models["snap_accounts"]
+    rekeyed = snap.model_copy(update={"unique_key": ("account_id", "segment")})
+    assert IncrementalKeyChangedRule().check(_ctx(project, "snap_accounts", after=rekeyed)) == []

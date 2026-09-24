@@ -249,6 +249,7 @@ def _reconfigured_models(before: ProjectSnapshot, after: ProjectSnapshot) -> tup
             tuple(sorted(model.properties.items())),
             model.pre_hooks,
             model.post_hooks,
+            model.history,
         )
 
     names = set(before.models) | set(after.models)
@@ -411,12 +412,12 @@ def unexplained_change_findings(
     # the year alters no row count and no monetary sum in the staging model itself,
     # and shifts every figure below it. Requiring an origin to have moved left those
     # six descendants ownerless, so one explained change produced six criticals.
-    origins: set[str] = {
-        name
-        for name in set(before.models) | set(after.models)
-        if not (after.models.get(name) or before.models[name]).is_seed
-        and code_changed(name, before, after)
-    }
+    #
+    # Its configuration counts as its code. A snapshot told to date versions by another
+    # column compiles to the same SQL and writes different history, and the mart beneath
+    # it moved while its origin read as untouched — so the mart was reported as moving for
+    # no reason anyone could name, beside the finding that named it.
+    origins: set[str] = set(_reconfigured_models(before, after))
     # A seed whose data changed is an origin too, with no SQL to show for it. Without
     # this every model beneath an edited FX-rate file read as having moved for no
     # reason anyone could name.

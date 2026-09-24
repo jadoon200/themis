@@ -205,3 +205,18 @@ def test_a_regulatory_mart_measured_to_move_is_critical() -> None:
     )
     assert finding.severity is Severity.CRITICAL
     assert "A reported figure moved: mart" in finding.consequence
+
+
+def test_a_configuration_edit_owns_what_moved_below_it() -> None:
+    """Configuration is code. A snapshot told to date versions by another column compiles
+    to the same SQL, and the mart beneath it moved as though nothing above it had changed —
+    reported as unexplained beside the finding that explained it."""
+    sql = "select a, d from raw"
+    before = _snapshot(sql)
+    stg = before.models["stg"].model_copy(update={"unique_key": ("a", "d")})
+    after = before.model_copy(update={"models": {**before.models, "stg": stg}})
+    assert (
+        unexplained_change_findings(_moved("mid", "mart"), [_finding("stg")], before, after) == []
+    )
+    (finding,) = unexplained_change_findings(_moved("mid", "mart"), [], before, after)
+    assert finding.evidence.model_name == "stg"
