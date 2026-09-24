@@ -1710,6 +1710,12 @@ where every selected node would go (`dbt ls` with the build's own profile) and r
 naming them, before anything is written. The component check commits a legacy
 `target_schema` and asserts the refusal and that the schema was never created.
 
+It is not free: one more dbt parse per build, about 17 seconds a review on a CI runner, which
+with twelve more cases took the corpus job from 18 minutes to 42. It stays unconditional.
+Skipping it where the schema macro is provably dbt's default would save the time, and would
+turn a guard that fails closed into one that trusts an argument; at work, where a build takes
+minutes, the parse is noise.
+
 What this does not show: history that exists. Every snapshot case starts from an empty
 table, so a re-key or a strategy change is judged from configuration, not from what it does
 to a year of versions. That measurement — build the base, run it over time, apply the head

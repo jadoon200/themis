@@ -139,9 +139,10 @@ jobs:
     # did not, including two rules that had never fired at all. It is slower than the
     # other jobs because every mutation builds the project twice, and worth it.
     runs-on: ubuntu-latest
-    # 43 cases, each building both revisions. It took 18 minutes when most rules were
-    # skipped; with every rule running it needs the headroom.
-    timeout-minutes: 45
+    # 63 cases, each building both revisions after asking dbt where every node would be
+    # written (one parse per build, about 8 seconds here). 42 minutes on a hosted runner in
+    # September 2026, against a 45-minute limit — so the limit moved, not the check.
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@v5
         with:
