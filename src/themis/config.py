@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -97,6 +99,12 @@ class Settings(BaseSettings):
         "invocation_id",
         "run_started_at",
     )
+    # The file a scheduler reads to tell dbt which environment it is in — at work, Dagster's
+    # env.config.ini, one section per environment. THEMIS gives dbt the named section as
+    # --vars and as environment variables. A production-looking section is refused.
+    dbt_env_config: Path | None = None
+    dbt_env_section: str | None = None
+
     # Any dbt target whose name is not in this set is refused outright. The guard is
     # deliberately an allowlist: a typo must fail closed, not run against prod.
     execute_allowed_targets: tuple[str, ...] = (

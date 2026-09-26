@@ -10,6 +10,7 @@ hit counts are the point — so the output can be shared from a project whose co
 
 from __future__ import annotations
 
+import re
 from collections import Counter
 from statistics import median
 from typing import Any
@@ -19,7 +20,7 @@ from sqlglot import exp
 from themis.analyze.lineage import ColumnGraph
 from themis.analyze.parse import ParseError, parse_sql
 from themis.models import Grain, GrainSource
-from themis.snapshot import ProjectSnapshot
+from themis.snapshot import ModelNode, ProjectSnapshot
 from themis.vocabulary import Vocabulary
 
 
@@ -47,6 +48,68 @@ def _spread(values: list[int]) -> dict[str, float | int]:
     if not values:
         return {"max": 0, "median": 0}
     return {"max": max(values), "median": median(values)}
+
+
+_VAR_CALL = re.compile(r"(?<![\w.])var\(")
+_ENV_VAR_CALL = re.compile(r"\benv_var\(")
+
+
+def _table_naming(
+    sql_models: list[ModelNode], snapshot: ProjectSnapshot, dialect: str
+) -> dict[str, int]:
+    """How models name what they read, counted — the question the project cannot be asked
+    from home. A project that keeps its schema names in a scheduler's file (Dagster's
+    env.config.ini at work) may read them through var() or env_var(), or write the resolved
+    names out; only ref() and source() give the DAG an edge. A table this project builds,
+    read by name and not through ref(), is a dependency nothing downstream of it can see.
+    """
+    relations: dict[str, str] = {}
+    for node in snapshot.models.values():
+        if not node.relation_name:
+            continue
+        parts = node.relation_name.replace('"', "").replace("`", "").lower().split(".")
+        relations[".".join(parts)] = node.unique_id
+        relations.setdefault(".".join(parts[-2:]), node.unique_id)
+
+    reading_nothing_declared = 0
+    hidden_reads = 0
+    models_with_hidden_reads = 0
+    for model in sql_models:
+        sql = model.analysable_sql
+        if sql is None:
+            continue
+        try:
+            tree = parse_sql(sql, dialect=dialect)
+        except ParseError:
+            continue
+        ctes = {cte.alias_or_name.lower() for cte in tree.find_all(exp.CTE) if cte.alias_or_name}
+        tables = [
+            ".".join(
+                part.name.lower()
+                for part in (table.args.get("catalog"), table.args.get("db"), table.this)
+                if isinstance(part, exp.Identifier)
+            )
+            for table in tree.find_all(exp.Table)
+            if not (table.name.lower() in ctes and not table.args.get("db"))
+        ]
+        if tables and not model.depends_on_models and not model.depends_on_sources:
+            reading_nothing_declared += 1
+        hidden = {
+            relations[name]
+            for name in tables
+            if name in relations
+            and relations[name] != model.unique_id
+            and relations[name] not in model.depends_on_models
+        }
+        hidden_reads += len(hidden)
+        models_with_hidden_reads += bool(hidden)
+    return {
+        "models_calling_var": sum(1 for m in sql_models if _VAR_CALL.search(m.raw_sql)),
+        "models_calling_env_var": sum(1 for m in sql_models if _ENV_VAR_CALL.search(m.raw_sql)),
+        "models_reading_tables_with_no_ref_or_source": reading_nothing_declared,
+        "project_tables_read_by_name_not_ref": hidden_reads,
+        "models_reading_project_tables_by_name": models_with_hidden_reads,
+    }
 
 
 def profile(
@@ -147,6 +210,7 @@ def profile(
             "partitioned": sum(1 for m in sql_models if m.partitioned_by),
             "reading_sources": sum(1 for m in sql_models if m.depends_on_sources),
         },
+        "table_naming": _table_naming(sql_models, snapshot, dialect),
         "dag": {
             "depth": _depth(snapshot),
             "max_direct_children": max((len(c) for c in snapshot.child_map.values()), default=0),
