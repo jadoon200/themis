@@ -8,12 +8,15 @@ from typing import Annotated
 
 import typer
 
+from themis.boundary import assistant_reading
+from themis.boundary import detect as detect_boundary
 from themis.cli._app import (
     VerboseOpt,
     app,
 )
 from themis.config import load_settings
-from themis.logging import configure_logging
+from themis.logging import conceal_values, configure_logging
+from themis.report.conceal import scrub
 
 
 @app.command()
@@ -46,6 +49,10 @@ def ask(
             )
             raise typer.Exit(code=2)
 
+        # The stored review may be of real data; an AI assistant reading the answer may not
+        # see its values, while the local model answering it does (themis/boundary.py).
+        boundary = detect_boundary(Path(stored.project), target="dev", settings=settings)
+        conceal_values(boundary.conceal)
         facts = gather(session, stored, question)
         # The refusal for an unexamined model already says why the review is silent.
         context_is_empty = facts.is_empty and not facts.unknown_entities
@@ -57,17 +64,22 @@ def ask(
             question, facts, provider=build_provider(settings), settings=settings
         )
 
+    def shown(text: str | None) -> str | None:
+        return scrub(text) if boundary.conceal else text
+
     typer.echo(f"[{run_key}]")
     typer.echo("")
+    if boundary.conceal:
+        typer.echo(f"> Values withheld from this answer: {boundary.reason}.", err=True)
 
     if result.grounded:
-        typer.echo(result.text)
+        typer.echo(shown(result.text))
         if result.evidence_quote:
             typer.echo("")
-            typer.echo(f"  based on: {result.evidence_quote}")
+            typer.echo(f"  based on: {shown(result.evidence_quote)}")
         raise typer.Exit(code=0)
 
-    typer.echo(f"Cannot answer from this review: {result.refusal_reason}")
+    typer.echo(f"Cannot answer from this review: {shown(result.refusal_reason)}")
     if context_is_empty:
         typer.echo("")
         typer.echo(
@@ -106,6 +118,15 @@ def dataset(
     from themis.db.store import export_calls
 
     configure_logging(verbose=verbose)
+    if out is not None and (reader := assistant_reading()) is not None:
+        # Every captured call carries what the model was shown, real values included. That
+        # file is for tuning at the office; an AI assistant has no reason to write one.
+        typer.echo(
+            f"Not written: {reader} is running this, and the calls hold what THEMIS's model "
+            "was shown, real values included. Run `themis dataset --out` yourself.",
+            err=True,
+        )
+        raise typer.Exit(code=2)
 
     try:
         with session_scope() as session:

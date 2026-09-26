@@ -8,6 +8,7 @@ from typing import Annotated
 import typer
 
 from themis import __version__
+from themis.boundary import detect as detect_boundary
 from themis.cli._app import (
     _REVIEW_ERRORS,
     BaseOpt,
@@ -26,8 +27,9 @@ from themis.cli._shared import (
     _review_exit_code,
 )
 from themis.config import load_settings
-from themis.logging import configure_logging
+from themis.logging import conceal_values, configure_logging
 from themis.report import markdown
+from themis.report.conceal import conceal_execution, conceal_review
 
 
 @app.command()
@@ -122,6 +124,9 @@ def review(
 
     configure_logging(verbose=verbose)
     settings = load_settings()
+    # Decided before the run: dbt's error text is logged during it.
+    boundary = detect_boundary(project, target=target, settings=settings)
+    conceal_values(boundary.conceal)
     log.info("review.start", project=str(project), base=base, head=head, llm=not no_llm)
 
     try:
@@ -146,6 +151,13 @@ def review(
 
     if result.execution is not None and not result.execution.ran:
         log.warning("review.execution_skipped", reason=result.execution.skipped_reason)
+
+    # Everything below is what this reader sees. With real data and an AI assistant reading,
+    # it is a copy with the warehouse's values withheld; the full review is what is stored.
+    stored = result
+    if boundary.conceal:
+        result = conceal_review(result)
+        typer.echo(f"> Measured values withheld: {boundary.reason}.\n")
 
     if result.llm is not None and result.llm.undisclosed:
         typer.echo("")
@@ -227,7 +239,7 @@ def review(
 
     if save:
         _persist(
-            result,
+            stored,
             project=str(project),
             base=base,
             head=head,
@@ -258,6 +270,8 @@ def execute(
 
     configure_logging(verbose=verbose)
     settings = load_settings()
+    boundary = detect_boundary(project, target="dev", settings=settings)
+    conceal_values(boundary.conceal)
     log.info("execute.start", project=str(project), base=base, head=head)
 
     try:
@@ -273,6 +287,9 @@ def execute(
         typer.echo(f"Execution could not run: {exc}", err=True)
         raise typer.Exit(code=2) from exc
     run = result.execution
+    if boundary.conceal and run is not None:
+        run = conceal_execution(run)
+        typer.echo(f"> Measured values withheld: {boundary.reason}.\n")
     if run is None or not run.ran:
         reason = run.skipped_reason if run else "execution did not run"
         typer.echo(f"Execution did not run: {reason}", err=True)
@@ -287,6 +304,10 @@ def execute(
         marker = "CHANGED" if delta.is_material else "no change"
         typer.echo(f"{name:32s} {marker}")
         if not explain:
+            continue
+        if delta.concealed:
+            for note in delta.withheld:
+                typer.echo(f"{'':34s}{note}")
             continue
         if delta.build_error:
             typer.echo(f"{'':34s}build failed: {delta.build_error.strip()[:200]}")

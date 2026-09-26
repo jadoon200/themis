@@ -61,6 +61,11 @@ def _format_delta(finding: Finding) -> list[str]:
     if delta is None:
         return []
     lines: list[str] = ["", "**Measured by running both revisions:**", ""]
+    if delta.concealed:
+        # Real data, read by an AI assistant: what moved, never by how much.
+        lines += [f"- {note}" for note in delta.withheld] or ["- nothing moved"]
+        lines.append("- values withheld: real data, and an AI assistant is reading")
+        return lines
     if delta.build_error:
         lines.append(f"- Build failed: `{delta.build_error.strip()[:300]}`")
         return lines

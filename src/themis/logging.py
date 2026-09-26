@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import logging
 import sys
+from collections.abc import MutableMapping
+from typing import Any
 
 import structlog
 
@@ -27,6 +29,27 @@ class _CurrentStderr:
         return sys.stderr.isatty()
 
 
+# Set when real data is being read by an AI assistant (themis/boundary.py). Log lines carry
+# dbt's own error text, and a warehouse error can quote a value — `Cannot cast 'ACME' to
+# integer` — so every string in a log line is scrubbed while it is set.
+_CONCEAL: list[bool] = [False]
+
+
+def conceal_values(on: bool = True) -> None:
+    _CONCEAL[0] = on
+
+
+def _conceal(_: Any, __: str, event: MutableMapping[str, Any]) -> MutableMapping[str, Any]:
+    if not _CONCEAL[0]:
+        return event
+    from themis.report.conceal import scrub
+
+    return {
+        key: (scrub(value) if isinstance(value, str) and key != "event" else value)
+        for key, value in event.items()
+    }
+
+
 def configure_logging(*, verbose: bool = False) -> None:
     """Human-readable console logging, on stderr. Called once, from the CLI.
 
@@ -45,6 +68,7 @@ def configure_logging(*, verbose: bool = False) -> None:
     structlog.configure(
         processors=[
             structlog.processors.add_log_level,
+            _conceal,
             structlog.processors.TimeStamper(fmt="%H:%M:%S"),
             structlog.dev.ConsoleRenderer(colors=sys.stderr.isatty()),
         ],

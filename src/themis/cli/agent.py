@@ -8,6 +8,7 @@ from typing import Annotated, Any
 
 import typer
 
+from themis.boundary import detect as detect_boundary
 from themis.cli._app import (
     _REVIEW_ERRORS,
     HeadOpt,
@@ -19,7 +20,8 @@ from themis.cli._shared import (
     _history,
 )
 from themis.config import load_settings
-from themis.logging import configure_logging
+from themis.logging import conceal_values, configure_logging
+from themis.report.conceal import scrub, sensitive_values
 
 
 @app.command()
@@ -67,6 +69,11 @@ def agent(
 
     configure_logging(verbose=verbose)
     settings = load_settings()
+    # THEMIS's own model reasons over real values; an AI assistant reading the answer may
+    # not see them (themis/boundary.py).
+    boundary = detect_boundary(project, target="dev", settings=settings)
+    conceal_values(boundary.conceal)
+    known: tuple[str, ...] = ()
 
     try:
         if base is not None:
@@ -81,6 +88,8 @@ def agent(
                 run_llm=False,
                 history=_history(str(project), settings),
             )
+            if result.execution is not None:
+                known = sensitive_values(result.execution.deltas.values())
             workspace = Workspace.from_review(
                 result,
                 dialect=settings.dialect,
@@ -108,7 +117,9 @@ def agent(
         outcome = investigate(
             text, workspace, provider=provider, settings=settings, max_steps=max_steps
         )
-        _print_outcome(text, outcome, as_json=as_json)
+        if boundary.conceal:
+            typer.echo(f"> Values withheld from this answer: {boundary.reason}.", err=True)
+        _print_outcome(text, outcome, as_json=as_json, conceal=boundary.conceal, known=known)
         return outcome.grounded
 
     if question is not None:
@@ -127,18 +138,29 @@ def agent(
     raise typer.Exit(code=0)
 
 
-def _print_outcome(question: str, outcome: Any, *, as_json: bool) -> None:
+def _print_outcome(
+    question: str,
+    outcome: Any,
+    *,
+    as_json: bool,
+    conceal: bool = False,
+    known: tuple[str, ...] = (),
+) -> None:
     steps = {step.number: step for step in outcome.steps}
+
+    def shown(text: str | None) -> str | None:
+        return scrub(text, known=known) if conceal else text
+
     if as_json:
         typer.echo(
             json.dumps(
                 {
                     "question": question,
                     "grounded": outcome.grounded,
-                    "answer": outcome.answer or None,
-                    "refusal_reason": outcome.refusal_reason,
+                    "answer": shown(outcome.answer) or None,
+                    "refusal_reason": shown(outcome.refusal_reason),
                     "citations": [
-                        {"result": c.result, "tool": steps[c.result].tool, "quote": c.quote}
+                        {"result": c.result, "tool": steps[c.result].tool, "quote": shown(c.quote)}
                         for c in outcome.citations
                         if c.result in steps
                     ],
@@ -164,13 +186,13 @@ def _print_outcome(question: str, outcome: Any, *, as_json: bool) -> None:
         typer.echo(f"[{step.number}] {step.tool}({arguments}){mark}", err=True)
     typer.echo("")
     if outcome.grounded:
-        typer.echo(outcome.answer)
+        typer.echo(shown(outcome.answer))
         typer.echo("")
         for citation in outcome.citations:
             tool = steps[citation.result].tool if citation.result in steps else "?"
-            typer.echo(f'  [{citation.result}] {tool}: "{citation.quote}"')
+            typer.echo(f'  [{citation.result}] {tool}: "{shown(citation.quote)}"')
     else:
-        typer.echo(f"Could not answer: {outcome.refusal_reason}")
+        typer.echo(f"Could not answer: {shown(outcome.refusal_reason)}")
 
 
 @app.command()
