@@ -73,6 +73,12 @@ Nothing. Enforced, not assumed:
 
 `tests/test_no_egress.py` holds the two dbt points in place.
 
+If a hosted AI assistant is used to drive THEMIS, it does not see real data: when the target's
+warehouse is real (anything but DuckDB or THEMIS's own local container) and the process is run
+by an assistant (Claude Code marks every command it runs), values read from the warehouse are
+withheld from everything THEMIS prints or writes, and kept in full only in the stored review
+(`boundary.py`, `report/conceal.py`, `tests/test_boundary.py`).
+
 ## Access it needs
 
 | for | access |

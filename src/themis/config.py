@@ -105,6 +105,12 @@ class Settings(BaseSettings):
     dbt_env_config: Path | None = None
     dbt_env_section: str | None = None
 
+    # What counts as synthetic data (see themis/boundary.py). DuckDB always is; Trino only at
+    # these host:port pairs — THEMIS's own compose Trino, which holds the demo. Everything
+    # else is real, and its values are withheld from an AI assistant reading THEMIS.
+    synthetic_warehouses: tuple[str, ...] = ("127.0.0.1:8085", "localhost:8085")
+    treat_all_data_as_real: bool = False
+
     # Any dbt target whose name is not in this set is refused outright. The guard is
     # deliberately an allowlist: a typo must fail closed, not run against prod.
     execute_allowed_targets: tuple[str, ...] = (

@@ -90,6 +90,9 @@ def _delta(delta: ExecutionDelta) -> dict[str, Any]:
             "sample_keys": list(delta.keyed.sample_keys),
         },
         "keyed_skipped_reason": delta.keyed_skipped_reason,
+        # Set when the values were withheld from the reader (themis/boundary.py).
+        "concealed": delta.concealed,
+        "withheld": list(delta.withheld),
     }
 
 

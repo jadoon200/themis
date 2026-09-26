@@ -231,6 +231,11 @@ class ExecutionDelta(BaseModel):
     keyed: KeyedDiff | None = None
     # Why the keyed comparison did not run, when it did not.
     keyed_skipped_reason: str | None = None
+    # Set on a copy made for a reader who must not see real values (themis/boundary.py):
+    # every number and key value is gone, and `withheld` says in words what moved.
+    concealed: bool = False
+    withheld: tuple[str, ...] = ()
+    concealed_material: bool = False
 
     @property
     def row_delta(self) -> int | None:
@@ -241,6 +246,8 @@ class ExecutionDelta(BaseModel):
     @property
     def is_material(self) -> bool:
         """Did anything a reviewer would care about actually move?"""
+        if self.concealed:
+            return self.concealed_material
         if self.build_error is not None:
             return True
         if self.row_delta not in (0, None):

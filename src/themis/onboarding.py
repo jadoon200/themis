@@ -276,6 +276,28 @@ def _check_project_inputs(project: Path, settings: Settings) -> Check:
     return Check(name, "ok", f"{counted}, every one with a value{source}")
 
 
+def _check_boundary(project: Path, settings: Settings, target: str) -> Check:
+    """Whether this target's data is real, and whether its values reach this reader."""
+    from themis.boundary import detect
+
+    boundary = detect(project, target=target, settings=settings)
+    if not boundary.real_data:
+        return Check(
+            "data boundary", "ok", f"synthetic data ({boundary.warehouse}): nothing is withheld"
+        )
+    who = (
+        f"read now by {boundary.assistant}, so values are withheld from this output"
+        if boundary.conceal
+        else "read now by a person"
+    )
+    return Check(
+        "data boundary",
+        "ok",
+        f"real data ({boundary.warehouse}): values are withheld from any AI assistant "
+        f"reading THEMIS, and kept for people and THEMIS's own model — {who}",
+    )
+
+
 def _check_connection(project: Path, settings: Settings, target: str) -> Check:
     """Whether dbt can actually reach the warehouse with this target.
 
@@ -518,6 +540,7 @@ def run_checks(project: Path, settings: Settings, *, target: str) -> list[Check]
         _check_allowlist(settings, target),
         _check_env_config(settings),
         _check_project_inputs(project, settings),
+        _check_boundary(project, settings, target),
         _check_connection(project, settings, target),
         _check_measurement(project, settings, target),
         _check_git(project),

@@ -88,6 +88,41 @@ shell is named rather than sent to the warehouse as a password. If THEMIS cannot
 review with `--execute` says so and is marked incomplete; it never reports that nothing
 moved.
 
+### Real data and an AI assistant
+
+The warehouse at work holds real data; the demo's DuckDB, and THEMIS's own Trino container
+on port 8085, hold generated data. THEMIS's own model may read real values — the agent
+reasons over them and captured calls are the tuning set — but a hosted AI assistant driving
+THEMIS, Claude Code among them, must not.
+
+`themis doctor` says which side a target is on (`data boundary`). When the data is real and
+an assistant is running THEMIS (Claude Code sets `CLAUDECODE` on every command it runs;
+`THEMIS_READER=assistant` says so for any other), everything THEMIS prints or writes has the
+warehouse's values withheld: each measurement is said in words — *row count rose*,
+*sum(amount_usd) fell*, *values changed in these columns*, *a closed period moved* — with no
+number, key value or period; measured findings, the model's prose and dbt's error text are
+scrubbed; `themis dataset --out` refuses. The review is stored in full, for people and for
+THEMIS's own model. Set `THEMIS_TREAT_ALL_DATA_AS_REAL=true` in the office `.env` to make
+every target count as real, whatever it looks like.
+
+What THEMIS cannot guard is what an assistant reads without it: the store, report files a
+person wrote, a dataset export, or the warehouse through another command. Deny those in the
+project's `.claude/settings.json` (check the paths against your setup):
+
+```json
+{
+  "permissions": {
+    "deny": [
+      "Read(./data/**)",
+      "Read(./reports/**)",
+      "Read(./**/*.jsonl)",
+      "Bash(trino:*)",
+      "Bash(dbt show:*)"
+    ]
+  }
+}
+```
+
 ## 4. Measure the project before trusting anything on it
 
 ```bash

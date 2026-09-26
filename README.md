@@ -73,6 +73,11 @@ current one. Stage 3 never builds anything dbt would write outside its own schem
 snapshot with a legacy `target_schema` is read where it is, as a deferred upstream is,
 and when the change reaches it, it and what reads it are reported as not measured.
 
+**Real data stays away from a hosted assistant.** THEMIS's own model reads measured values;
+an AI assistant driving THEMIS does not. When the warehouse is real — Trino at work, not the
+demo's DuckDB — and Claude Code is the one running it, every measurement it prints or writes
+says what moved and never by how much, and the full review is stored for people.
+
 **What reviewers decide changes the next review — visibly, and only in the order.** Mark a
 finding dismissed and the next run that raises it says so on the finding, ranks it lower,
 and shows the specialist how the same rule was ruled on before. Nothing is deleted, no
