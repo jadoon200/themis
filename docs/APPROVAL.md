@@ -38,6 +38,9 @@ on a GPU host, for the parts that use a language model; every review also runs w
   profile and credentials** (`execute/warehouse.py`, `trino_connect`). Secrets stay in
   environment variables, as dbt expects; THEMIS resolves them in memory and writes none
   to disk.
+- If configured, one section of the scheduler's environment file (`env.config.ini`), handed
+  to dbt as it would be by Dagster. A production-looking section is refused, and the values
+  are never logged or written (`acquire/env_config.py`).
 
 ## What it writes
 

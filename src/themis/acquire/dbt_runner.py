@@ -17,6 +17,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from themis.acquire.env_config import EnvConfigError, active_env_config
 from themis.execute.profiles import resolve_profiles_dir
 from themis.logging import get_logger
 
@@ -118,7 +119,18 @@ def run_dbt(
     ]
     if target_path is not None:
         args += ["--target-path", str(artefacts)]
-    env = {**os.environ, **(env_overrides or {})}
+    # What the scheduler would have handed dbt: the environment file's section, as --vars
+    # and as environment variables. Without it a project that reads its schemas from the
+    # file does not compile — or compiles against a default.
+    try:
+        environment_file = active_env_config()
+    except EnvConfigError as exc:
+        raise DbtError(str(exc)) from exc
+    env = {**os.environ}
+    if environment_file is not None:
+        args += environment_file.vars_argument(command[0] if command else "")
+        env.update(environment_file.environment)
+    env.update(env_overrides or {})
     # dbt reports anonymous usage to dbt Labs unless told not to. THEMIS runs inside a
     # network where nothing is meant to leave, so every dbt it starts is told not to —
     # regardless of what the shell says, because a review is not the place to opt in.

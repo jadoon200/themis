@@ -11,7 +11,7 @@ sends.
 
 ## 0. Before the first day
 
-Six answers decide how the first week goes. Ask a colleague before arriving:
+Seven answers decide how the first week goes. Ask a colleague before arriving:
 
 | question | why it matters |
 |---|---|
@@ -19,6 +19,7 @@ Six answers decide how the first week goes. Ask a colleague before arriving:
 | Is there a non-production schema THEMIS may create tables in? | `--execute` builds both revisions of a change into schemas of its own and drops them after. Without one it reviews rules-only, which is still the bulk of it |
 | How does the dagster-dbt repository provide its dbt profile, and which dbt version? | Dagster setups often generate the profile at run time; THEMIS needs a profile with a dev target on disk, or `DBT_PROFILES_DIR` pointing at one |
 | Which snapshots set `target_schema` rather than `schema`, and is each one built in dev? | a legacy `target_schema` fixes where a snapshot is written whatever the target says, so `--execute` never builds it: models reading it are measured against the table already there — which has to exist in the dev target — and a change to the snapshot itself is reviewed by its rules only. `schema` (dbt 1.9+) follows the target and is measured normally |
+| How does dbt get the values in `env.config.ini` — `var()`, `env_var()`, or names written out in the SQL? And which section is the non-production one? | `THEMIS_DBT_ENV_CONFIG` gives dbt a section both ways; `themis doctor` says which `var()`/`env_var()` names still have no value, and `themis profile` counts models that read project tables by name rather than `ref()` — a dependency nothing downstream can see |
 | Where does production's `target/manifest.json` live? | `--defer-state` reads unchanged upstream models where production already built them instead of rebuilding them |
 | What can be installed: a PyPI mirror, Ollama and a model on the GPU host, Postgres? | SQLite is enough to start; the model is optional (`--no-llm`); everything else is on PyPI |
 
@@ -53,6 +54,20 @@ It writes `.env` with a generated redaction salt and an allowlist proposed only 
 profile targets whose names do not say production, and an empty `themis_conventions.yml`
 in the project. It never overwrites a file, and says whether `.env` is ignored by git.
 **Read the allowlist it proposes and confirm none of those targets is production.**
+
+If the Dagster project keeps its environments in a file — an `env.config.ini` with the
+Trino environment and every schema, per environment — point THEMIS at it and name the
+section to use. dbt then gets that section exactly as Dagster would hand it over, as
+`--vars` and as environment variables, so whichever the project reads finds its value:
+
+```bash
+THEMIS_DBT_ENV_CONFIG=/path/to/env.config.ini
+THEMIS_DBT_ENV_SECTION=uat
+```
+
+A section whose name says production — `prod`, `preprod`, `prd`, `live` — is refused: its
+values can point dbt at a production warehouse whatever the target is called. The values
+are never logged or written anywhere.
 
 ## 3. Check
 
@@ -281,4 +296,5 @@ changes page, <kbd>t</kbd> switches light and dark.
 | a snapshot's legacy `target_schema`, or a `generate_schema_name` that ignores the target, with other models `ref()`-ing it | base and head would have written the same table, in a schema never dropped; then, guarded, every change below a snapshot went unmeasured | dbt says where every node would go; a fixed node the change does not reach is read where it is, one it does reach is left out with its readers (X0007), and the rest is measured |
 | a snapshot keyed by `a \|\| '\|' \|\| b` | read as text, a key that identifies a row looked like one that does not | read as the columns it is made of |
 | an Iceberg timestamp copied into a Hive table | Trino refuses: Iceberg keeps microseconds, this Hive catalog milliseconds | the demo narrows it to `timestamp(3)`; worth knowing when the SCD data lands |
+| schema names kept in a scheduler's `env.config.ini`, per environment | THEMIS ran dbt without them: the first compile would fail on a variable only Dagster sets, or compile against a default | `THEMIS_DBT_ENV_CONFIG` + `THEMIS_DBT_ENV_SECTION` hand dbt one non-production section as `--vars` and environment; `doctor` names any value still missing |
 | a comment written at the reviewer | an AI reviewer quoting it would be quoting honestly, and the self-check would pass it | reported as F7004, and the model that carries it is kept away from every seat that could refute a finding |
