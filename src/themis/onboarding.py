@@ -13,6 +13,8 @@ production-looking target to the allowlist.
 from __future__ import annotations
 
 import importlib.util
+import os
+import re
 import secrets
 import shutil
 import subprocess
@@ -25,6 +27,11 @@ from typing import Literal
 import httpx
 import yaml
 
+from themis.acquire.env_config import (
+    PRODUCTION_WORDS,
+    EnvConfigError,
+    read_env_config,
+)
 from themis.config import Settings
 
 Status = Literal["ok", "warn", "fail", "skip"]
@@ -35,7 +42,7 @@ _ADAPTER_INSTALL = {
     "duckdb": "uv pip install dbt-duckdb",
 }
 # A target whose name says production is never proposed for the allowlist.
-_PRODUCTION_WORDS = ("prod", "prd", "live", "production")
+_PRODUCTION_WORDS = PRODUCTION_WORDS
 
 
 @dataclass(frozen=True)
@@ -166,6 +173,107 @@ def _check_allowlist(settings: Settings, target: str) -> Check:
         f"if {target!r} is certainly not production: "
         f"THEMIS_EXECUTE_ALLOWED_TARGETS='[\"{target}\"]' (or run `themis init`)",
     )
+
+
+# Quotes one or more deep: YAML escapes `'` as `''` inside a single-quoted string, so a
+# profile written by a tool says env_var(''X'').
+_VAR_USE = re.compile(r"(?<![\w.])var\(\s*['\"]+([\w.\-]+)['\"]+\s*(,)?")
+_ENV_VAR_USE = re.compile(r"\benv_var\(\s*['\"]+([\w.\-]+)['\"]+\s*(,)?")
+_NOT_PROJECT = ("target", "dbt_packages", "logs", ".venv", "node_modules")
+
+
+def _inputs_used(project: Path) -> tuple[set[str], set[str]]:
+    """var() and env_var() names the project uses with no default, in its SQL and YAML."""
+    from themis.execute.profiles import resolve_profiles_dir
+
+    files = [
+        path
+        for pattern in ("*.sql", "*.yml", "*.yaml")
+        for path in project.rglob(pattern)
+        if not any(part in _NOT_PROJECT for part in path.relative_to(project).parts)
+    ]
+    profiles = resolve_profiles_dir(project) / "profiles.yml"
+    if profiles.exists() and profiles not in files:
+        files.append(profiles)
+    variables: set[str] = set()
+    environment: set[str] = set()
+    for path in files:
+        text = path.read_text(errors="replace")
+        variables.update(name for name, default in _VAR_USE.findall(text) if not default)
+        environment.update(name for name, default in _ENV_VAR_USE.findall(text) if not default)
+    return variables, environment
+
+
+def _declared_vars(project: Path) -> set[str]:
+    """Vars dbt_project.yml gives a value, at the top level or under a package."""
+    path = project / "dbt_project.yml"
+    if not path.exists():
+        return set()
+    document = yaml.safe_load(path.read_text()) or {}
+    declared = document.get("vars") or {}
+    names: set[str] = set()
+    if isinstance(declared, dict):
+        for key, value in declared.items():
+            names.add(str(key))
+            if isinstance(value, dict):
+                names.update(str(k) for k in value)
+    return names
+
+
+def _check_env_config(settings: Settings) -> Check:
+    name = "environment file"
+    if settings.dbt_env_config is None:
+        return Check(name, "skip", "none configured (THEMIS_DBT_ENV_CONFIG)")
+    try:
+        config = read_env_config(settings.dbt_env_config, settings.dbt_env_section)
+    except EnvConfigError as exc:
+        return Check(
+            name,
+            "fail",
+            str(exc),
+            "THEMIS_DBT_ENV_SECTION=<a non-production section of the file>",
+        )
+    return Check(name, "ok", f"{config.describe()} given to dbt as --vars and environment")
+
+
+def _check_project_inputs(project: Path, settings: Settings) -> Check:
+    """Every var() and env_var() the project needs, and whether each has a value here.
+
+    The first compile at work fails on exactly this when the scheduler, not the shell,
+    normally supplies them — and dbt names only the first one missing.
+    """
+    name = "project inputs"
+    if not (project / "dbt_project.yml").exists():
+        return Check(name, "skip", "no dbt project to read")
+    variables, environment = _inputs_used(project)
+    if not variables and not environment:
+        return Check(name, "ok", "the project reads no var() or env_var() without a default")
+    try:
+        config = (
+            read_env_config(settings.dbt_env_config, settings.dbt_env_section)
+            if settings.dbt_env_config is not None
+            else None
+        )
+    except EnvConfigError:
+        config = None  # the environment-file check says why
+    supplied_vars = _declared_vars(project) | set(config.values if config else {})
+    supplied_env = set(os.environ) | set(config.environment if config else {})
+    missing = sorted(f"var {v}" for v in variables - supplied_vars) + sorted(
+        f"env_var {e}" for e in environment - supplied_env
+    )
+    counted = f"{len(variables)} var() and {len(environment)} env_var() name(s)"
+    if missing:
+        return Check(
+            name,
+            "fail",
+            f"{counted}; no value here for {', '.join(missing[:6])}"
+            + (f" and {len(missing) - 6} more" if len(missing) > 6 else "")
+            + " — dbt will refuse to compile",
+            "THEMIS_DBT_ENV_CONFIG=<the file the scheduler reads, e.g. env.config.ini> and "
+            "THEMIS_DBT_ENV_SECTION=<a non-production section>, or export them",
+        )
+    source = f", some from {config.describe()}" if config else ""
+    return Check(name, "ok", f"{counted}, every one with a value{source}")
 
 
 def _check_connection(project: Path, settings: Settings, target: str) -> Check:
@@ -408,6 +516,8 @@ def run_checks(project: Path, settings: Settings, *, target: str) -> list[Check]
     checks += _check_profile(project, target)
     checks += [
         _check_allowlist(settings, target),
+        _check_env_config(settings),
+        _check_project_inputs(project, settings),
         _check_connection(project, settings, target),
         _check_measurement(project, settings, target),
         _check_git(project),

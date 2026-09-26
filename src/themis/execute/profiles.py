@@ -133,9 +133,22 @@ def render_profile(block: dict[str, Any]) -> dict[str, Any]:
     from dbt.config.renderer import ProfileRenderer
     from dbt_common.context import set_invocation_context
 
-    set_invocation_context(os.environ)
+    from themis.acquire.env_config import EnvConfigError, active_env_config
+
+    # The same values dbt gets (see acquire.env_config): a profile whose host comes from the
+    # environment file has to log THEMIS in where it logs dbt in.
     try:
-        rendered: dict[str, Any] = ProfileRenderer({}).render_data(block)
+        environment_file = active_env_config()
+    except EnvConfigError as exc:
+        raise ProfileError(str(exc)) from exc
+    environment = dict(os.environ)
+    cli_vars: dict[str, Any] = {}
+    if environment_file is not None:
+        environment.update(environment_file.environment)
+        cli_vars = dict(environment_file.values)
+    set_invocation_context(environment)
+    try:
+        rendered: dict[str, Any] = ProfileRenderer(cli_vars).render_data(block)
     except Exception as exc:  # dbt's own message names the expression that failed
         raise ProfileError(f"could not render the dbt profile: {exc}") from exc
 
